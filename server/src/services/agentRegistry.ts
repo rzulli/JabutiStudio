@@ -22,7 +22,8 @@ export const DEFAULT_AGENT_ID = 'claude';
  * depends on.
  */
 export const BUILTIN_AGENTS: AgentDefinition[] = [
-  { id: 'claude', name: 'Claude Code', command: 'claude', args: '--dangerously-skip-permissions', builtin: true },
+  // No permission flag: task runs ask for approval like a normal Claude Code session.
+  { id: 'claude', name: 'Claude Code', command: 'claude', args: '', builtin: true },
   { id: 'codex', name: 'Codex CLI', command: 'codex', args: '--full-auto', builtin: true },
   { id: 'aider', name: 'Aider', command: 'aider', args: '--yes-always', builtin: true },
   { id: 'gemini', name: 'Gemini CLI', command: 'gemini', args: '--yolo', builtin: true },
