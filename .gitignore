@@ -19,6 +19,7 @@ data/claude-hooks/
 data/terminal-clipboard/
 data/task-attachments/
 data/worktrees/
+data/graphify/
 data/ai-config.json
 data/deploy-config.json
 data/inbox-config.json

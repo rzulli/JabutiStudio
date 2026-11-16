@@ -2,43 +2,41 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  Search, RefreshCw, FileCode2, Clapperboard, Package, FileQuestion, ArrowLeft,
-  Code2, Sparkles, TextSearch, AlertTriangle, ArrowRight, ArrowLeftFromLine,
+  Search, RefreshCw, FileCode2, Zap, Box, CircleDashed, Braces, ArrowLeft,
+  Code2, Sparkles, TextSearch, ArrowRight, ArrowLeftFromLine, Loader2,
 } from 'lucide-react'
-import { api, type ExplorerNode, type ExplorerEdge } from '@/lib/api'
+import { api, type ExplorerNode, type ExplorerNeighbor, type ExplorerNodeDetail, type ExplorerKind } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
 import { openContentSearch } from '@/components/layout/SearchPalette'
 
-type Filter = 'all' | 'gd' | 'tscn' | 'tres' | 'problems'
+/**
+ * Project Explorer. The relations come from Graphify (external engine, Godot
+ * fork) — see server/src/services/graphifyAdapter.ts. This view only searches,
+ * navigates and inspects what Graphify extracted.
+ */
 
-const KIND_ICON = { gd: FileCode2, tscn: Clapperboard, tres: Package, missing: FileQuestion } as const
-const EDGE_LABEL: Record<ExplorerEdge['kind'], string> = {
-  extends: 'extends', preload: 'preload', load: 'load', literal: 'path literal',
-  script: 'script', scene: 'scene', resource: 'resource',
+type Filter = 'all' | ExplorerKind
+
+const KIND_ICON: Record<ExplorerKind, typeof FileCode2> = {
+  file: FileCode2, func: Braces, signal: Zap, class: Box, external: CircleDashed,
+}
+const KIND_LABEL: Record<ExplorerKind, string> = {
+  file: 'File', func: 'Function', signal: 'Signal', class: 'Class', external: 'Engine / unresolved',
+}
+const FILTERS: Filter[] = ['all', 'file', 'func', 'signal', 'class']
+const FILTER_LABEL: Record<ExplorerKind, string> = {
+  file: 'Files', func: 'Functions', signal: 'Signals', class: 'Classes', external: 'Engine',
 }
 const MAX_SIDE = 14
 
-function isAsset(n: ExplorerNode) {
-  return !!n.base?.startsWith('asset')
-}
+const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1)
+const clean = (label: string) => label.replace(/\(signal\)$/, '').replace(/^\./, '')
 
-function scoreNode(n: ExplorerNode, terms: string[]): number {
-  if (!terms.length) return 1
-  const name = n.name.toLowerCase()
-  const p = n.path.toLowerCase()
-  let total = 0
-  for (const t of terms) {
-    let s = 0
-    if (name === t) s = 100
-    else if (name.startsWith(t)) s = 60
-    else if (name.includes(t)) s = 40
-    else if (p.includes(t)) s = 20
-    else if (n.symbols.some(x => x.name.toLowerCase().includes(t))) s = 15
-    if (!s) return 0
-    total += s
-  }
-  return total
+function useDebounced<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value)
+  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t) }, [value, ms])
+  return v
 }
 
 export function ProjectExplorer({ projectId }: { projectId: string }) {
@@ -48,42 +46,32 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [selected, setSelected] = useState<string | null>(null)
   const [history, setHistory] = useState<string[]>([])
-  const [refreshing, setRefreshing] = useState(false)
+  const [building, setBuilding] = useState(false)
+  const debounced = useDebounced(query, 150)
 
-  const { data, isLoading, error } = useQuery({
+  const statusQ = useQuery({
     queryKey: ['explorer', projectId],
     queryFn: () => api.getExplorer(projectId),
-    staleTime: 30_000,
+    staleTime: 10_000,
+    refetchInterval: q => (q.state.data && 'godot' in q.state.data && q.state.data.godot && q.state.data.building ? 2000 : false),
+  })
+  const status = statusQ.data && statusQ.data.godot ? statusQ.data : null
+  const built = !!status?.built
+
+  const searchQ = useQuery({
+    queryKey: ['explorer-search', projectId, debounced, filter, status?.builtAt],
+    queryFn: ({ signal }) => api.searchExplorer(projectId, debounced, filter, signal),
+    enabled: built,
+    placeholderData: prev => prev,
   })
 
-  const index = data && data.godot ? data : null
-
-  const byId = useMemo(() => new Map((index?.nodes ?? []).map(n => [n.id, n])), [index])
-  const incoming = useMemo(() => {
-    const m = new Map<string, ExplorerEdge[]>()
-    for (const e of index?.edges ?? []) (m.get(e.to) ?? m.set(e.to, []).get(e.to)!).push(e)
-    return m
-  }, [index])
-  const outgoing = useMemo(() => {
-    const m = new Map<string, ExplorerEdge[]>()
-    for (const e of index?.edges ?? []) (m.get(e.from) ?? m.set(e.from, []).get(e.from)!).push(e)
-    return m
-  }, [index])
-
-  const results = useMemo(() => {
-    if (!index) return []
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-    const pool = index.nodes.filter(n => {
-      if (isAsset(n)) return false
-      if (filter === 'problems') return n.kind === 'missing' || !!n.error
-      return filter === 'all' || n.kind === filter
-    })
-    return pool
-      .map(n => ({ n, s: scoreNode(n, terms) }))
-      .filter(x => x.s > 0)
-      .sort((a, b) => b.s - a.s || a.n.path.localeCompare(b.n.path))
-      .map(x => x.n)
-  }, [index, query, filter])
+  const detailQ = useQuery({
+    queryKey: ['explorer-node', projectId, selected, status?.builtAt],
+    queryFn: () => api.getExplorerNode(projectId, selected!),
+    enabled: built && !!selected,
+    retry: false,
+  })
+  const detail = selected ? detailQ.data : undefined
 
   const select = useCallback((id: string, push = true) => {
     setSelected(prev => {
@@ -100,66 +88,81 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
     })
   }
 
-  // Selection survives a reindex only when the file still exists.
-  useEffect(() => {
-    if (index && selected && !byId.has(selected)) setSelected(null)
-  }, [index, selected, byId])
-
-  const reindex = async () => {
-    setRefreshing(true)
+  const build = async () => {
+    setBuilding(true)
     try {
-      const fresh = await api.getExplorer(projectId, true)
-      queryClient.setQueryData(['explorer', projectId], fresh)
-      if (fresh.godot) toast.success(`Reindexed ${fresh.nodes.length} files in ${fresh.tookMs} ms`)
+      const r = await api.buildExplorer(projectId)
+      toast.success(`Graphify: ${r.nodes} nodes, ${r.edges} relations from ${r.files} files in ${(r.tookMs / 1000).toFixed(1)}s`)
+      await queryClient.invalidateQueries({ queryKey: ['explorer', projectId] })
     } catch (err: any) {
-      toast.error(err.message || 'Reindex failed')
+      toast.error(err.message || 'Graphify failed')
     } finally {
-      setRefreshing(false)
+      setBuilding(false)
     }
   }
 
-  const openInEditor = (n: ExplorerNode, line?: number) => {
-    if (n.kind === 'missing') return
-    const ext = n.name.includes('.') ? n.name.slice(n.name.lastIndexOf('.') + 1) : ''
-    editor.openFileForProject(projectId, n.path, n.name, ext,
+  const openInEditor = (file: string, line?: number) => {
+    if (!file) return
+    const name = baseName(file)
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''
+    editor.openFileForProject(projectId, file, name, ext,
       line ? { reveal: { line, column: 1, length: 0 } } : undefined)
   }
 
-  const askAgent = (n: ExplorerNode, agent?: 'codex') => {
-    const out = outgoing.get(n.id) ?? []
-    const inn = incoming.get(n.id) ?? []
-    const fmt = (e: ExplorerEdge, other: string) => `- ${EDGE_LABEL[e.kind]} ${other}${e.resolved ? '' : ' (FILE NOT FOUND)'} — ${e.from === n.id ? n.path : e.from}:${e.line}`
+  const askAgent = (d: ExplorerNodeDetail, agent?: 'codex') => {
+    const fmt = (nb: ExplorerNeighbor, dir: 'to' | 'from') =>
+      `- ${nb.edge.relation}${nb.edge.confidence === 'INFERRED' ? ' (inferred)' : ''} ${dir === 'to' ? '→' : '←'} ${nb.node.label}${nb.node.file ? ` [${nb.node.file}${nb.node.line ? ':' + nb.node.line : ''}]` : ''}`
+    const n = d.node
     const prompt = [
-      `Investigate \`${n.path}\` in this Godot project.`,
+      `Investigate \`${n.label}\`${n.file ? ` in \`${n.file}${n.line ? ':' + n.line : ''}\`` : ''} (${KIND_LABEL[n.kind].toLowerCase()}) in this Godot project.`,
       '',
-      'Context taken from the Project Explorer index (derived from the files, verified relations only):',
-      n.symbols.length ? `Symbols: ${n.symbols.slice(0, 20).map(s => `${s.kind} ${s.name}`).join(', ')}` : '',
-      n.base ? `Extends engine class: ${n.base}` : '',
+      'Context from the Project Explorer (relations extracted by Graphify; "inferred" ones are name-based guesses and may point at the wrong same-named function):',
       '',
-      `Depends on (${out.length}):`,
-      ...out.slice(0, 30).map(e => fmt(e, e.to)),
+      `Depends on (${d.outgoing.length}):`,
+      ...d.outgoing.slice(0, 30).map(x => fmt(x, 'to')),
       '',
-      `Referenced by (${inn.length}):`,
-      ...inn.slice(0, 30).map(e => fmt(e, e.from)),
+      `Referenced by (${d.incoming.length}):`,
+      ...d.incoming.slice(0, 30).map(x => fmt(x, 'from')),
       '',
-      'Read these files before answering. Explain what this file does and how the relations above work together. Do not change anything until I ask.',
-    ].filter(l => l !== '' || true).join('\n')
+      'Read the real code before answering and confirm any inferred relation. Explain what this does and how the relations above work together. Do not change anything until I ask.',
+    ].join('\n')
     window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
       detail: { projectId, type: 'claude', prompt, ...(agent ? { agent } : {}) },
     }))
-    toast.success(`Sent ${n.name} to ${agent === 'codex' ? 'Codex' : 'Claude'}`)
+    toast.success(`Sent ${clean(n.label)} to ${agent === 'codex' ? 'Codex' : 'Claude'}`)
   }
 
-  if (isLoading) return <Centered>Indexing project…</Centered>
-  if (error) return <Centered>Could not index: {(error as Error).message}</Centered>
-  if (!data) return null
-  if (!data.godot) {
+  if (statusQ.isLoading) return <Centered>Loading…</Centered>
+  if (statusQ.error) return <Centered>Could not load: {(statusQ.error as Error).message}</Centered>
+  if (!statusQ.data) return null
+  if (!statusQ.data.godot) {
     return <Centered>No <code className="mx-1 font-mono">project.godot</code> in this project. The Project Explorer reads Godot projects.</Centered>
   }
-  if (!index) return null
+  if (!status) return null
 
-  const sel = selected ? byId.get(selected) : undefined
-  const s = index.summary
+  if (!built) {
+    const busy = building || status.building
+    return (
+      <Centered>
+        <div className="max-w-md space-y-3">
+          <p>The Project Explorer reads a relation graph built by <b>Graphify</b> (Godot fork) from your <code>.gd</code>, <code>.tscn</code> and <code>.tres</code> files.</p>
+          {!status.installed ? (
+            <p className="text-warning">Graphify is not installed. Run <code className="font-mono">pnpm graphify:setup</code> in the Shipyard folder, then come back.</p>
+          ) : (
+            <button onClick={build} disabled={busy}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-60" data-testid="explorer-build">
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              {busy ? 'Analyzing project…' : 'Analyze project'}
+            </button>
+          )}
+          <p className="text-[11px]">Your checkout is not touched: files are copied to Shipyard's data folder first.</p>
+        </div>
+      </Centered>
+    )
+  }
+
+  const results = searchQ.data?.nodes ?? []
+  const s = status.summary!
 
   return (
     <div className="flex h-full min-h-0 w-full">
@@ -172,13 +175,13 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
               autoFocus
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search files and symbols"
+              placeholder="Search files, functions, signals"
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
               data-testid="explorer-search"
             />
           </div>
           <div className="flex flex-wrap gap-1">
-            {(['all', 'gd', 'tscn', 'tres', 'problems'] as Filter[]).map(f => (
+            {FILTERS.map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -187,13 +190,13 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
                   filter === f ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                {f === 'all' ? 'All' : f === 'problems' ? `Problems ${s.missing + s.errors}` : `.${f} ${s[f]}`}
+                {f === 'all' ? 'All' : FILTER_LABEL[f]}
               </button>
             ))}
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-dark" data-testid="explorer-results">
-          {results.slice(0, 300).map(n => {
+          {results.map(n => {
             const Icon = KIND_ICON[n.kind]
             return (
               <button
@@ -204,18 +207,18 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
                   selected === n.id && 'bg-accent',
                 )}
               >
-                <Icon className={cn('mt-0.5 h-3 w-3 shrink-0', n.kind === 'missing' ? 'text-destructive' : 'text-muted-foreground')} />
+                <Icon className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
                 <span className="min-w-0">
-                  <span className="block truncate text-xs">{n.name}</span>
-                  <span className="block truncate text-[10px] text-muted-foreground">{n.dir || '.'}</span>
+                  <span className="block truncate text-xs">{clean(n.label)}</span>
+                  <span className="block truncate text-[10px] text-muted-foreground">{n.file || KIND_LABEL[n.kind]}</span>
                 </span>
               </button>
             )
           })}
-          {results.length > 300 && (
-            <p className="px-2 py-2 text-[10px] text-muted-foreground">Showing 300 of {results.length}. Narrow the search.</p>
+          {searchQ.data && searchQ.data.total > results.length && (
+            <p className="px-2 py-2 text-[10px] text-muted-foreground">Showing {results.length} of {searchQ.data.total}. Narrow the search.</p>
           )}
-          {!results.length && <p className="px-2 py-3 text-xs text-muted-foreground">No match.</p>}
+          {searchQ.data && !results.length && <p className="px-2 py-3 text-xs text-muted-foreground">No match.</p>}
           {query.trim() && (
             <button
               onClick={() => openContentSearch(query.trim())}
@@ -226,54 +229,40 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
           )}
         </div>
         <div className="flex items-center justify-between border-t px-2 py-1.5 text-[10px] text-muted-foreground">
-          <span title={`Skipped: ${s.skippedDirs.join(', ') || 'none'}`}>
-            {s.gd} gd · {s.tscn} tscn · {s.tres} tres · {s.edges} relations
-            {s.unresolved > 0 && <span className="text-warning"> · {s.unresolved} unresolved</span>}
+          <span title={Object.entries(s.relations).map(([k, v]) => `${k} ${v}`).join(' · ')}>
+            {s.files} files · {s.edges} relations
           </span>
-          <button onClick={reindex} disabled={refreshing} title={`Indexed ${new Date(index.indexedAt).toLocaleTimeString()} in ${index.tookMs} ms`}
+          <button onClick={build} disabled={building || status.building}
+            title={`Analyzed ${new Date(status.builtAt!).toLocaleString()}. Re-run after code changes.`}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
-            <RefreshCw className={cn('h-3 w-3', refreshing && 'animate-spin')} /> Reindex
+            <RefreshCw className={cn('h-3 w-3', (building || status.building) && 'animate-spin')} /> Re-analyze
           </button>
         </div>
       </aside>
 
       {/* ── Graph ── */}
       <section className="relative min-w-0 flex-1 overflow-hidden">
-        {sel ? (
-          <RelationGraph
-            node={sel}
-            byId={byId}
-            incoming={incoming.get(sel.id) ?? []}
-            outgoing={outgoing.get(sel.id) ?? []}
-            onSelect={id => select(id)}
-            canBack={history.length > 0}
-            onBack={back}
-          />
+        {selected && detail ? (
+          <RelationGraph detail={detail} onSelect={id => select(id)} canBack={history.length > 0} onBack={back} />
+        ) : selected && detailQ.isLoading ? (
+          <Centered><Loader2 className="h-4 w-4 animate-spin" /></Centered>
         ) : (
           <Centered>
-            Select a file to see what it depends on and what references it.
+            Select a file, function or signal to see what it depends on and what references it.
             <span className="mt-2 block text-[11px]">Try searching “humus”.</span>
           </Centered>
         )}
       </section>
 
       {/* ── Inspector ── */}
-      <aside className="w-[330px] shrink-0 overflow-y-auto border-l bg-card/40 scrollbar-dark" data-testid="explorer-inspector">
-        {sel ? (
-          <Inspector
-            node={sel}
-            byId={byId}
-            incoming={incoming.get(sel.id) ?? []}
-            outgoing={outgoing.get(sel.id) ?? []}
-            onSelect={id => select(id)}
-            onOpen={openInEditor}
-            onAsk={askAgent}
-          />
+      <aside className="w-[340px] shrink-0 overflow-y-auto border-l bg-card/40 scrollbar-dark" data-testid="explorer-inspector">
+        {detail ? (
+          <Inspector detail={detail} onSelect={id => select(id)} onOpen={openInEditor} onAsk={askAgent} />
         ) : (
-          <p className="p-3 text-xs text-muted-foreground">
-            Relations come from literal references in the files (<code>extends</code>, <code>preload</code>,{' '}
-            <code>load</code>, <code>[ext_resource]</code>, <code>res://</code> strings). Each one shows its file and line.
-          </p>
+          <div className="space-y-2 p-3 text-xs text-muted-foreground">
+            <p>Relations are extracted statically by Graphify. <b>Extracted</b> ones are read directly from the code; <b>inferred</b> ones are matched by name and can be wrong.</p>
+            <p>Dynamic loads (<code>load(variable)</code>, directory scans) and shaders are not seen.</p>
+          </div>
         )}
       </aside>
     </div>
@@ -284,61 +273,55 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">{children}</div>
 }
 
-const EDGE_COLOR: Record<ExplorerEdge['kind'], string> = {
-  extends: 'hsl(var(--warning))', preload: 'hsl(var(--primary))', load: 'hsl(var(--primary))',
-  script: 'hsl(var(--muted-foreground))', scene: 'hsl(var(--muted-foreground))',
-  resource: 'hsl(var(--muted-foreground))', literal: 'hsl(var(--border))',
+/** One row per neighbour; several relations to the same node collapse to one. */
+function groupNeighbors(list: ExplorerNeighbor[], side: 'to' | 'from', selfId: string) {
+  const m = new Map<string, { node: ExplorerNode; relations: Set<string>; inferred: boolean }>()
+  for (const nb of list) {
+    if (nb.node.id === selfId) continue
+    const cur = m.get(nb.node.id) ?? { node: nb.node, relations: new Set<string>(), inferred: true }
+    cur.relations.add(nb.edge.relation)
+    if (nb.edge.confidence === 'EXTRACTED') cur.inferred = false
+    m.set(nb.node.id, cur)
+  }
+  void side
+  return [...m.values()]
 }
 
-function RelationGraph({ node, byId, incoming, outgoing, onSelect, canBack, onBack }: {
-  node: ExplorerNode
-  byId: Map<string, ExplorerNode>
-  incoming: ExplorerEdge[]
-  outgoing: ExplorerEdge[]
+function RelationGraph({ detail, onSelect, canBack, onBack }: {
+  detail: ExplorerNodeDetail
   onSelect: (id: string) => void
   canBack: boolean
   onBack: () => void
 }) {
-  // One row per neighbour (several edges to the same file collapse to one,
-  // labelled with each kind). The inspector lists every edge with its line.
-  const group = (edges: ExplorerEdge[], pick: (e: ExplorerEdge) => string) => {
-    const m = new Map<string, Set<ExplorerEdge['kind']>>()
-    for (const e of edges) {
-      const id = pick(e)
-      if (id === node.id) continue
-      ;(m.get(id) ?? m.set(id, new Set()).get(id)!).add(e.kind)
-    }
-    return [...m.entries()]
-  }
-  const ins = group(incoming, e => e.from)
-  const outs = group(outgoing, e => e.to)
+  const node = detail.node
+  const ins = useMemo(() => groupNeighbors(detail.incoming, 'from', node.id), [detail, node.id])
+  const outs = useMemo(() => groupNeighbors(detail.outgoing, 'to', node.id), [detail, node.id])
 
   const rowH = 34
   const rows = Math.max(1, Math.min(MAX_SIDE, Math.max(ins.length, outs.length)))
   const H = rows * rowH + 40
   const W = 900
   const cx = W / 2, cy = H / 2
-  const boxW = 230
+  const boxW = 250
   const ys = (count: number, i: number) => (H - Math.min(count, MAX_SIDE) * rowH) / 2 + i * rowH + rowH / 2
 
-  const NodeBox = ({ id, x, y, kinds, center }: { id: string; x: number; y: number; kinds?: Set<ExplorerEdge['kind']>; center?: boolean }) => {
-    const n = byId.get(id)!
-    const missing = n.kind === 'missing'
+  const NodeBox = ({ n, x, y, relations, inferred, center }: { n: ExplorerNode; x: number; y: number; relations?: Set<string>; inferred?: boolean; center?: boolean }) => {
+    const label = clean(n.label)
     return (
-      <g transform={`translate(${x},${y})`} onClick={() => !center && onSelect(id)} className={center ? '' : 'cursor-pointer'} data-testid={center ? 'graph-center' : 'graph-node'} data-id={id}>
+      <g transform={`translate(${x},${y})`} onClick={() => !center && onSelect(n.id)} className={center ? '' : 'cursor-pointer'} data-testid={center ? 'graph-center' : 'graph-node'} data-id={n.id}>
         <rect x={-boxW / 2} y={-13} width={boxW} height={26} rx={5}
           fill={center ? 'hsl(var(--accent))' : 'hsl(var(--card))'}
-          stroke={missing ? 'hsl(var(--destructive))' : center ? 'hsl(var(--primary))' : 'hsl(var(--border))'}
-          strokeDasharray={missing ? '4 3' : undefined} />
+          stroke={center ? 'hsl(var(--primary))' : 'hsl(var(--border))'}
+          strokeDasharray={inferred ? '4 3' : undefined} />
         <text x={-boxW / 2 + 8} y={4} fontSize={11} fill="hsl(var(--foreground))">
-          {n.name.length > 30 ? n.name.slice(0, 29) + '…' : n.name}
+          {label.length > 26 ? label.slice(0, 25) + '…' : label}
         </text>
-        {kinds && (
+        {relations && (
           <text x={boxW / 2 - 8} y={4} fontSize={9} textAnchor="end" fill="hsl(var(--muted-foreground))">
-            {[...kinds].map(k => EDGE_LABEL[k]).join(' · ')}
+            {[...relations].join(' · ')}
           </text>
         )}
-        <title>{n.path}</title>
+        <title>{`${n.label}${n.file ? ' — ' + n.file : ''}`}</title>
       </g>
     )
   }
@@ -348,6 +331,7 @@ function RelationGraph({ node, byId, incoming, outgoing, onSelect, canBack, onBa
     const mx = (x1 + x2) / 2
     return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`
   }
+  const stroke = (inferred: boolean) => (inferred ? 'hsl(var(--muted-foreground))' : 'hsl(var(--primary))')
 
   return (
     <div className="flex h-full flex-col">
@@ -355,105 +339,117 @@ function RelationGraph({ node, byId, incoming, outgoing, onSelect, canBack, onBa
         <button onClick={onBack} disabled={!canBack} className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent disabled:opacity-30">
           <ArrowLeft className="h-3 w-3" /> Back
         </button>
-        <span className="truncate font-mono">{node.id}</span>
+        <span className="truncate font-mono">{node.file || node.label}</span>
         <span className="ml-auto flex gap-3">
           <span>← referenced by {ins.length}</span><span>depends on {outs.length} →</span>
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto scrollbar-dark">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minHeight: H, maxHeight: 'none' }} role="img" aria-label="Relation graph">
-          {ins.slice(0, MAX_SIDE).map(([id], i) => {
-            const kinds = [...(group(incoming, e => e.from).find(x => x[0] === id)?.[1] ?? [])]
-            return <path key={'ei' + id} d={edgePath(leftX + boxW / 2, ys(ins.length, i), cx - boxW / 2, cy)} fill="none" stroke={EDGE_COLOR[kinds[0]]} strokeWidth={1.2} opacity={0.8} />
-          })}
-          {outs.slice(0, MAX_SIDE).map(([id, kinds], i) => (
-            <path key={'eo' + id} d={edgePath(cx + boxW / 2, cy, rightX - boxW / 2, ys(outs.length, i))} fill="none"
-              stroke={EDGE_COLOR[[...kinds][0]]} strokeWidth={1.2} opacity={0.8}
-              strokeDasharray={byId.get(id)?.kind === 'missing' ? '4 3' : undefined} />
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minHeight: H }} role="img" aria-label="Relation graph">
+          {ins.slice(0, MAX_SIDE).map((x, i) => (
+            <path key={'ei' + x.node.id} d={edgePath(leftX + boxW / 2, ys(ins.length, i), cx - boxW / 2, cy)} fill="none"
+              stroke={stroke(x.inferred)} strokeWidth={1.2} opacity={0.8} strokeDasharray={x.inferred ? '4 3' : undefined} />
           ))}
-          {ins.slice(0, MAX_SIDE).map(([id, kinds], i) => <NodeBox key={'ni' + id} id={id} x={leftX} y={ys(ins.length, i)} kinds={kinds} />)}
-          {outs.slice(0, MAX_SIDE).map(([id, kinds], i) => <NodeBox key={'no' + id} id={id} x={rightX} y={ys(outs.length, i)} kinds={kinds} />)}
-          <NodeBox id={node.id} x={cx} y={cy} center />
+          {outs.slice(0, MAX_SIDE).map((x, i) => (
+            <path key={'eo' + x.node.id} d={edgePath(cx + boxW / 2, cy, rightX - boxW / 2, ys(outs.length, i))} fill="none"
+              stroke={stroke(x.inferred)} strokeWidth={1.2} opacity={0.8} strokeDasharray={x.inferred ? '4 3' : undefined} />
+          ))}
+          {ins.slice(0, MAX_SIDE).map((x, i) => <NodeBox key={'ni' + x.node.id} n={x.node} x={leftX} y={ys(ins.length, i)} relations={x.relations} inferred={x.inferred} />)}
+          {outs.slice(0, MAX_SIDE).map((x, i) => <NodeBox key={'no' + x.node.id} n={x.node} x={rightX} y={ys(outs.length, i)} relations={x.relations} inferred={x.inferred} />)}
+          <NodeBox n={node} x={cx} y={cy} center />
           {ins.length > MAX_SIDE && <text x={leftX} y={H - 6} textAnchor="middle" fontSize={10} fill="hsl(var(--muted-foreground))">+{ins.length - MAX_SIDE} more in the inspector</text>}
           {outs.length > MAX_SIDE && <text x={rightX} y={H - 6} textAnchor="middle" fontSize={10} fill="hsl(var(--muted-foreground))">+{outs.length - MAX_SIDE} more in the inspector</text>}
         </svg>
-        {!ins.length && !outs.length && <p className="px-3 pb-3 text-xs text-muted-foreground">No verified relations for this file.</p>}
+        <p className="px-3 pb-3 text-[10px] text-muted-foreground">Solid = read from the code · dashed = inferred by name.</p>
+        {!ins.length && !outs.length && <p className="px-3 pb-3 text-xs text-muted-foreground">No relations found for this node.</p>}
       </div>
     </div>
   )
 }
 
-function Inspector({ node, byId, incoming, outgoing, onSelect, onOpen, onAsk }: {
-  node: ExplorerNode
-  byId: Map<string, ExplorerNode>
-  incoming: ExplorerEdge[]
-  outgoing: ExplorerEdge[]
+function Inspector({ detail, onSelect, onOpen, onAsk }: {
+  detail: ExplorerNodeDetail
   onSelect: (id: string) => void
-  onOpen: (n: ExplorerNode, line?: number) => void
-  onAsk: (n: ExplorerNode, agent?: 'codex') => void
+  onOpen: (file: string, line?: number) => void
+  onAsk: (d: ExplorerNodeDetail, agent?: 'codex') => void
 }) {
-  const missing = node.kind === 'missing'
-  const Row = ({ e, otherId }: { e: ExplorerEdge; otherId: string }) => {
-    const other = byId.get(otherId)
+  const { node } = detail
+  const canOpen = !!node.file
+  const Row = ({ nb, other }: { nb: ExplorerNeighbor; other: 'from' | 'to' }) => {
+    const target = nb.node
+    const inferred = nb.edge.confidence !== 'EXTRACTED'
     return (
       <div className="border-b px-3 py-1.5 last:border-0">
-        <button onClick={() => onSelect(otherId)} className="flex w-full items-center gap-1.5 text-left text-xs hover:text-foreground">
-          <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">{EDGE_LABEL[e.kind]}</span>
-          <span className={cn('truncate', !e.resolved && 'text-destructive')}>{other?.name ?? otherId}</span>
-          {!e.resolved && <AlertTriangle className="h-3 w-3 shrink-0 text-destructive" />}
+        <button onClick={() => onSelect(target.id)} className="flex w-full items-center gap-1.5 text-left text-xs hover:text-foreground">
+          <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">{nb.edge.relation.replace('_', ' ')}</span>
+          <span className="truncate">{clean(target.label)}</span>
+          {nb.edge.count > 1 && <span className="text-[10px] text-muted-foreground">×{nb.edge.count}</span>}
+          {inferred && <span className="ml-auto rounded border border-dashed px-1 text-[9px] text-warning" title="Matched by name, not read from the code. Verify before trusting.">inferred</span>}
         </button>
-        <button
-          onClick={() => { const src = byId.get(e.from); if (src) onOpen(src, e.line) }}
-          title="Open the source line in the editor"
-          className="mt-0.5 block w-full truncate text-left font-mono text-[10px] text-muted-foreground hover:text-foreground"
-        >
-          {byId.get(e.from)?.path}:{e.line} — {e.snippet}
-        </button>
+        <div className="mt-0.5 flex gap-2 text-[10px] text-muted-foreground">
+          {target.file && (
+            <button onClick={() => onOpen(target.file, target.line || undefined)} title="Open the target in the editor" className="truncate font-mono hover:text-foreground">
+              {target.file}{target.line ? `:${target.line}` : ''}
+            </button>
+          )}
+          {nb.edge.file && nb.edge.line > 0 && (
+            <button onClick={() => onOpen(nb.edge.file, nb.edge.line)} title={`Open where this relation is declared (${other === 'from' ? 'caller' : 'call site'})`}
+              className="ml-auto shrink-0 hover:text-foreground">
+              @{baseName(nb.edge.file)}:{nb.edge.line}
+            </button>
+          )}
+        </div>
       </div>
     )
   }
   return (
     <div className="text-xs">
       <div className="space-y-1 border-b p-3">
-        <div className="truncate text-sm font-medium">{node.name}</div>
-        <div className="break-all font-mono text-[10px] text-muted-foreground">{node.id}</div>
-        {node.base && !isAsset(node) && <div className="text-[11px] text-muted-foreground">extends engine class <code>{node.base}</code></div>}
-        {missing && <div className="flex items-center gap-1 text-destructive"><AlertTriangle className="h-3 w-3" /> File does not exist; referenced below.</div>}
-        {node.error && <div className="flex items-center gap-1 text-warning"><AlertTriangle className="h-3 w-3" /> {node.error}</div>}
+        <div className="flex items-center gap-1.5">
+          <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">{KIND_LABEL[node.kind]}</span>
+          <span className="truncate text-sm font-medium">{clean(node.label)}</span>
+        </div>
+        {node.file && <div className="break-all font-mono text-[10px] text-muted-foreground">{node.file}{node.line ? `:${node.line}` : ''}</div>}
+        {detail.container && (
+          <button onClick={() => onSelect(detail.container!.id)} className="text-[11px] text-muted-foreground hover:text-foreground">
+            in <span className="font-mono">{detail.container.label}</span>
+          </button>
+        )}
+        {!node.file && <div className="text-[11px] text-muted-foreground">Engine class or reference Graphify could not resolve to a project file.</div>}
         <div className="flex flex-wrap gap-1.5 pt-1">
-          <button disabled={missing} onClick={() => onOpen(node)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40" data-testid="open-in-editor">
+          <button disabled={!canOpen} onClick={() => onOpen(node.file, node.line || undefined)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40" data-testid="open-in-editor">
             <Code2 className="h-3 w-3" /> Open in editor
           </button>
-          <button disabled={missing} onClick={() => onAsk(node)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40" data-testid="ask-claude">
+          <button onClick={() => onAsk(detail)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent" data-testid="ask-claude">
             <Sparkles className="h-3 w-3" /> Ask Claude
           </button>
-          <button disabled={missing} onClick={() => onAsk(node, 'codex')} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40">
+          <button onClick={() => onAsk(detail, 'codex')} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent">
             <Sparkles className="h-3 w-3" /> Ask Codex
           </button>
         </div>
       </div>
 
-      {node.symbols.length > 0 && (
-        <Section title={`Symbols ${node.symbols.length}`}>
-          <div className="max-h-40 overflow-y-auto px-3 pb-2 scrollbar-dark">
-            {node.symbols.slice(0, 80).map((s, i) => (
-              <button key={i} onClick={() => onOpen(node, s.line)} className="flex w-full gap-2 py-0.5 text-left hover:text-foreground">
-                <span className="w-16 shrink-0 text-[10px] uppercase text-muted-foreground">{s.kind}</span>
-                <span className="truncate font-mono text-[11px]">{s.name}</span>
-                <span className="ml-auto text-[10px] text-muted-foreground">{s.line}</span>
+      {detail.contains.length > 0 && (
+        <Section title={`Contains ${detail.contains.length}`}>
+          <div className="max-h-44 overflow-y-auto px-3 pb-2 scrollbar-dark">
+            {detail.contains.slice(0, 300).map(c => (
+              <button key={c.id} onClick={() => onSelect(c.id)} className="flex w-full gap-2 py-0.5 text-left hover:text-foreground">
+                <span className="w-12 shrink-0 text-[10px] uppercase text-muted-foreground">{c.kind === 'func' ? 'func' : c.kind}</span>
+                <span className="truncate font-mono text-[11px]">{clean(c.label)}</span>
+                <span className="ml-auto text-[10px] text-muted-foreground">{c.line || ''}</span>
               </button>
             ))}
           </div>
         </Section>
       )}
 
-      <Section title={<><ArrowRight className="h-3 w-3" /> Depends on {outgoing.length}</>}>
-        {outgoing.map((e, i) => <Row key={i} e={e} otherId={e.to} />)}
-        {!outgoing.length && <p className="px-3 pb-2 text-muted-foreground">Nothing.</p>}
+      <Section title={<><ArrowRight className="h-3 w-3" /> Depends on {detail.outgoing.length}</>}>
+        {detail.outgoing.map((nb, i) => <Row key={i} nb={nb} other="to" />)}
+        {!detail.outgoing.length && <p className="px-3 pb-2 text-muted-foreground">Nothing.</p>}
       </Section>
-      <Section title={<><ArrowLeftFromLine className="h-3 w-3" /> Referenced by {incoming.length}</>}>
-        {incoming.map((e, i) => <Row key={i} e={e} otherId={e.from} />)}
-        {!incoming.length && <p className="px-3 pb-2 text-muted-foreground">Nothing references this file directly.</p>}
+      <Section title={<><ArrowLeftFromLine className="h-3 w-3" /> Referenced by {detail.incoming.length}</>}>
+        {detail.incoming.map((nb, i) => <Row key={i} nb={nb} other="from" />)}
+        {!detail.incoming.length && <p className="px-3 pb-2 text-muted-foreground">Nothing references this directly.</p>}
       </Section>
     </div>
   )

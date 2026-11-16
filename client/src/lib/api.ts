@@ -349,22 +349,29 @@ export interface ContentSearchResponse {
   elapsedMs: number
 }
 
-export interface ExplorerSymbol { name: string; kind: 'class' | 'func' | 'signal' | 'id' | 'title' | 'script_class'; line: number }
+export type ExplorerKind = 'file' | 'func' | 'signal' | 'class' | 'external'
 export interface ExplorerNode {
-  id: string; kind: 'gd' | 'tscn' | 'tres' | 'missing'; name: string; path: string; dir: string
-  size: number; base?: string; symbols: ExplorerSymbol[]; error?: string
+  id: string; label: string; kind: ExplorerKind
+  file: string; line: number; community: number
 }
 export interface ExplorerEdge {
-  from: string; to: string; line: number; snippet: string; resolved: boolean
-  kind: 'extends' | 'preload' | 'load' | 'literal' | 'script' | 'scene' | 'resource'
+  from: string; to: string; relation: string
+  confidence: 'EXTRACTED' | 'INFERRED' | string
+  file: string; line: number; count: number
+}
+export interface ExplorerNeighbor { edge: ExplorerEdge; node: ExplorerNode }
+export interface ExplorerNodeDetail {
+  node: ExplorerNode
+  outgoing: ExplorerNeighbor[]; incoming: ExplorerNeighbor[]
+  contains: ExplorerNode[]; container?: ExplorerNode
 }
 export type ExplorerResponse =
   | { godot: false; root: string }
   | {
-      godot: true; root: string; indexedAt: string; tookMs: number
-      nodes: ExplorerNode[]; edges: ExplorerEdge[]
-      summary: { gd: number; tscn: number; tres: number; missing: number; edges: number; unresolved: number; errors: number; skippedDirs: string[] }
+      godot: true; installed: boolean; building: boolean; built: boolean; builtAt?: string
+      summary?: { nodes: number; edges: number; files: number; relations: Record<string, number>; confidence: Record<string, number> }
     }
+export interface ExplorerBuildResult { files: number; nodes: number; edges: number; tookMs: number }
 
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { timeout, ...fetchOptions } = options || {};
@@ -448,8 +455,13 @@ export interface AiBackendStatus {
 }
 
 export const api = {
-  getExplorer: (projectId: string, refresh = false) =>
-    request<ExplorerResponse>(`/projects/${projectId}/explorer${refresh ? '?refresh=1' : ''}`, { timeout: 60000 }),
+  getExplorer: (projectId: string) => request<ExplorerResponse>(`/projects/${projectId}/explorer`),
+  buildExplorer: (projectId: string) =>
+    request<ExplorerBuildResult>(`/projects/${projectId}/explorer/build`, { method: 'POST', timeout: 11 * 60_000 }),
+  searchExplorer: (projectId: string, q: string, kind: string, signal?: AbortSignal) =>
+    request<{ total: number; nodes: ExplorerNode[] }>(`/projects/${projectId}/explorer/search?q=${encodeURIComponent(q)}&kind=${kind}`, { signal }),
+  getExplorerNode: (projectId: string, node: string) =>
+    request<ExplorerNodeDetail>(`/projects/${projectId}/explorer/node?node=${encodeURIComponent(node)}`),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

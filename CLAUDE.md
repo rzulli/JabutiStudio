@@ -44,6 +44,7 @@ server/src/
 data/           # Persistencia (auto-criado)
   projects.json, settings.json, ai-config.json, .claude-key,   # claude.json = legado, migrado
   mcp-config.json, mcp-auth.json, server.log,
+  graphify/{src,venv,projects/{id}/tree},  # motor do Project Explorer (pnpm graphify:setup)
   claude-hooks/{sessionId}.json,   # settings de hooks por sessao Claude (efemero)
   sync-config.json,                # v3: providers (creds globais) + projects[id][provider][milestoneId]
   deploy-config.json,              # token Railway (cifrado) + link por projeto
@@ -589,6 +590,44 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - Tools read-only levam `annotations.readOnlyHint`; destrutivas, `destructiveHint`
 - Ao adicionar tool: registrar em `MCP_TOOLS` **e** no `handleToolCall`, e atualizar
   a lista de permissoes da tela de consentimento OAuth em `routes/mcp.ts`
+
+### Project Explorer (projetos Godot, motor = Graphify)
+- Aba **Explorer** do Workspace (`components/explorer/ProjectExplorer.tsx`): busca de
+  arquivos/funcoes/sinais/classes, subgrafo ego navegavel (quem chama / quem e
+  chamado) e inspector de relacoes. Abrir no editor leva ao arquivo **e a linha**
+  (`openFileForProject` + `reveal`); "Ask Claude/Codex" manda o no selecionado e
+  suas relacoes como prompt (`shipyard:open-terminal`)
+- **Nao existe indexador GDScript proprio.** O motor e o fork
+  https://github.com/hidalgob/graphify-godot, externo: `pnpm graphify:setup`
+  (`scripts/setup-graphify.mjs`) instala em `data/graphify/{src,venv}`;
+  `SHIPYARD_GRAPHIFY_PYTHON` aponta para outro interpretador. O Shipyard so roda
+  `python -I -m graphify update` e le o `graph.json` (`services/graphifyAdapter.ts`)
+- **O checkout nunca e tocado**: `.gd/.tscn/.tres` + `project.godot` sao copiados
+  para `data/graphify/projects/{id}/tree` (sem `addons/`, `.godot/`, `worktrees/`,
+  `artifacts/`, `release/`, `playtest_data/`, build) e o Graphify roda la
+- A analise e **manual** (botao "Analyze project" / "Re-analyze"; ~25 s no PNMG,
+  1440 arquivos, 7,9 mil nos, 22,8 mil relacoes). O server guarda o grafo em
+  memoria (por mtime do `graph.json`) e responde `explorer`, `explorer/build`
+  (POST), `explorer/search`, `explorer/node`
+- **`source`/`target` do graph.json vem trocados em ~metade das arestas**
+  (`RefCounted -inherits-> X.gd`, `calls` invertidos). A direcao real esta em
+  `_src`/`_tgt`: o adapter usa **so esses**. Nao voltar a ler `source`/`target`
+- Arestas duplicadas (mesmo from/to/relation) viram uma com `count`; `contains`
+  e `method` viram a lista "Contains" do inspector, nao entram no grafo
+- Limitacoes conhecidas da extracao (nao resolvidas de proposito):
+  - ~38% das arestas sao `INFERRED`: `calls` casados pelo **nome** da funcao.
+    Nomes comuns (`_run()` x312, `_check()`, `_ready()`) apontam para o homonimo
+    errado, sobretudo `tests/`. A UI marca "inferred" (tracejado) e o prompt do
+    agente avisa para confirmar no codigo
+  - Chamada entre arquivos via autoload/instancia (`Global.foo()`) so aparece
+    como `calls` inferido; `signal.connect` entre arquivos nao vira `connected_to`
+  - `load(variavel)`, varredura de pasta, `get_node()` por string, `.gdshader` e
+    `.import` nao sao vistos; `.tres` de dados (ex.: `perks_v5/*.tres`) aparecem
+    como nos soltos
+  - Scripts em `addons/` ficam fora do grafo; uma ref a eles aparece como no
+    "externo" (nome do `res://...` entre aspas)
+  - Escopo de classe interna e por nome global (pode colidir com funcao de topo)
+  - O grafo e um retrato: muda depois de editar codigo ate re-analisar
 
 ### Cache e Invalidacao (react-query)
 - `staleTime` default: 3s (`main.tsx`) — evita refetch de tudo a cada foco de janela
