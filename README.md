@@ -4,6 +4,13 @@
 
 <h1 align="center">Shipyard</h1>
 
+> **JabutiStudio** is a fork of Shipyard (Apache-2.0, upstream © Shipyard Contributors)
+> built for the Estúdio Jabuti. It is not affiliated with the upstream project and
+> does not use its releases or auto-update feed. See [ARCHITECTURE.md](ARCHITECTURE.md),
+> [ROADMAP.md](ROADMAP.md) and [UPSTREAM.md](UPSTREAM.md). The text below describes
+> upstream Shipyard; where it mentions downloads, releases or the auto-updater, those
+> do not apply to this fork.
+
 <p align="center">
   <strong>A local-first command center for software projects.</strong><br />
   Projects, tasks, Git, terminals, files, and coding agents in one focused workspace.
