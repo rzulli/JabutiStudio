@@ -13,6 +13,7 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { EditorSelection, type Extension } from '@codemirror/state'
+import { gdscript, godotResource } from '@/lib/godotLanguage'
 import type { EditorReveal } from '@/hooks/useEditorTabs'
 
 interface CodeMirrorEditorProps {
@@ -50,6 +51,10 @@ function getLanguageExtension(ext: string): Extension[] {
     '.yml': () => yaml(),
     '.xml': () => xml(),
     '.svg': () => xml(),
+    // Highlighting only (token-level), see lib/godotLanguage.ts
+    '.gd': () => gdscript,
+    '.tscn': () => godotResource,
+    '.tres': () => godotResource,
   }
   const factory = map[ext]
   return factory ? [factory()] : []

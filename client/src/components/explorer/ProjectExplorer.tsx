@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { DesignDecisions } from './DesignDecisions'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   Search, RefreshCw, FileCode2, Zap, Box, CircleDashed, Braces, ArrowLeft,
-  Code2, Sparkles, TextSearch, ArrowRight, ArrowLeftFromLine, Loader2,
+  Code2, Sparkles, TextSearch, ArrowRight, ArrowLeftFromLine, Loader2, PanelRight, AlertTriangle,
 } from 'lucide-react'
 import { api, type ExplorerNode, type ExplorerNeighbor, type ExplorerNodeDetail, type ExplorerKind } from '@/lib/api'
+import {
+  type Filter, KIND_LABEL, FILTER_LABEL, cleanLabel as clean, listState, listStateMessage,
+  stalenessLabel, buildAgentPrompt, extensionOf,
+} from '@/lib/explorerView'
 import { cn } from '@/lib/utils'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
 import { openContentSearch } from '@/components/layout/SearchPalette'
@@ -16,22 +21,13 @@ import { openContentSearch } from '@/components/layout/SearchPalette'
  * navigates and inspects what Graphify extracted.
  */
 
-type Filter = 'all' | ExplorerKind
-
 const KIND_ICON: Record<ExplorerKind, typeof FileCode2> = {
   file: FileCode2, func: Braces, signal: Zap, class: Box, external: CircleDashed,
 }
-const KIND_LABEL: Record<ExplorerKind, string> = {
-  file: 'File', func: 'Function', signal: 'Signal', class: 'Class', external: 'Engine / unresolved',
-}
 const FILTERS: Filter[] = ['all', 'file', 'func', 'signal', 'class']
-const FILTER_LABEL: Record<ExplorerKind, string> = {
-  file: 'Files', func: 'Functions', signal: 'Signals', class: 'Classes', external: 'Engine',
-}
 const MAX_SIDE = 14
 
 const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1)
-const clean = (label: string) => label.replace(/\(signal\)$/, '').replace(/^\./, '')
 
 function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = useState(value)
@@ -39,7 +35,10 @@ function useDebounced<T>(value: T, ms: number): T {
   return v
 }
 
-export function ProjectExplorer({ projectId }: { projectId: string }) {
+/** Fired when a node is opened from the graph: the Workspace shows the editor beside the Explorer. */
+export const EXPLORER_EDITOR_EVENT = 'shipyard:explorer-editor'
+
+export function ProjectExplorer({ projectId, compact = false }: { projectId: string; compact?: boolean }) {
   const queryClient = useQueryClient()
   const editor = useEditorTabsContext()
   const [query, setQuery] = useState('')
@@ -47,6 +46,11 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
   const [selected, setSelected] = useState<string | null>(null)
   const [history, setHistory] = useState<string[]>([])
   const [building, setBuilding] = useState(false)
+  // Beside the editor the Inspector would eat the graph: it becomes a drawer.
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  // Selecting a node also shows it in the editor that is already open beside.
+  const [follow, setFollow] = useState(() => { try { return localStorage.getItem('shipyard:explorer-follow') === '1' } catch { return false } })
+  const toggleFollow = () => setFollow(f => { const n = !f; try { localStorage.setItem('shipyard:explorer-follow', n ? '1' : '0') } catch { /* ignore */ } return n })
   const debounced = useDebounced(query, 150)
 
   const statusQ = useQuery({
@@ -101,31 +105,25 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
     }
   }
 
-  const openInEditor = (file: string, line?: number) => {
+  // Opens the file in the editor BESIDE the graph: the Explorer stays where it
+  // is (openFileForProject would flip the whole workspace to the Editor view).
+  const openInEditor = useCallback((file: string, line?: number) => {
     if (!file) return
-    const name = baseName(file)
-    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''
-    editor.openFileForProject(projectId, file, name, ext,
-      line ? { reveal: { line, column: 1, length: 0 } } : undefined)
-  }
+    editor.openFile(file, baseName(file), extensionOf(file), '',
+      line ? { reveal: { line, column: 0, length: 0 } } : undefined)
+    window.dispatchEvent(new CustomEvent(EXPLORER_EDITOR_EVENT, { detail: { open: true } }))
+  }, [editor])
+
+  // Follow mode: the selected node is revealed in the editor beside, once its detail (file + line) is known.
+  const followNode = follow && compact ? detailQ.data?.node : undefined
+  useEffect(() => {
+    if (followNode?.file) openInEditor(followNode.file, followNode.line || undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followNode?.id])
 
   const askAgent = (d: ExplorerNodeDetail, agent?: 'codex') => {
-    const fmt = (nb: ExplorerNeighbor, dir: 'to' | 'from') =>
-      `- ${nb.edge.relation}${nb.edge.confidence === 'INFERRED' ? ' (inferred)' : ''} ${dir === 'to' ? '→' : '←'} ${nb.node.label}${nb.node.file ? ` [${nb.node.file}${nb.node.line ? ':' + nb.node.line : ''}]` : ''}`
     const n = d.node
-    const prompt = [
-      `Investigate \`${n.label}\`${n.file ? ` in \`${n.file}${n.line ? ':' + n.line : ''}\`` : ''} (${KIND_LABEL[n.kind].toLowerCase()}) in this Godot project.`,
-      '',
-      'Context from the Project Explorer (relations extracted by Graphify; "inferred" ones are name-based guesses and may point at the wrong same-named function):',
-      '',
-      `Depends on (${d.outgoing.length}):`,
-      ...d.outgoing.slice(0, 30).map(x => fmt(x, 'to')),
-      '',
-      `Referenced by (${d.incoming.length}):`,
-      ...d.incoming.slice(0, 30).map(x => fmt(x, 'from')),
-      '',
-      'Read the real code before answering and confirm any inferred relation. Explain what this does and how the relations above work together. Do not change anything until I ask.',
-    ].join('\n')
+    const prompt = buildAgentPrompt(d, { projectId, root: statusQ.data && statusQ.data.godot ? statusQ.data.root : undefined })
     window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
       detail: { projectId, type: 'claude', prompt, ...(agent ? { agent } : {}) },
     }))
@@ -163,11 +161,18 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
 
   const results = searchQ.data?.nodes ?? []
   const s = status.summary!
+  const state = listState({
+    loading: searchQ.isLoading || (searchQ.isFetching && !searchQ.data),
+    error: searchQ.error ? (searchQ.error as Error).message : undefined,
+    resultCount: results.length, query: debounced, filter, counts: searchQ.data?.counts,
+  })
+  const stateMsg = listStateMessage(state)
+  const stale = stalenessLabel(status.staleness)
 
   return (
-    <div className="flex h-full min-h-0 w-full">
+    <div className="relative flex h-full min-h-0 w-full">
       {/* ── Search + list ── */}
-      <aside className="flex w-[290px] shrink-0 flex-col border-r bg-card/40">
+      <aside className={cn('flex shrink-0 flex-col border-r bg-card/40', compact ? 'w-[230px]' : 'w-[290px]')}>
         <div className="space-y-2 border-b p-2">
           <div className="flex items-center gap-1.5 rounded-md border bg-background px-2">
             <Search className="h-3 w-3 text-muted-foreground" />
@@ -175,7 +180,7 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
               autoFocus
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search files, functions, signals"
+              placeholder="Search files, functions, signals, classes"
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
               data-testid="explorer-search"
             />
@@ -191,6 +196,7 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
                 )}
               >
                 {f === 'all' ? 'All' : FILTER_LABEL[f]}
+                {f !== 'all' && searchQ.data?.counts && <span className="ml-1 tabular-nums opacity-60">{searchQ.data.counts[f]}</span>}
               </button>
             ))}
           </div>
@@ -202,6 +208,9 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
               <button
                 key={n.id}
                 onClick={() => select(n.id)}
+                onDoubleClick={() => n.file && openInEditor(n.file, n.line || undefined)}
+                title={n.file ? 'Double-click to open in the editor' : undefined}
+                data-testid="explorer-row"
                 className={cn(
                   'flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-accent/60',
                   selected === n.id && 'bg-accent',
@@ -218,7 +227,7 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
           {searchQ.data && searchQ.data.total > results.length && (
             <p className="px-2 py-2 text-[10px] text-muted-foreground">Showing {results.length} of {searchQ.data.total}. Narrow the search.</p>
           )}
-          {searchQ.data && !results.length && <p className="px-2 py-3 text-xs text-muted-foreground">No match.</p>}
+          {stateMsg && <p className="px-2 py-3 text-xs text-muted-foreground" data-testid="explorer-empty" data-state={state.kind}>{stateMsg}</p>}
           {query.trim() && (
             <button
               onClick={() => openContentSearch(query.trim())}
@@ -232,6 +241,11 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
           <span title={Object.entries(s.relations).map(([k, v]) => `${k} ${v}`).join(' · ')}>
             {s.files} files · {s.edges} relations
           </span>
+          {stale && (
+            <span className="mx-1 flex min-w-0 items-center gap-1 truncate text-warning" title={stale} data-testid="explorer-stale">
+              <AlertTriangle className="h-3 w-3 shrink-0" /> outdated
+            </span>
+          )}
           <button onClick={build} disabled={building || status.building}
             title={`Analyzed ${new Date(status.builtAt!).toLocaleString()}. Re-run after code changes.`}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
@@ -243,7 +257,8 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
       {/* ── Graph ── */}
       <section className="relative min-w-0 flex-1 overflow-hidden">
         {selected && detail ? (
-          <RelationGraph detail={detail} onSelect={id => select(id)} canBack={history.length > 0} onBack={back} />
+          <RelationGraph detail={detail} onSelect={id => select(id)} onOpen={openInEditor} canBack={history.length > 0} onBack={back}
+            compact={compact} follow={follow} onToggleFollow={toggleFollow} inspectorOpen={inspectorOpen} onToggleInspector={() => setInspectorOpen(o => !o)} />
         ) : selected && detailQ.isLoading ? (
           <Centered><Loader2 className="h-4 w-4 animate-spin" /></Centered>
         ) : (
@@ -255,9 +270,14 @@ export function ProjectExplorer({ projectId }: { projectId: string }) {
       </section>
 
       {/* ── Inspector ── */}
-      <aside className="w-[340px] shrink-0 overflow-y-auto border-l bg-card/40 scrollbar-dark" data-testid="explorer-inspector">
+      <aside
+        className={cn(
+          'overflow-y-auto border-l bg-card scrollbar-dark',
+          compact ? (inspectorOpen ? 'absolute inset-y-0 right-0 z-20 w-[320px] max-w-full shadow-xl' : 'hidden') : 'w-[340px] shrink-0 bg-card/40',
+        )}
+        data-testid="explorer-inspector">
         {detail ? (
-          <Inspector detail={detail} onSelect={id => select(id)} onOpen={openInEditor} onAsk={askAgent} />
+          <Inspector projectId={projectId} detail={detail} onSelect={id => select(id)} onOpen={openInEditor} onAsk={askAgent} />
         ) : (
           <div className="space-y-2 p-3 text-xs text-muted-foreground">
             <p>Relations are extracted statically by Graphify. <b>Extracted</b> ones are read directly from the code; <b>inferred</b> ones are matched by name and can be wrong.</p>
@@ -287,12 +307,31 @@ function groupNeighbors(list: ExplorerNeighbor[], side: 'to' | 'from', selfId: s
   return [...m.values()]
 }
 
-function RelationGraph({ detail, onSelect, canBack, onBack }: {
+function RelationGraph({ detail, onSelect, onOpen, canBack, onBack, compact, follow, onToggleFollow, inspectorOpen, onToggleInspector }: {
   detail: ExplorerNodeDetail
   onSelect: (id: string) => void
+  onOpen: (file: string, line?: number) => void
   canBack: boolean
   onBack: () => void
+  compact: boolean
+  follow: boolean
+  onToggleFollow: () => void
+  inspectorOpen: boolean
+  onToggleInspector: () => void
 }) {
+  // A single click re-centres the graph, which would move the node out from under
+  // the pointer before a double click lands. So the select waits a beat and a
+  // double click cancels it: double click opens, single click selects.
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current) }, [])
+  const clickNode = (id: string) => {
+    if (clickTimer.current) clearTimeout(clickTimer.current)
+    clickTimer.current = setTimeout(() => { clickTimer.current = null; onSelect(id) }, 230)
+  }
+  const openNode = (n: ExplorerNode) => {
+    if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null }
+    if (n.file) onOpen(n.file, n.line || undefined)
+  }
   const node = detail.node
   const ins = useMemo(() => groupNeighbors(detail.incoming, 'from', node.id), [detail, node.id])
   const outs = useMemo(() => groupNeighbors(detail.outgoing, 'to', node.id), [detail, node.id])
@@ -308,7 +347,8 @@ function RelationGraph({ detail, onSelect, canBack, onBack }: {
   const NodeBox = ({ n, x, y, relations, inferred, center }: { n: ExplorerNode; x: number; y: number; relations?: Set<string>; inferred?: boolean; center?: boolean }) => {
     const label = clean(n.label)
     return (
-      <g transform={`translate(${x},${y})`} onClick={() => !center && onSelect(n.id)} className={center ? '' : 'cursor-pointer'} data-testid={center ? 'graph-center' : 'graph-node'} data-id={n.id}>
+      <g transform={`translate(${x},${y})`} onClick={() => !center && clickNode(n.id)} onDoubleClick={() => openNode(n)}
+        className={cn('group', !center && 'cursor-pointer')} data-testid={center ? 'graph-center' : 'graph-node'} data-id={n.id}>
         <rect x={-boxW / 2} y={-13} width={boxW} height={26} rx={5}
           fill={center ? 'hsl(var(--accent))' : 'hsl(var(--card))'}
           stroke={center ? 'hsl(var(--primary))' : 'hsl(var(--border))'}
@@ -317,9 +357,18 @@ function RelationGraph({ detail, onSelect, canBack, onBack }: {
           {label.length > 26 ? label.slice(0, 25) + '…' : label}
         </text>
         {relations && (
-          <text x={boxW / 2 - 8} y={4} fontSize={9} textAnchor="end" fill="hsl(var(--muted-foreground))">
-            {[...relations].join(' · ')}
+          <text x={boxW / 2 - 30} y={4} fontSize={9} textAnchor="end" fill="hsl(var(--muted-foreground))">
+            {[...relations].join(' · ').slice(0, 22)}
           </text>
+        )}
+        {n.file && (
+          <g data-testid="graph-open" role="button" aria-label={`Open ${label} in editor`}
+            className={cn('cursor-pointer transition-opacity group-hover:opacity-100', center ? 'opacity-100' : 'opacity-0')}
+            onClick={e => { e.stopPropagation(); openNode(n) }} onDoubleClick={e => e.stopPropagation()}>
+            <rect x={boxW / 2 - 24} y={-10} width={20} height={20} rx={4} fill="hsl(var(--background))" stroke="hsl(var(--border))" />
+            <text x={boxW / 2 - 14} y={4} fontSize={11} textAnchor="middle" fill="hsl(var(--foreground))">&lt;/&gt;</text>
+            <title>Open in editor</title>
+          </g>
         )}
         <title>{`${n.label}${n.file ? ' — ' + n.file : ''}`}</title>
       </g>
@@ -340,8 +389,18 @@ function RelationGraph({ detail, onSelect, canBack, onBack }: {
           <ArrowLeft className="h-3 w-3" /> Back
         </button>
         <span className="truncate font-mono">{node.file || node.label}</span>
-        <span className="ml-auto flex gap-3">
-          <span>← referenced by {ins.length}</span><span>depends on {outs.length} →</span>
+        <span className="ml-auto flex items-center gap-3">
+          <span title="referenced by">← {ins.length}</span><span title="depends on">{outs.length} →</span>
+          {compact && (
+            <button onClick={onToggleFollow} aria-pressed={follow} title="Show the selected node in the editor as you click through the graph"
+              className={cn('rounded px-1.5 py-0.5 hover:bg-accent', follow && 'bg-accent text-foreground')}>Follow</button>
+          )}
+          {compact && (
+            <button onClick={onToggleInspector} aria-pressed={inspectorOpen} title="Relations and actions" data-testid="toggle-inspector"
+              className={cn('flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent', inspectorOpen && 'bg-accent text-foreground')}>
+              <PanelRight className="h-3 w-3" /> Details
+            </button>
+          )}
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto scrollbar-dark">
@@ -360,14 +419,15 @@ function RelationGraph({ detail, onSelect, canBack, onBack }: {
           {ins.length > MAX_SIDE && <text x={leftX} y={H - 6} textAnchor="middle" fontSize={10} fill="hsl(var(--muted-foreground))">+{ins.length - MAX_SIDE} more in the inspector</text>}
           {outs.length > MAX_SIDE && <text x={rightX} y={H - 6} textAnchor="middle" fontSize={10} fill="hsl(var(--muted-foreground))">+{outs.length - MAX_SIDE} more in the inspector</text>}
         </svg>
-        <p className="px-3 pb-3 text-[10px] text-muted-foreground">Solid = read from the code · dashed = inferred by name.</p>
+        <p className="px-3 pb-3 text-[10px] text-muted-foreground">Solid = read from the code · dashed = inferred by name · click selects, double-click opens in the editor.</p>
         {!ins.length && !outs.length && <p className="px-3 pb-3 text-xs text-muted-foreground">No relations found for this node.</p>}
       </div>
     </div>
   )
 }
 
-function Inspector({ detail, onSelect, onOpen, onAsk }: {
+function Inspector({ projectId, detail, onSelect, onOpen, onAsk }: {
+  projectId: string
   detail: ExplorerNodeDetail
   onSelect: (id: string) => void
   onOpen: (file: string, line?: number) => void
@@ -428,6 +488,14 @@ function Inspector({ detail, onSelect, onOpen, onAsk }: {
           </button>
         </div>
       </div>
+
+      {node.file && (
+        <DesignDecisions projectId={projectId} file={node.file} onOpen={onOpen}
+          onInvestigate={prompt => {
+            window.dispatchEvent(new CustomEvent('shipyard:open-terminal', { detail: { projectId, type: 'claude', prompt } }))
+            toast.success('Sent to Claude')
+          }} />
+      )}
 
       {detail.contains.length > 0 && (
         <Section title={`Contains ${detail.contains.length}`}>

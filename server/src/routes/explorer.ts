@@ -14,7 +14,7 @@ export async function explorerRoutes(app: FastifyInstance) {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
     if (!(await graphify.isGodotProject(project.path))) return { godot: false, root: project.path };
-    return { godot: true, ...(await graphify.getStatus(project.id)) };
+    return { godot: true, root: project.path, ...(await graphify.getStatus(project.id, project.path)) };
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/explorer/build', async (request, reply) => {

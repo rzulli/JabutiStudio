@@ -14,6 +14,7 @@ import { sql } from '@codemirror/lang-sql'
 import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import type { Extension } from '@codemirror/state'
+import { gdscript, godotResource } from '@/lib/godotLanguage'
 
 function getLanguageExtension(ext: string): Extension[] {
   const map: Record<string, () => Extension> = {
@@ -40,6 +41,9 @@ function getLanguageExtension(ext: string): Extension[] {
     '.yml': () => yaml(),
     '.xml': () => xml(),
     '.svg': () => xml(),
+    '.gd': () => gdscript,
+    '.tscn': () => godotResource,
+    '.tres': () => godotResource,
   }
   const factory = map[ext]
   return factory ? [factory()] : []

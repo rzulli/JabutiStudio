@@ -1,10 +1,10 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import { useParams } from 'react-router-dom'
 import { TaskBoard } from '@/components/tasks/TaskBoard'
 import { useProjects, useUpdateProject, useLaunchTerminal, useOpenFolder } from '@/hooks/useProjects'
 import {
   GitBranch, Star, ExternalLink, Link2, Settings, Code2, LayoutList,
-  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal, Network,
+  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal, Network, X,
 } from 'lucide-react'
 // CodeMirror and its language modes only matter once the user opens a file.
 const EditorPanel = lazy(() =>
@@ -26,7 +26,7 @@ import { useTerminalStatus } from '@/hooks/useTerminal'
 import { layoutStore, useLayoutMode } from '@/hooks/useLayoutMode'
 import { ExplorerView } from '@/components/layout/views/ExplorerView'
 import { useActivity } from '@/hooks/useActivity'
-import { ProjectExplorer } from '@/components/explorer/ProjectExplorer'
+import { ProjectExplorer, EXPLORER_EDITOR_EVENT } from '@/components/explorer/ProjectExplorer'
 import { DeployBadge } from '@/components/deploy/DeployBadge'
 import { toast } from 'sonner'
 
@@ -84,6 +84,75 @@ export function Workspace() {
   const hasIntegrated = terminalStatus?.available ?? false
 
   const editor = useEditorTabsContext()
+
+  // Explorer + Editor side by side. Opening a node from the graph shows the
+  // editor beside it instead of replacing the Explorer; the split is per project.
+  const [besideOpen, setBesideOpen] = useState(false)
+  const [splitFrac, setSplitFrac] = useState(0.45)       // editor's share of the split
+  const [stacked, setStacked] = useState(false)           // narrow area: editor below, not beside
+  const splitRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!projectId) return
+    try {
+      setBesideOpen(localStorage.getItem(`shipyard:explorer-editor-open:${projectId}`) === '1')
+      const f = parseFloat(localStorage.getItem(`shipyard:explorer-split:${projectId}`) ?? '')
+      setSplitFrac(f >= 0.2 && f <= 0.8 ? f : 0.45)
+    } catch { /* storage blocked */ }
+  }, [projectId])
+  const setBeside = useCallback((open: boolean) => {
+    setBesideOpen(open)
+    try { if (projectId) localStorage.setItem(`shipyard:explorer-editor-open:${projectId}`, open ? '1' : '0') } catch { /* ignore */ }
+  }, [projectId])
+  useEffect(() => {
+    const onOpen = (e: Event) => setBeside(!!(e as CustomEvent<{ open?: boolean }>).detail?.open)
+    window.addEventListener(EXPLORER_EDITOR_EVENT, onOpen)
+    return () => window.removeEventListener(EXPLORER_EDITOR_EVENT, onOpen)
+  }, [setBeside])
+  // Below ~900px there is no room for list + graph + editor side by side.
+  const splitActive = workspaceMode === 'explorer' && besideOpen
+  useEffect(() => {
+    const el = splitRef.current
+    if (!el || !splitActive) return
+    const ro = new ResizeObserver(([entry]) => setStacked(entry.contentRect.width < 900))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [splitActive])
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    const box = splitRef.current
+    if (!box) return
+    e.preventDefault()
+    const target = e.currentTarget
+    target.setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) => {
+      const r = box.getBoundingClientRect()
+      const frac = stacked ? 1 - (ev.clientY - r.top) / r.height : 1 - (ev.clientX - r.left) / r.width
+      setSplitFrac(Math.min(0.8, Math.max(0.2, frac)))
+    }
+    const up = (ev: PointerEvent) => {
+      target.releasePointerCapture(ev.pointerId)
+      target.removeEventListener('pointermove', move)
+      target.removeEventListener('pointerup', up)
+      setSplitFrac(f => { try { if (projectId) localStorage.setItem(`shipyard:explorer-split:${projectId}`, String(f)) } catch { /* ignore */ } return f })
+    }
+    target.addEventListener('pointermove', move)
+    target.addEventListener('pointerup', up)
+  }
+
+  const editorPanel = (
+    <Suspense fallback={null}>
+      <EditorPanel
+        projectId={projectId || ''}
+        tabs={editor.tabs}
+        activeTabPath={editor.activeTabPath}
+        onSelectTab={editor.setActiveTab}
+        onCloseTab={editor.closeTab}
+        onContentChange={editor.setContent}
+        onMarkSaved={editor.markSaved}
+        onInitContent={editor.initContent}
+        onEditFile={(tab) => editor.openFile(tab.path, tab.name, tab.extension, '')}
+      />
+    </Suspense>
+  )
 
   // Pick up cross-route file-open intents (e.g. clicking a file in Search while on another project)
   useEffect(() => {
@@ -354,7 +423,37 @@ export function Workspace() {
           workspaceMode === 'tasks' && 'overflow-y-auto px-3 py-2 scrollbar-dark'
         )}>
           {workspaceMode === 'explorer' ? (
-            <ProjectExplorer projectId={project.id} />
+            // One tree shape whether or not the editor is beside: the Explorer must
+            // not remount (it would lose its search, filter and selection).
+            <div ref={splitRef} className={cn('flex min-h-0 flex-1', stacked && besideOpen ? 'flex-col' : 'flex-row')} data-testid="explorer-split">
+              <div className="min-h-0 min-w-0 flex-1"
+                style={besideOpen ? { flex: `0 0 ${(1 - splitFrac) * 100}%` } : undefined}>
+                <ProjectExplorer projectId={project.id} compact={besideOpen} />
+              </div>
+              {besideOpen && (
+                <>
+                  <div
+                    onPointerDown={startResize}
+                    role="separator"
+                    aria-orientation={stacked ? 'horizontal' : 'vertical'}
+                    data-testid="explorer-split-handle"
+                    className={cn('shrink-0 bg-border transition-colors hover:bg-primary/60 active:bg-primary',
+                      stacked ? 'h-1 cursor-row-resize' : 'w-1 cursor-col-resize')}
+                  />
+                  <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-testid="explorer-editor-pane">
+                    <button
+                      onClick={() => setBeside(false)}
+                      title="Close the editor pane (open files stay as tabs)"
+                      data-testid="explorer-editor-close"
+                      className="absolute right-1 top-1 z-10 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                    {editorPanel}
+                  </div>
+                </>
+              )}
+            </div>
           ) : workspaceMode === 'tasks' ? (
             <TaskBoard
               projectId={project.id}
@@ -365,19 +464,7 @@ export function Workspace() {
               onOpenSettings={openSettings}
             />
           ) : (
-            <Suspense fallback={null}>
-              <EditorPanel
-                projectId={project.id}
-                tabs={editor.tabs}
-                activeTabPath={editor.activeTabPath}
-                onSelectTab={editor.setActiveTab}
-                onCloseTab={editor.closeTab}
-                onContentChange={editor.setContent}
-                onMarkSaved={editor.markSaved}
-                onInitContent={editor.initContent}
-                onEditFile={(tab) => editor.openFile(tab.path, tab.name, tab.extension, '')}
-              />
-            </Suspense>
+            editorPanel
           )}
         </div>
       </div>

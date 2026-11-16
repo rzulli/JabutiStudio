@@ -37,7 +37,7 @@ export interface GEdge {
   count: number;         // identical (from,to,relation) edges collapsed into this one
 }
 
-interface Graph {
+export interface Graph {
   builtAt: number;
   nodes: Map<string, GNode>;
   out: Map<string, GEdge[]>;
@@ -115,6 +115,9 @@ async function doBuild(projectId: string, root: string): Promise<BuildResult> {
   if (!python) throw new Error('Graphify is not installed. Run `pnpm graphify:setup`.');
   const started = Date.now();
   const tree = join(projectDir(projectId), 'tree');
+  // Files edited after this instant are "newer than the analysis" (see staleness).
+  await fs.mkdir(projectDir(projectId), { recursive: true }); // first build on a fresh data dir
+  await fs.writeFile(join(projectDir(projectId), 'meta.json'), JSON.stringify({ startedAt: started, root }));
   const files = await stage(root, tree);
   // A stale graph would keep nodes of deleted files; Graphify's cache still
   // makes the re-extraction cheap.
@@ -214,13 +217,60 @@ export interface Status {
   built: boolean;
   builtAt?: string;
   summary?: { nodes: number; edges: number; files: number; relations: Record<string, number>; confidence: Record<string, number> };
+  staleness?: Staleness;
 }
 
-export async function getStatus(projectId: string): Promise<Status> {
+/**
+ * How many Godot sources changed on disk after the analysis started. Reliable
+ * because staging copies the same file set the walk below looks at: any file
+ * with an mtime later than the start of the build was not (fully) in it, and a
+ * file in the walk that the graph has no node for is new. Deleted files are
+ * counted from graph file nodes with no file on disk. Cached briefly: it walks
+ * the project.
+ */
+export interface Staleness { changed: number; added: number; removed: number; checkedAt: number }
+const staleCache = new Map<string, { at: number; builtAt: number; value: Staleness }>();
+const STALE_TTL_MS = 30_000;
+
+export async function getStaleness(projectId: string, root: string, g: Graph): Promise<Staleness | null> {
+  const hit = staleCache.get(projectId);
+  if (hit && hit.builtAt === g.builtAt && Date.now() - hit.at < STALE_TTL_MS) return hit.value;
+  let startedAt: number;
+  try {
+    startedAt = JSON.parse(await fs.readFile(join(projectDir(projectId), 'meta.json'), 'utf8')).startedAt;
+    if (typeof startedAt !== 'number') return null;
+  } catch { return null; } // built before meta.json existed: cannot tell reliably
+  const known = new Set<string>();
+  for (const n of g.nodes.values()) if (n.kind === 'file') known.add(n.file);
+  const onDisk = new Set<string>();
+  let changed = 0, added = 0;
+  const walk = async (dir: string) => {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    await Promise.all(entries.map(async e => {
+      const abs = join(dir, e.name);
+      if (e.isDirectory()) { if (!STAGE_SKIP_DIRS.has(e.name)) await walk(abs); return; }
+      if (!e.isFile() || !GODOT_FILE_RE.test(e.name)) return;
+      const rel = posix(relative(root, abs));
+      onDisk.add(rel);
+      if (!known.has(rel)) { added++; return; }
+      try { if ((await fs.stat(abs)).mtimeMs > startedAt) changed++; } catch { /* vanished */ }
+    }));
+  };
+  await walk(root);
+  let removed = 0;
+  for (const f of known) if (!onDisk.has(f)) removed++;
+  const value = { changed, added, removed, checkedAt: Date.now() };
+  staleCache.set(projectId, { at: Date.now(), builtAt: g.builtAt, value });
+  return value;
+}
+
+export async function getStatus(projectId: string, root?: string): Promise<Status> {
   const installed = !!graphifyPython();
   const building = isBuilding(projectId);
   const g = await loadGraph(projectId);
   if (!g) return { installed, building, built: false };
+  const staleness = root ? await getStaleness(projectId, root, g).catch(() => null) : null;
   const confidence: Record<string, number> = {};
   for (const list of g.out.values()) for (const e of list) confidence[e.confidence] = (confidence[e.confidence] ?? 0) + 1;
   let files = 0;
@@ -228,6 +278,7 @@ export async function getStatus(projectId: string): Promise<Status> {
   return {
     installed, building, built: true, builtAt: new Date(g.builtAt).toISOString(),
     summary: { nodes: g.nodes.size, edges: g.edgeCount, files, relations: g.relations, confidence },
+    staleness: staleness ?? undefined,
   };
 }
 
@@ -251,19 +302,41 @@ function score(n: GNode, terms: string[]): number {
   return total + bonus - Math.min(n.label.length, 40) / 100;
 }
 
-export async function search(projectId: string, query: string, kind: string | undefined, limit = 80): Promise<{ total: number; nodes: GNode[] } | null> {
-  const g = await loadGraph(projectId);
-  if (!g) return null;
+export interface SearchResult {
+  total: number;
+  nodes: GNode[];
+  /** Nodes of each kind in the whole graph, ignoring the query. Lets the UI tell
+   *  'this graph has no signals' from 'no signal matches your text'. */
+  counts: Record<NodeKind, number>;
+}
+
+export function searchGraph(g: Graph, query: string, kind: string | undefined, limit = 80): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const counts: Record<NodeKind, number> = { file: 0, func: 0, signal: 0, class: 0, external: 0 };
+  for (const n of g.nodes.values()) counts[n.kind]++;
   const scored: { n: GNode; s: number }[] = [];
   for (const n of g.nodes.values()) {
     if (kind && kind !== 'all' && n.kind !== kind) continue;
-    if (!terms.length) { if (n.kind === 'file') scored.push({ n, s: 1 }); continue; }
+    if (!terms.length) {
+      // Browsing without text: the 'all' view lists files only (functions would
+      // bury them 4 to 1), but a kind tab lists what it says it lists.
+      if (kind && kind !== 'all') scored.push({ n, s: 1 });
+      else if (n.kind === 'file') scored.push({ n, s: 1 });
+      continue;
+    }
     const s = score(n, terms);
     if (s > 0) scored.push({ n, s });
   }
-  scored.sort((a, b) => b.s - a.s || a.n.file.localeCompare(b.n.file) || a.n.label.localeCompare(b.n.label));
-  return { total: scored.length, nodes: scored.slice(0, limit).map(x => x.n) };
+  const browse = !terms.length;
+  scored.sort((a, b) => browse
+    ? a.n.file.localeCompare(b.n.file) || a.n.line - b.n.line || a.n.label.localeCompare(b.n.label)
+    : b.s - a.s || a.n.file.localeCompare(b.n.file) || a.n.label.localeCompare(b.n.label));
+  return { total: scored.length, nodes: scored.slice(0, limit).map(x => x.n), counts };
+}
+
+export async function search(projectId: string, query: string, kind: string | undefined, limit = 80): Promise<SearchResult | null> {
+  const g = await loadGraph(projectId);
+  return g ? searchGraph(g, query, kind, limit) : null;
 }
 
 export interface Neighbor { edge: GEdge; node: GNode }

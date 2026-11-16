@@ -368,9 +368,11 @@ export interface ExplorerNodeDetail {
 export type ExplorerResponse =
   | { godot: false; root: string }
   | {
-      godot: true; installed: boolean; building: boolean; built: boolean; builtAt?: string
+      godot: true; root?: string; installed: boolean; building: boolean; built: boolean; builtAt?: string
+      staleness?: { changed: number; added: number; removed: number; checkedAt: number }
       summary?: { nodes: number; edges: number; files: number; relations: Record<string, number>; confidence: Record<string, number> }
     }
+export interface ExplorerSearchResult { total: number; nodes: ExplorerNode[]; counts: Record<ExplorerKind, number> }
 export interface ExplorerBuildResult { files: number; nodes: number; edges: number; tookMs: number }
 
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
@@ -454,14 +456,42 @@ export interface AiBackendStatus {
   providers: AiProviderStatus[]
 }
 
+
+export type DesignFreshness = 'CURRENT' | 'MOVED' | 'CHANGED' | 'AMBIGUOUS' | 'STALE' | 'GONE' | 'UNKNOWN'
+export interface DesignApproval { state: 'unknown' | 'claimed' | 'approved' | 'rejected' | 'revoked'; source: string; quote?: string; at?: string; channel?: string; detail?: string }
+export interface DesignEvidence {
+  type: string; ref: string; note: string; candidate_only: boolean; freshness: DesignFreshness; detail: string
+  lines?: [number, number] | null; path?: string | null; excerpt: { line: number; text: string }[]
+}
+export interface DesignDecision {
+  id: string; title: string; claim: string; claim_sha256: string; system?: string | null
+  decision_state: string; approval: DesignApproval; evidence_status: string; implementation: string; catalogued_implementation: string
+  supersedes: string[]; conflicts_with: string[]; matched_by?: string[]
+  files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
+  evidence: DesignEvidence[]
+}
+export interface DesignContext {
+  available: boolean; reason?: string
+  root?: string; branch?: string | null; head?: string | null; indexed?: boolean; note?: string | null
+  examined?: { root: string; isCanonical: boolean; registry: string }
+  decisions?: DesignDecision[]
+  graph?: { built: boolean; incoming: { file: string; relation: string; confidence: string; line: number }[]; outgoing: { file: string; relation: string; confidence: string; line: number }[] }
+}
+
 export const api = {
   getExplorer: (projectId: string) => request<ExplorerResponse>(`/projects/${projectId}/explorer`),
   buildExplorer: (projectId: string) =>
     request<ExplorerBuildResult>(`/projects/${projectId}/explorer/build`, { method: 'POST', timeout: 11 * 60_000 }),
   searchExplorer: (projectId: string, q: string, kind: string, signal?: AbortSignal) =>
-    request<{ total: number; nodes: ExplorerNode[] }>(`/projects/${projectId}/explorer/search?q=${encodeURIComponent(q)}&kind=${kind}`, { signal }),
+    request<ExplorerSearchResult>(`/projects/${projectId}/explorer/search?q=${encodeURIComponent(q)}&kind=${kind}`, { signal }),
   getExplorerNode: (projectId: string, node: string) =>
     request<ExplorerNodeDetail>(`/projects/${projectId}/explorer/node?node=${encodeURIComponent(node)}`),
+  getDesign: (projectId: string, file: string, worktree?: string) =>
+    request<DesignContext>(`/projects/${projectId}/design?file=${encodeURIComponent(file)}${worktree ? `&worktree=${encodeURIComponent(worktree)}` : ''}`),
+  getDesignCheckouts: (projectId: string) =>
+    request<{ registry: boolean; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
+  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
+    request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

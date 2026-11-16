@@ -6,6 +6,7 @@ import * as syncStore from './syncStore.js';
 import * as syncEngine from './sync/syncEngine.js';
 import * as taskAttachments from './taskAttachments.js';
 import * as worktreeService from './worktreeService.js';
+import * as designKnowledge from './designKnowledge.js';
 import type { Project, Task, EffortPoints } from '../types/index.js';
 
 // MCP Tool handlers - optimized for minimal token usage
@@ -302,6 +303,41 @@ export async function deleteTask(projectId: string, taskId: string): Promise<Mcp
   }
   afterTaskMutation(projectId);
   return ok({ deleted: taskId });
+}
+
+
+/**
+ * Design decisions that touch a file or topic, for an agent about to change it. Read-only by design:
+ * there is no tool that approves anything. `claimed` is a document or record saying so, never approval.
+ */
+export async function getDesignContext(projectId: string, file?: string, query?: string, taskId?: string): Promise<McpToolResult> {
+  const project = (await getProjects()).find(p => p.id === projectId);
+  if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
+  if (!file && !query) return { content: [{ type: 'text', text: 'Pass file or query' }], isError: true };
+  const task = taskId ? (await taskStore.getTasks(projectId)).find(t => t.id === taskId) : undefined;
+  const worktree = task?.worktreePath || undefined; // judge freshness in the task's checkout, not the integrated one
+  const res: any = file
+    ? await designKnowledge.contextForFile(project, file, worktree)
+    : await designKnowledge.contextForQuery(project, query!, worktree);
+  if (!res.available) return { content: [{ type: 'text', text: compact({ available: false, reason: res.reason }) }] };
+  const decisions = (res.decisions ?? []).map((d: any) => ({
+    id: d.id, title: d.title, claim: d.claim, decision: d.decision_state, approval: d.approval,
+    evidence: d.evidence_status, implementation: d.implementation, conflictsWith: d.conflicts_with,
+    matchedBy: d.matched_by,
+    sources: d.evidence.filter((e: any) => !e.candidate_only).map((e: any) => ({
+      type: e.type, ref: e.path ? `${e.path} (was ${e.ref})` : e.ref, freshness: e.freshness, detail: e.detail, note: e.note,
+      excerpt: (e.excerpt ?? []).slice(0, 4).map((x: any) => `L${x.line}: ${x.text}`),
+    })),
+    candidateImpact: { files: d.files.map((f: any) => f.path), tests: d.tests.map((t: any) => t.path) },
+  }));
+  return { content: [{ type: 'text', text: compact({
+    examined: { ...res.examined, branch: res.branch, head: res.head },
+    indexed: res.indexed, note: res.note ?? undefined, decisions,
+    graph: res.graph && res.graph.built ? { incoming: res.graph.incoming, outgoing: res.graph.outgoing } : undefined,
+    rules: 'approval.state "approved" with source "attested_local" is a local UI attestation (not cryptographic proof of a person); "claimed" is an unverified assertion; '
+      + 'candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
+      + 'a passing test does not prove a design decision.',
+  }) }] };
 }
 
 export async function getGitStatus(projectId: string): Promise<McpToolResult> {
@@ -885,6 +921,21 @@ export const MCP_TOOLS = [
     annotations: readOnly,
   },
   {
+    name: 'get_design_context',
+    description: 'Design decisions (with approval state, evidence freshness, conflicts) that touch a file or topic, plus Graphify relations for the file. Call before changing game rules, balance constants or systems. Pass taskId to judge evidence in the worktree of that task.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        projectId: PROJECT_ID,
+        file: { type: 'string', description: 'Project-relative file path, e.g. scripts/HumusEconomyParams.gd' },
+        query: { type: 'string', description: 'Topic words, e.g. "first maturation humus cost"' },
+        taskId: TASK_ID,
+      },
+      required: ['projectId'],
+    },
+    annotations: readOnly,
+  },
+  {
     name: 'get_git_log',
     description: 'Get recent commits (default 10, compact: hash, message, date, author)',
     inputSchema: {
@@ -1049,6 +1100,8 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
       return deleteTask(args.projectId, args.taskId);
     case 'get_git_status':
       return getGitStatus(args.projectId);
+    case 'get_design_context':
+      return getDesignContext(args.projectId, args.file, args.query, args.taskId);
     case 'get_git_log':
       return getGitLog(args.projectId, args.limit);
     case 'get_git_diff':

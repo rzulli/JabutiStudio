@@ -44,6 +44,7 @@ server/src/
 data/           # Persistencia (auto-criado)
   projects.json, settings.json, ai-config.json, .claude-key,   # claude.json = legado, migrado
   mcp-config.json, mcp-auth.json, server.log,
+  design-approvals/{projectId}.json,  # ledger de aprovacoes humanas do Design Knowledge
   graphify/{src,venv,projects/{id}/tree},  # motor do Project Explorer (pnpm graphify:setup)
   claude-hooks/{sessionId}.json,   # settings de hooks por sessao Claude (efemero)
   sync-config.json,                # v3: providers (creds globais) + projects[id][provider][milestoneId]
@@ -146,6 +147,7 @@ interface Project {
   GET/PUT/DELETE /api/projects/:id/deploy (`?subrepo=` filtra por checkout;
     no DELETE, `?link=` remove um deploy, `?subrepo=` os daquele checkout e
     nenhum dos dois remove o projeto inteiro)
+**Design Knowledge**: GET /api/projects/:id/design (`?file=` ou `?q=`, `&worktree=`), GET .../design/validate|checkouts, POST .../design/approve (so de requisicao do navegador)
 **Logs**: GET /api/logs|logs/stats, DELETE /api/logs
 **Busca**: GET /api/search/files|content (`q`, `projectId?` restringe, `prefer?` = projeto aberto, ranqueia primeiro; content aceita `caseSensitive`, `wholeWord`, `regex`, `includeIgnored` e devolve `truncated`, `timedOut`, `elapsedMs`; regex invalida = 400)
 **WhatsApp inbox**: GET/PUT/DELETE /api/inbox (`{ url, token }`; o PUT ja testa com um sync), POST /api/inbox/sync, GET /api/inbox/deliveries (`?since=`), GET /api/inbox/review (`?summary=1` = so a contagem), PATCH /api/inbox/review/:id, POST /api/inbox/review/:id/approve|discard
@@ -563,7 +565,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   salva aparece. Aba em diff nao tem preview; "Edit file" sai do diff
 
 ### MCP (servidor de ferramentas para agentes)
-- `mcpServer.ts` expoe 29 tools. Cobertura: projetos, milestones (CRUD),
+- `mcpServer.ts` expoe 30 tools. Cobertura: projetos, milestones (CRUD),
   tarefas (incl. `create_tasks`/`bulk_update_tasks`/`bulk_delete_tasks`/`reorder_tasks`),
   git (status/log/diff) e sync (`list_sync_integrations`/`sync_push`/`sync_pull`)
 - `get_task` devolve tambem os comentarios e os metadados de anexo
@@ -628,6 +630,71 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
     "externo" (nome do `res://...` entre aspas)
   - Escopo de classe interna e por nome global (pode colidir com funcao de topo)
   - O grafo e um retrato: muda depois de editar codigo ate re-analisar
+- **Listas por tipo**: `searchGraph` (graphifyAdapter) sem texto lista **todos** os
+  nos do tipo da aba (arquivo, linha, nome); "All" sem texto lista so arquivos.
+  A resposta traz `counts` do grafo inteiro (contadores nas abas). Antes a busca
+  vazia so devolvia arquivos e Functions/Signals/Classes ficavam sempre vazias.
+  O estado vazio vem de `listState` (`lib/explorerView.ts`): loading / erro /
+  indice sem esse tipo / nenhum resultado para o texto. Logica de view fica em
+  `explorerView.ts` (testavel), nao no componente
+- **Selecionar x abrir**: 1 clique seleciona (230 ms de espera, o duplo clique
+  cancela, senao o grafo recentra sob o mouse); duplo clique, botao `</>` do no
+  ou "Open in editor" abrem. O Explorer chama `editor.openFile(..., { reveal })`
+  direto — `openFileForProject` dispara `shipyard:workspace-mode` e trocaria a
+  vista — e emite `shipyard:explorer-editor` (`EXPLORER_EDITOR_EVENT`)
+- **Explorer + Editor lado a lado** (`pages/Workspace.tsx`): o editor abre num
+  painel ao lado (split flex com alca de arraste por pointer events, fracao em
+  `shipyard:explorer-split:{id}`, aberto em `shipyard:explorer-editor-open:{id}`;
+  empilha abaixo de 900 px). O Explorer **nao remonta** (mesma arvore) e entra em
+  modo `compact`: lista 230px, Inspector vira gaveta ("Details") e o toggle
+  "Follow" (`shipyard:explorer-follow`, default off) faz a selecao navegar o
+  editor aberto. Fechar o painel mantem os arquivos como abas
+- **Defasagem da analise**: `doBuild` grava `meta.json` (`startedAt`, `root`) ao lado do
+  grafo; `getStaleness` conta arquivos editados/novos/removidos desde entao (cache
+  30 s, sem watcher). Sem `meta.json` (analise antiga) = desconhecido, nada e mostrado
+- **Ask Claude/Codex** manda projeto, checkout (`root` da analise) e `arquivo:linha`
+  (`buildAgentPrompt`). O Explorer indexa o checkout do projeto, nao worktrees de task
+- **Realce de Godot** (`lib/godotLanguage.ts`): `.gd`, `.tscn`, `.tres` com
+  `StreamLanguage` (token a token). E so realce — sem AST, escopo ou tipos. As
+  tabelas de linguagem do CodeMirror/DiffEditor sao chaveadas **com o ponto**
+- **Testes**: `pnpm --filter server test` (fatia real do grafo do PNMG em
+  `server/test/fixtures`, regenerada por `server/test/make-fixture.mjs`; cobre
+  adapter, rotas, `_src/_tgt`, EXTRACTED/INFERRED, busca, defasagem e a logica do client)
+
+### Design Knowledge (decisoes de design do projeto, lidas pelo Explorer)
+- As decisoes e o CLI moram **no projeto** (`tools/design_knowledge/dk.py`,
+  `docs/design_knowledge/records/*.md`), para o jogo continuar legivel sem o app.
+  `designKnowledge.ts` so chama `python -I dk.py <cmd> --root <checkout> --records
+  <projeto>/docs/... --json [--approvals data/design-approvals/{id}.json]`. Projeto
+  sem registro devolve `available: false` e a UI nao mostra nada
+- **Aprovacao** (tres niveis): `claimed` = documento/agente afirma; `attested_local` =
+  atestacao no ledger local (`source: "attested_local"`); `verified` = identidade
+  verificada de forma independente — **nao existe**. Arquivo do repositorio so produz
+  `claimed`. A atestacao esta presa ao sha256 do texto da decisao: editar o texto a faz
+  caducar (`attestation-lapsed`). Quem grava e `POST /design/approve`, que exige
+  `Origin` igual ao `Host` + `sec-fetch-site: same-origin` + `sec-fetch-dest: empty`
+  (o fetch do renderer). curl puro, MCP e hook levam 403; header so de Sec-Fetch sem
+  Origin tambem. **Mas qualquer processo local que forje `Origin`+`Sec-Fetch-*` passa
+  (reproduzido): `attested_local` NAO prova que uma pessoa clicou**, so que alguem
+  chamou a rota. A UI diz "attested locally", nunca "approved by you". Nao ha
+  autenticacao no servidor local (ver "Acesso local"); nao introduzir sem discutir.
+  **Nao existe tool MCP de aprovar** — nao criar
+- **Ledger**: `data/design-approvals/{projectId}.json` (fora do repositorio): sobrevive a
+  restart, mas nao acompanha clone/nova worktree/outra maquina — leve junto com a data
+  dir (workspace-export a inclui) ou atteste de novo. `dk.py` sem `--approvals` so enxerga
+  `claimed`/`unknown`. Agente com acesso ao filesystem pode editar o arquivo (sem HMAC,
+  de proposito: a chave ficaria ao lado)
+- **Raiz examinada x registro canonico**: o registro vem sempre do checkout do
+  projeto; a evidencia e julgada em `--root` (uma worktree listada pelo `git
+  worktree list`, nunca caminho arbitrario). A resposta traz `examined.isCanonical`
+  para a UI nunca ler codigo de task como "integrado"
+- Frescor por fonte: CURRENT | MOVED | CHANGED | AMBIGUOUS | STALE | GONE | UNKNOWN.
+  Referencia sumida ou renomeada rebaixa o estado, nunca derruba a consulta
+- MCP `get_design_context` (read-only; `taskId` usa a worktree da task). Inspector
+  do Explorer: secao "Design decisions" (`DesignDecisions.tsx`) com aprovacao,
+  conflito, evidencia por origem e impacto candidato (lista manual, incompleta)
+- Testes: `pnpm --filter server test` (`test/design.test.ts` usa copia de `dk.py`
+  em `test/fixtures/dk` — recopiar se o original mudar)
 
 ### Cache e Invalidacao (react-query)
 - `staleTime` default: 3s (`main.tsx`) — evita refetch de tudo a cada foco de janela
