@@ -64,8 +64,9 @@ fixPathForGuiLaunch();
 
 const isDev = !app.isPackaged;
 
+// In dev __dirname is <repo>/electron/dist, so the repo root is two levels up.
 const ROOT_DIR = isDev
-  ? resolve(__dirname, '..')
+  ? resolve(__dirname, '..', '..')
   : resolve(process.resourcesPath);
 
 const CLIENT_DIST = isDev
@@ -143,14 +144,16 @@ function startServer(): Promise<void> {
     console.log('  exists(CLIENT_DIST):', existsSync(CLIENT_DIST));
 
     if (isDev) {
-      // In dev, use tsx to run TypeScript directly
-      const tsxBin = resolve(ROOT_DIR, 'node_modules', '.bin', 'tsx');
-      const { fork } = require('child_process');
-      serverProcess = fork(SERVER_ENTRY, [], {
+      // In dev, run the TypeScript entry through tsx's JS CLI. tsx is a devDependency
+      // of the server package (not the root), and the .bin shims are .cmd files on
+      // Windows, which spawn() cannot run directly. Electron's own binary acts as Node
+      // when ELECTRON_RUN_AS_NODE=1, so no system node is required.
+      const tsxCli = resolve(ROOT_DIR, 'server', 'node_modules', 'tsx', 'dist', 'cli.mjs');
+      env.ELECTRON_RUN_AS_NODE = '1';
+      serverProcess = spawn(process.execPath, [tsxCli, SERVER_ENTRY], {
         env,
-        execArgv: [],
-        execPath: tsxBin,
-        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
       });
     } else {
       // In production, use spawn with ELECTRON_RUN_AS_NODE to run as plain Node.js
