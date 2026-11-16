@@ -589,6 +589,7 @@ export const api = {
   gitPull: (projectId: string, subrepo?: string) => request(`/projects/${projectId}/git/pull`, { method: 'POST', body: JSON.stringify({ subrepo }) }),
   getGitLog: (projectId: string, subrepo?: string) => request<any>(`/projects/${projectId}/git/log${subrepo ? `?subrepo=${encodeURIComponent(subrepo)}` : ''}`),
   getGitBranches: (projectId: string, subrepo?: string) => request<any>(`/projects/${projectId}/git/branches${subrepo ? `?subrepo=${encodeURIComponent(subrepo)}` : ''}`),
+  getGitWorktrees: (projectId: string, subrepo?: string) => request<any>(`/projects/${projectId}/git/worktrees${subrepo ? `?subrepo=${encodeURIComponent(subrepo)}` : ''}`),
   checkoutBranch: (projectId: string, branch: string, subrepo?: string) =>
     request<{ success: boolean; branch: string }>(`/projects/${projectId}/git/checkout`, { method: 'POST', body: JSON.stringify({ branch, subrepo }) }),
   getGitMainCommit: (projectId: string, subrepo?: string) => request<{ commit: { hash: string; message: string; date: string; author_name: string; isMerged: boolean } | null }>(`/projects/${projectId}/git/main-commit${subrepo ? `?subrepo=${encodeURIComponent(subrepo)}` : ''}`),

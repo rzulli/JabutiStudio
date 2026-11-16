@@ -43,6 +43,15 @@ export function useGitBranches(projectId: string | undefined, subrepo?: string) 
   })
 }
 
+export function useGitWorktrees(projectId: string | undefined, subrepo?: string) {
+  return useQuery({
+    queryKey: ['git-worktrees', projectId, subrepo],
+    queryFn: () => api.getGitWorktrees(projectId!, subrepo),
+    enabled: !!projectId,
+    refetchInterval: 30_000,
+  })
+}
+
 export function useCommitDiff(projectId: string | undefined, hash: string | undefined, subrepo?: string) {
   return useQuery({
     queryKey: ['commit-diff', projectId, hash, subrepo],

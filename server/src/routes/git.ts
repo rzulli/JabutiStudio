@@ -6,6 +6,14 @@ import { getProjects } from '../services/projectDiscovery.js';
 import * as log from '../services/logService.js';
 
 /**
+ * JabutiStudio: automatic `git fetch` is OFF unless JABUTI_AUTO_FETCH=1.
+ * Upstream Shipyard fetches on every status poll; here inspecting a live repo
+ * (the PNMG checkout) must not contact its remote or write remote-tracking refs.
+ * See UPSTREAM.md before changing this default.
+ */
+const AUTO_FETCH_ENABLED = process.env.JABUTI_AUTO_FETCH === '1';
+
+/**
  * Strip context lines from a git diff, keeping only +/- lines, file headers,
  * and hunk headers. This significantly reduces token count for AI processing.
  */
@@ -81,6 +89,19 @@ export async function gitRoutes(app: FastifyInstance) {
     }
   );
 
+  // JabutiStudio: every git worktree of the checkout (`git worktree list`),
+  // read-only. Upstream only lists Shipyard's own task worktrees; this shows
+  // the ones git knows about, including ones made by hand or by other agents.
+  app.get<{ Params: { projectId: string }; Querystring: { subrepo?: string } }>(
+    '/api/projects/:projectId/git/worktrees',
+    async (request, reply) => {
+      const path = await getProjectPath(request.params.projectId, request.query.subrepo);
+      if (!path) return reply.status(404).send({ error: 'Project not found' });
+      const worktrees = await gitService.listWorktrees(path);
+      return { worktrees };
+    }
+  );
+
   app.get<{ Params: { projectId: string }; Querystring: { subrepo?: string } }>(
     '/api/projects/:projectId/git/status',
     async (request, reply) => {
@@ -94,7 +115,7 @@ export async function gitRoutes(app: FastifyInstance) {
         // 5s poll picks the new counts up on the next tick.
         const now = Date.now();
         const last = lastFetch.get(path) || 0;
-        if (now - last > 60_000) {
+        if (AUTO_FETCH_ENABLED && now - last > 60_000) {
           lastFetch.set(path, now);
           void gitService.fetch(path);
         }

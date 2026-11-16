@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { GitBranch, RefreshCw, Upload, Download, ChevronDown, ChevronRight, GitCommit, ArrowUp, ArrowDown, Trash2, Undo2, Loader2, Check, FolderGit2, Search } from 'lucide-react'
+import { GitBranch, RefreshCw, Upload, Download, ChevronDown, ChevronRight, GitCommit, ArrowUp, ArrowDown, Trash2, Undo2, Loader2, Check, FolderGit2, Search, GitFork } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,7 +7,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { FileTree } from './FileTree'
 import { CommitForm } from './CommitForm'
 import { CommitDetailDialog } from './CommitDetailDialog'
-import { useGitStatus, useGitLog, useGitMainCommit, useGitBranches, useCheckoutBranch, useStageAll, useUnstageAll, useGitPush, useGitPull, useDiscardAll, useUndoCommit } from '@/hooks/useGit'
+import { useGitStatus, useGitLog, useGitMainCommit, useGitBranches, useGitWorktrees, useCheckoutBranch,useStageAll, useUnstageAll, useGitPush, useGitPull, useDiscardAll, useUndoCommit } from '@/hooks/useGit'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { toProjectPath, toRepoPath } from '@/lib/repoPath'
@@ -35,6 +35,8 @@ function SingleRepoPanel({ projectId, subrepo, onOpenInEditor, onOpenDiffInEdito
   const { data: logData } = useGitLog(projectId, subrepo)
   const { data: mainCommitData } = useGitMainCommit(projectId, status?.current, subrepo)
   const { data: branchData } = useGitBranches(projectId, subrepo)
+  const { data: worktreeData } = useGitWorktrees(projectId, subrepo)
+  const worktrees: any[] = worktreeData?.worktrees ?? []
   const checkoutBranch = useCheckoutBranch()
   const [branchOpen, setBranchOpen] = useState(false)
   const stageAll = useStageAll()
@@ -151,6 +153,27 @@ function SingleRepoPanel({ projectId, subrepo, onOpenInEditor, onOpenDiffInEdito
               {(!branchData?.all || branchData.all.filter((b: string) => !b.startsWith('remotes/')).length === 0) && (
                 <div className="text-xs text-muted-foreground px-2 py-1.5">No branches found</div>
               )}
+            </PopoverContent>
+          </Popover>
+        )}
+        {worktrees.length > 1 && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-accent transition-colors cursor-pointer" title="git worktrees of this checkout (read-only)">
+                <GitFork className="h-3 w-3" />
+                {worktrees.length} worktrees
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-96 p-2 max-h-80 overflow-y-auto" align="start">
+              <div className="text-[10px] text-muted-foreground mb-1">Read-only · git worktree list</div>
+              {worktrees.map((w: any) => (
+                <div key={w.path} className="py-1.5 border-t first:border-t-0">
+                  <div className="truncate font-mono text-[11px]" title={w.path}>{w.path}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {w.bare ? 'bare' : w.branch ?? (w.detached ? 'detached HEAD' : 'no branch')}{w.head ? ` · ${w.head.slice(0, 7)}` : ''}
+                  </div>
+                </div>
+              ))}
             </PopoverContent>
           </Popover>
         )}
