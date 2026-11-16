@@ -48,7 +48,7 @@ export interface Graph {
 
 const GODOT_FILE_RE = /\.(gd|tscn|tres)$/i;
 // Third-party code, engine cache and build output are not "the project".
-const STAGE_SKIP_DIRS = new Set([
+export const STAGE_SKIP_DIRS = new Set([
   '.git', '.godot', '.import', 'addons', 'node_modules', 'worktrees', 'artifacts', 'release',
   '.release-staging', 'playtest_data', 'build', 'dist', 'out', 'bin', '.claude', '.codex',
 ]);
@@ -367,4 +367,12 @@ export async function getNode(projectId: string, id: string): Promise<{
     contains,
     container: containerEdge ? g.nodes.get(containerEdge.from) : undefined,
   };
+}
+
+/** When the last analysis started (ms), or null for an analysis made before meta.json existed. */
+export async function buildStartedAt(projectId: string): Promise<number | null> {
+  try {
+    const v = JSON.parse(await fs.readFile(join(projectDir(projectId), 'meta.json'), 'utf8')).startedAt;
+    return typeof v === 'number' ? v : null;
+  } catch { return null; }
 }

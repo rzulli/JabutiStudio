@@ -148,6 +148,7 @@ interface Project {
     no DELETE, `?link=` remove um deploy, `?subrepo=` os daquele checkout e
     nenhum dos dois remove o projeto inteiro)
 **Design Knowledge**: GET /api/projects/:id/design (`?file=` ou `?q=`, `&worktree=`), GET .../design/validate|checkouts, POST .../design/approve (so de requisicao do navegador)
+**Systems**: GET /api/projects/:id/systems (`?worktree=`), POST .../systems/discover, POST .../systems (proposta), GET .../systems/:sid (`?worktree=`), GET .../systems/:sid/brief (`?goal=`), PATCH .../systems/:sid (revisao: so do navegador), POST .../systems/:sid/merge|split (so do navegador)
 **Logs**: GET /api/logs|logs/stats, DELETE /api/logs
 **Busca**: GET /api/search/files|content (`q`, `projectId?` restringe, `prefer?` = projeto aberto, ranqueia primeiro; content aceita `caseSensitive`, `wholeWord`, `regex`, `includeIgnored` e devolve `truncated`, `timedOut`, `elapsedMs`; regex invalida = 400)
 **WhatsApp inbox**: GET/PUT/DELETE /api/inbox (`{ url, token }`; o PUT ja testa com um sync), POST /api/inbox/sync, GET /api/inbox/deliveries (`?since=`), GET /api/inbox/review (`?summary=1` = so a contagem), PATCH /api/inbox/review/:id, POST /api/inbox/review/:id/approve|discard
@@ -565,7 +566,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   salva aparece. Aba em diff nao tem preview; "Edit file" sai do diff
 
 ### MCP (servidor de ferramentas para agentes)
-- `mcpServer.ts` expoe 30 tools. Cobertura: projetos, milestones (CRUD),
+- `mcpServer.ts` expoe 33 tools (inclui `list_systems`, `get_system`, `propose_system`). Cobertura: projetos, milestones (CRUD),
   tarefas (incl. `create_tasks`/`bulk_update_tasks`/`bulk_delete_tasks`/`reorder_tasks`),
   git (status/log/diff) e sync (`list_sync_integrations`/`sync_push`/`sync_pull`)
 - `get_task` devolve tambem os comentarios e os metadados de anexo
@@ -695,6 +696,35 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   conflito, evidencia por origem e impacto candidato (lista manual, incompleta)
 - Testes: `pnpm --filter server test` (`test/design.test.ts` usa copia de `dk.py`
   em `test/fixtures/dk` — recopiar se o original mudar)
+
+### System Explorer (Projeto -> Sistemas -> Sistema)
+- Aba **Systems** dentro do Explorer (`SystemsExplorer.tsx`, montada por `ExplorerHost`; "Files & symbols" e o
+  Explorer antigo). Catalogo com busca/estado/flags e detalhe do sistema; abrir arquivo usa o Editor ao lado
+  (`focusFile` no `ProjectExplorer` leva o Graphify ao no). Dados: `services/systemCatalog.ts`, rotas em `routes/systems.ts`
+- **Identidade** (`data/systems/{projectId}.json`, `writeJsonAtomic` + mutex): so o que nao da para derivar —
+  id estavel `sys-<slug>`, nome, resumo, responsabilidades, `status` (proposed|confirmed|dismissed|merged),
+  `origin` (discovery|agent|user), proveniencia da confirmacao, **ancoras** (termos, arquivos, ids de decisao DK),
+  relacoes declaradas, `seen` (chaves vistas) e `vanished`. Nada de membros, simbolos, arestas ou estado de DK
+  gravados: tudo isso e derivado sob demanda (`resolveSystem`, cache 4 s, memo por checkout) para nunca ficar velho
+- **Identidade nao e pasta/classe/documento/comunidade do Graphify**: e uma ancora semantica (termos + arquivos +
+  decisoes). Renomear arquivo mantem o sistema (ancora de arquivo cai para o mesmo basename = `moved`); reanalisar o
+  Graphify nao muda o id; relacao N:N vem de membros/termos compartilhados (`related`)
+- **Autoridade**: fato = git, arestas Graphify EXTRACTED, registro DK; **hipotese** = agrupamento, arestas INFERRED,
+  vizinhos ("possible participants"); **decisao** = confirmacao humana. Agente so **propoe** (`propose_system`, MCP):
+  proposta contra sistema confirmado vira `suggestions` pendente, nunca edita. Confirmar/editar/mesclar/dividir so pela
+  UI (`fromAppUi`, mesma ressalva do DK: `attested_local` nao prova pessoa). Nao existe tool MCP de confirmar
+- Descoberta (`discover`) = candidatos por tokens de nome de arquivo (>=4 letras, sem `STOP`) + mencao em texto (>=3
+  linhas); idempotente, nao duplica, estende o dono quando o agente propoe termos ja cobertos. Ruidosa de proposito:
+  o humano confirma/corrige/divide/mescla
+- **Manutencao derivada, sem watcher/cron/agente**: o catalogo so recalcula quando a aba esta aberta (poll 10 s) e
+  em cache curto. Sinais: `changedSinceAnalysis` (mtime > inicio da analise; so no checkout canonico), `vanished`
+  (arquivo/simbolo que sumiu desde o snapshot `seen`; so o canonico grava; "Acknowledge" limpa), `unresolvedAnchors`,
+  decisoes novas do DK (reaparecem na consulta), projeto sem DK (`design.available=false`, nunca erro)
+- **Worktree**: `?worktree=` muda o checkout examinado (membros por nome/texto, git, dirty, integracao); o grafo
+  continua o do canonico e a UI/limitacoes dizem isso. Nunca reescreve o snapshot do canonico
+- `designKnowledge.dkScript` cai para o `dk.py` mais novo entre os checkouts quando o do projeto nao tem `--root`
+- Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
+  **Nao hardcodar nomes/ids/caminhos de um jogo na logica geral** — so em fixtures
 
 ### Cache e Invalidacao (react-query)
 - `staleTime` default: 3s (`main.tsx`) — evita refetch de tudo a cada foco de janela

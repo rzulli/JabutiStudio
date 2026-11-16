@@ -26,7 +26,8 @@ import { useTerminalStatus } from '@/hooks/useTerminal'
 import { layoutStore, useLayoutMode } from '@/hooks/useLayoutMode'
 import { ExplorerView } from '@/components/layout/views/ExplorerView'
 import { useActivity } from '@/hooks/useActivity'
-import { ProjectExplorer, EXPLORER_EDITOR_EVENT } from '@/components/explorer/ProjectExplorer'
+import { EXPLORER_EDITOR_EVENT } from '@/components/explorer/ProjectExplorer'
+import { ExplorerHost } from '@/components/explorer/ExplorerHost'
 import { DeployBadge } from '@/components/deploy/DeployBadge'
 import { toast } from 'sonner'
 
@@ -428,7 +429,7 @@ export function Workspace() {
             <div ref={splitRef} className={cn('flex min-h-0 flex-1', stacked && besideOpen ? 'flex-col' : 'flex-row')} data-testid="explorer-split">
               <div className="min-h-0 min-w-0 flex-1"
                 style={besideOpen ? { flex: `0 0 ${(1 - splitFrac) * 100}%` } : undefined}>
-                <ProjectExplorer projectId={project.id} compact={besideOpen} />
+                <ExplorerHost projectId={project.id} compact={besideOpen} />
               </div>
               {besideOpen && (
                 <>

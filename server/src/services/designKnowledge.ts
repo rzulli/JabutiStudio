@@ -31,7 +31,7 @@ const TIMEOUT_MS = 20_000;
 const safeId = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, '_');
 const ledgerPath = (projectId: string) => join(DATA_DIR, 'design-approvals', `${safeId(projectId)}.json`);
 // realpath: git reports long Windows paths while callers may hold the 8.3 short form of the same folder
-const norm = (p: string) => {
+export const norm = (p: string) => {
   let full = resolve(p);
   try { full = realpathSync.native(full); } catch { /* path may not exist yet */ }
   return full.replace(/[\\/]+$/, '').toLowerCase();
@@ -73,10 +73,35 @@ export async function listCheckouts(projectPath: string): Promise<{ path: string
   }
 }
 
-async function resolveRoot(project: DkProject, worktree?: string): Promise<string | { error: string }> {
+export async function resolveRoot(project: DkProject, worktree?: string): Promise<string | { error: string }> {
   if (!worktree || norm(worktree) === norm(project.path)) return project.path;
   const known = (await listCheckouts(project.path)).find(c => norm(c.path) === norm(worktree));
   return known ? known.path : { error: 'Not a git worktree of this project' };
+}
+
+// ---- which dk.py ---------------------------------------------------------------------------------
+
+/**
+ * The records are canonical in the project checkout, but the CLI that reads them may be older there than
+ * in a sibling worktree (a hardening branch not merged yet). Use the project's own script when it speaks
+ * `--approvals`; otherwise the newest-looking one among the checkouts git lists. Never merges anything.
+ */
+const cliCache = new Map<string, { at: number; script: string }>();
+const speaksApprovals = async (script: string) => {
+  try { return (await readFile(script, 'utf-8')).includes('--approvals'); } catch { return false; }
+};
+async function dkScript(project: DkProject): Promise<string> {
+  const hit = cliCache.get(project.path);
+  if (hit && Date.now() - hit.at < 60_000) return hit.script;
+  let script = join(project.path, DK_REL);
+  if (!(await speaksApprovals(script))) {
+    for (const c of await listCheckouts(project.path)) {
+      const candidate = join(c.path, DK_REL);
+      if (await speaksApprovals(candidate)) { script = candidate; break; }
+    }
+  }
+  cliCache.set(project.path, { at: Date.now(), script });
+  return script;
 }
 
 // ---- running dk.py ------------------------------------------------------------------------------
@@ -94,7 +119,7 @@ async function dk(project: DkProject, command: string[], root: string): Promise<
   const key = [project.id, root, ...command].join('\u0000');
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
-  const args = ['-I', join(project.path, DK_REL), command[0], ...command.slice(1),
+  const args = ['-I', await dkScript(project), command[0], ...command.slice(1),
     '--root', root, '--records', join(project.path, RECORDS_REL), '--json'];
   const ledger = ledgerPath(project.id);
   if (existsSync(ledger)) args.push('--approvals', ledger);

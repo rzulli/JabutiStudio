@@ -470,6 +470,55 @@ export interface DesignDecision {
   files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
   evidence: DesignEvidence[]
 }
+
+// ---- System catalog (Explorer > Systems) ----
+export type SystemStatus = 'proposed' | 'confirmed' | 'dismissed' | 'merged'
+export interface SystemSummary {
+  id: string; name: string; summary: string; status: SystemStatus; origin: 'discovery' | 'agent' | 'user'
+  files: number; decisions: number; conflicts: number; flags: string[]
+}
+export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; uncommitted: number; integration: string }
+export interface SystemMember {
+  path: string; role: 'code' | 'scene' | 'resource' | 'test'; score: number
+  why: { kind: 'anchor' | 'dk' | 'name' | 'mention'; detail: string }[]
+  confidence: 'declared' | 'extracted'; uncommitted: boolean; changedSinceAnalysis: boolean
+  state: 'ok' | 'moved'; movedFrom?: string
+  symbols: { id: string; label: string; kind: string; line: number }[]
+}
+export interface SystemDecision {
+  id: string; title: string; claim: string; decisionState: string
+  approval?: { state: string; source: string; quote?: string }
+  evidenceStatus: string; implementation: string; conflictsWith: string[]
+  relevance: 'declared' | 'term' | 'touches-member'
+  evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[]
+  files: string[]; tests: string[]
+}
+export interface SystemView {
+  id: string; name: string; summary: string; responsibilities: string[]
+  status: SystemStatus; origin: 'discovery' | 'agent' | 'user'; confirmedAt?: string; confirmedVia?: string
+  anchors: { terms: string[]; files: string[]; decisions: string[] }
+  mergedInto?: string; mergedFrom?: string[]
+  suggestions: { at: string; origin: string; summary?: string; anchors: { terms: string[]; files: string[]; decisions: string[] } }[]
+  checkout: SystemCheckout
+  members: SystemMember[]; weakerMembers: number
+  neighbors: { path: string; edges: number; confidence: string; relation: string; via: string }[]
+  design: { available: boolean; reason?: string; decisions: SystemDecision[]; conflicts: [string, string][] }
+  tasks: { id: string; number?: number; title: string; status: string; matchedBy: string }[]
+  related: { id: string; name: string; shared: string[]; declared: boolean }[]
+  maintenance: {
+    graph: { built: boolean; builtAt?: number; describesCheckout: string; installed?: boolean }
+    changedMembers: string[]; needsReanalysis: boolean
+    vanished: { key: string; since: string }[]; unresolvedAnchors: { path: string; state: 'gone' }[]
+    graphAgainstCheckout: string
+  }
+  limitations: string[]
+}
+export interface SystemEdit {
+  name?: string; summary?: string; responsibilities?: string[]; status?: 'confirmed' | 'proposed' | 'dismissed'
+  anchors?: { terms?: string[]; files?: string[]; decisions?: string[] }; ackVanished?: boolean; clearSuggestions?: boolean
+}
+const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
+
 export interface DesignContext {
   available: boolean; reason?: string
   root?: string; branch?: string | null; head?: string | null; indexed?: boolean; note?: string | null
@@ -492,6 +541,22 @@ export const api = {
     request<{ registry: boolean; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
   attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
+  getSystems: (projectId: string, worktree?: string) =>
+    request<{ systems: SystemSummary[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
+  getSystem: (projectId: string, id: string, worktree?: string) =>
+    request<SystemView>(`/projects/${projectId}/systems/${encodeURIComponent(id)}?${wt(worktree)}`),
+  getSystemBrief: (projectId: string, id: string, worktree?: string, goal?: string) =>
+    request<{ text: string; head?: string; root: string }>(`/projects/${projectId}/systems/${encodeURIComponent(id)}/brief?${wt(worktree)}${goal ? `&goal=${encodeURIComponent(goal)}` : ''}`),
+  discoverSystems: (projectId: string, worktree?: string) =>
+    request<{ added: number; candidates: number }>(`/projects/${projectId}/systems/discover?${wt(worktree)}`, { method: 'POST' }),
+  editSystem: (projectId: string, id: string, body: SystemEdit) =>
+    request<unknown>(`/projects/${projectId}/systems/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  mergeSystems: (projectId: string, into: string, from: string[]) =>
+    request<unknown>(`/projects/${projectId}/systems/${encodeURIComponent(into)}/merge`, { method: 'POST', body: JSON.stringify({ from }) }),
+  splitSystem: (projectId: string, id: string, body: { name: string; terms?: string[]; files?: string[] }) =>
+    request<{ id: string }>(`/projects/${projectId}/systems/${encodeURIComponent(id)}/split`, { method: 'POST', body: JSON.stringify(body) }),
+  createSystem: (projectId: string, body: { name: string; summary?: string; terms?: string[]; files?: string[] }) =>
+    request<{ id: string }>(`/projects/${projectId}/systems`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

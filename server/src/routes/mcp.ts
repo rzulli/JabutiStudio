@@ -182,6 +182,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   <ul class="perms">
     <li>View projects, git status, history and diffs</li>
     <li>View design decisions and their evidence (never approve them)</li>
+    <li>View the system catalog and propose systems (never confirm them)</li>
     <li>View, create, update, and delete tasks</li>
     <li>Create, rename and delete milestones</li>
     <li>Search across all tasks</li>

@@ -38,7 +38,7 @@ function useDebounced<T>(value: T, ms: number): T {
 /** Fired when a node is opened from the graph: the Workspace shows the editor beside the Explorer. */
 export const EXPLORER_EDITOR_EVENT = 'shipyard:explorer-editor'
 
-export function ProjectExplorer({ projectId, compact = false }: { projectId: string; compact?: boolean }) {
+export function ProjectExplorer({ projectId, compact = false, focusFile }: { projectId: string; compact?: boolean; focusFile?: { file: string; nonce: number } }) {
   const queryClient = useQueryClient()
   const editor = useEditorTabsContext()
   const [query, setQuery] = useState('')
@@ -76,6 +76,19 @@ export function ProjectExplorer({ projectId, compact = false }: { projectId: str
     retry: false,
   })
   const detail = selected ? detailQ.data : undefined
+
+  // Asked from outside (a system's file): find the file's node in the graph and select it.
+  useEffect(() => {
+    if (!focusFile || !built) return
+    let alive = true
+    api.searchExplorer(projectId, baseName(focusFile.file), 'file').then(r => {
+      const hit = r.nodes.find(n => n.file === focusFile.file)
+      if (alive && hit) { setFilter('all'); setQuery(''); select(hit.id) }
+      else if (alive) toast.message(`${focusFile.file} is not in the Graphify graph yet`)
+    }).catch(() => undefined)
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFile?.nonce, built])
 
   const select = useCallback((id: string, push = true) => {
     setSelected(prev => {

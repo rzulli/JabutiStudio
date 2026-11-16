@@ -2,6 +2,12 @@ import { FastifyInstance } from 'fastify';
 import * as projectDiscovery from '../services/projectDiscovery.js';
 import * as dk from '../services/designKnowledge.js';
 
+/** The browser renderer sets these on its own fetches; an agent, MCP client or plain curl does not. */
+export function fromAppUi(h: Record<string, unknown>) {
+  const sameOrigin = typeof h.origin === 'string' && h.origin.replace(/^https?:\/\//, '') === h.host;
+  return sameOrigin && h['sec-fetch-site'] === 'same-origin' && h['sec-fetch-dest'] === 'empty';
+}
+
 export async function designRoutes(app: FastifyInstance) {
   const resolve = async (id: string) => (await projectDiscovery.getProjects()).find(p => p.id === id);
 
@@ -37,9 +43,7 @@ export async function designRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string }; Body: { decisionId?: string; state?: string; quote?: string } }>(
     '/api/projects/:id/design/approve',
     async (request, reply) => {
-      const h = request.headers;
-      const sameOrigin = typeof h.origin === 'string' && h.origin.replace(/^https?:\/\//, '') === h.host;
-      if (!sameOrigin || h['sec-fetch-site'] !== 'same-origin' || h['sec-fetch-dest'] !== 'empty') {
+      if (!fromAppUi(request.headers)) {
         return reply.status(403).send({ error: 'Approvals can only be recorded from the JabutiStudio UI' });
       }
       const project = await resolve(request.params.id);

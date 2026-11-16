@@ -7,6 +7,7 @@ import * as syncEngine from './sync/syncEngine.js';
 import * as taskAttachments from './taskAttachments.js';
 import * as worktreeService from './worktreeService.js';
 import * as designKnowledge from './designKnowledge.js';
+import * as systemCatalog from './systemCatalog.js';
 import type { Project, Task, EffortPoints } from '../types/index.js';
 
 // MCP Tool handlers - optimized for minimal token usage
@@ -338,6 +339,30 @@ export async function getDesignContext(projectId: string, file?: string, query?:
       + 'candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
       + 'a passing test does not prove a design decision.',
   }) }] };
+}
+
+export async function listSystems(projectId: string, worktreeTask?: string): Promise<McpToolResult> {
+  const project = (await getProjects()).find(p => p.id === projectId);
+  if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
+  const task = worktreeTask ? (await taskStore.getTasks(projectId)).find(t => t.id === worktreeTask) : undefined;
+  return { content: [{ type: 'text', text: compact(await systemCatalog.catalog(project, task?.worktreePath || undefined)) }] };
+}
+
+export async function getSystem(projectId: string, systemId: string, taskId?: string): Promise<McpToolResult> {
+  const project = (await getProjects()).find(p => p.id === projectId);
+  if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
+  const task = taskId ? (await taskStore.getTasks(projectId)).find(t => t.id === taskId) : undefined;
+  const v = await systemCatalog.resolveSystem(project, systemId, task?.worktreePath || undefined);
+  if ('error' in v) return { content: [{ type: 'text', text: v.error }], isError: true };
+  return { content: [{ type: 'text', text: systemCatalog.brief(v) }] };
+}
+
+export async function proposeSystem(projectId: string, input: systemCatalog.ProposalInput): Promise<McpToolResult> {
+  const project = (await getProjects()).find(p => p.id === projectId);
+  if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
+  if (!input?.name?.trim()) return { content: [{ type: 'text', text: 'name is required' }], isError: true };
+  const res = await systemCatalog.propose(projectId, input, 'agent');
+  return { content: [{ type: 'text', text: compact({ ...res, note: 'Recorded as a PROPOSAL. Only a person can confirm it, in the JabutiStudio UI; a confirmed system is never rewritten by a proposal.' }) }] };
 }
 
 export async function getGitStatus(projectId: string): Promise<McpToolResult> {
@@ -936,6 +961,32 @@ export const MCP_TOOLS = [
     annotations: readOnly,
   },
   {
+    name: 'list_systems',
+    description: 'Catalog of game systems (semantic groupings such as an economy or a mechanic) of a project, with status (confirmed/proposed), file and decision counts and maintenance flags. Pass taskId to look at the worktree of that task.',
+    inputSchema: { type: 'object' as const, properties: { projectId: PROJECT_ID, taskId: TASK_ID }, required: ['projectId'] },
+    annotations: readOnly,
+  },
+  {
+    name: 'get_system',
+    description: 'Compact brief for one system: responsibility, checkout (branch, HEAD, dirty, integrated or worktree), member files and symbols, Graphify neighbours with confidence, DK decisions and conflicts, and limitations. Read this before changing a system.',
+    inputSchema: { type: 'object' as const, properties: { projectId: PROJECT_ID, systemId: { type: 'string', description: 'e.g. sys-humus (from list_systems)' }, taskId: TASK_ID }, required: ['projectId', 'systemId'] },
+    annotations: readOnly,
+  },
+  {
+    name: 'propose_system',
+    description: 'Propose (never confirm) a system or extend an existing one. Anchors say what it is about: terms (words that appear in file names/code), files (project-relative), decisions (DK ids). Do not invent rules or approvals; describe only what you verified in code, docs or DK. A person confirms it in the UI.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        projectId: PROJECT_ID, name: { type: 'string' }, summary: { type: 'string', description: 'One or two sentences: what the system is responsible for' },
+        responsibilities: { type: 'array', items: { type: 'string' } },
+        terms: { type: 'array', items: { type: 'string' } }, files: { type: 'array', items: { type: 'string' } },
+        decisions: { type: 'array', items: { type: 'string' } }, related: { type: 'array', items: { type: 'string' }, description: 'ids of related systems' },
+      },
+      required: ['projectId', 'name'],
+    },
+  },
+  {
     name: 'get_git_log',
     description: 'Get recent commits (default 10, compact: hash, message, date, author)',
     inputSchema: {
@@ -1102,6 +1153,12 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
       return getGitStatus(args.projectId);
     case 'get_design_context':
       return getDesignContext(args.projectId, args.file, args.query, args.taskId);
+    case 'list_systems':
+      return listSystems(args.projectId, args.taskId);
+    case 'get_system':
+      return getSystem(args.projectId, args.systemId, args.taskId);
+    case 'propose_system':
+      return proposeSystem(args.projectId, args as any);
     case 'get_git_log':
       return getGitLog(args.projectId, args.limit);
     case 'get_git_diff':
