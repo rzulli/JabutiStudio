@@ -4,7 +4,7 @@ import { TaskBoard } from '@/components/tasks/TaskBoard'
 import { useProjects, useUpdateProject, useLaunchTerminal, useOpenFolder } from '@/hooks/useProjects'
 import {
   GitBranch, Star, ExternalLink, Link2, Settings, Code2, LayoutList,
-  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal,
+  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal, Network,
 } from 'lucide-react'
 // CodeMirror and its language modes only matter once the user opens a file.
 const EditorPanel = lazy(() =>
@@ -26,8 +26,12 @@ import { useTerminalStatus } from '@/hooks/useTerminal'
 import { layoutStore, useLayoutMode } from '@/hooks/useLayoutMode'
 import { ExplorerView } from '@/components/layout/views/ExplorerView'
 import { useActivity } from '@/hooks/useActivity'
+import { ProjectExplorer } from '@/components/explorer/ProjectExplorer'
 import { DeployBadge } from '@/components/deploy/DeployBadge'
 import { toast } from 'sonner'
+
+type WorkspaceMode = 'tasks' | 'editor' | 'explorer'
+const savedMode = (v: string | null): WorkspaceMode => (v === 'editor' || v === 'explorer' ? v : 'tasks')
 
 export function Workspace() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -36,16 +40,16 @@ export function Workspace() {
   const project = projects?.find(p => p.id === projectId)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>()
-  const [workspaceMode, _setWorkspaceMode] = useState<'tasks' | 'editor'>(() => {
+  const [workspaceMode, _setWorkspaceMode] = useState<WorkspaceMode>(() => {
     const saved = localStorage.getItem(`shipyard:workspace-mode:${projectId}`)
-    return saved === 'editor' ? 'editor' : 'tasks'
+    return savedMode(saved)
   })
   // Launching lives in one hook so the toolbar, the dashboard cards, the
   // sidebar and the context menus all behave the same way — including the
   // shared `--dangerously-skip-permissions` preference.
   const { skipPermissions, setSkipPermissions, launchClaude } = useProjectLaunch()
 
-  const setWorkspaceMode = useCallback((mode: 'tasks' | 'editor') => {
+  const setWorkspaceMode = useCallback((mode: WorkspaceMode) => {
     _setWorkspaceMode(mode)
     if (projectId) localStorage.setItem(`shipyard:workspace-mode:${projectId}`, mode)
     // Asking for Tasks or Editor means wanting to see it: in focus layout the
@@ -56,15 +60,15 @@ export function Workspace() {
   useEffect(() => {
     if (!projectId) return
     const saved = localStorage.getItem(`shipyard:workspace-mode:${projectId}`)
-    _setWorkspaceMode(saved === 'editor' ? 'editor' : 'tasks')
+    _setWorkspaceMode(savedMode(saved))
   }, [projectId])
 
   // Allow other parts of the app (the activity-bar Project Tasks shortcut) to
   // flip the workspace mode without going through the header toggle.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ mode?: 'tasks' | 'editor' }>).detail
-      if (detail?.mode === 'tasks' || detail?.mode === 'editor') {
+      const detail = (e as CustomEvent<{ mode?: WorkspaceMode }>).detail
+      if (detail?.mode === 'tasks' || detail?.mode === 'editor' || detail?.mode === 'explorer') {
         setWorkspaceMode(detail.mode)
       }
     }
@@ -211,6 +215,19 @@ export function Workspace() {
               <Code2 className="h-3 w-3" />
               Editor
             </button>
+            <button
+              onClick={() => setWorkspaceMode('explorer')}
+              data-testid="project-explorer-tab"
+              className={cn(
+                'flex h-6 items-center gap-1.5 rounded px-2.5 text-[11px] font-medium transition-colors',
+                workspaceMode === 'explorer' && !terminalFull
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <Network className="h-3 w-3" />
+              Explorer
+            </button>
           </div>
         </div>
 
@@ -336,7 +353,9 @@ export function Workspace() {
           'flex-1 min-w-0 flex flex-col',
           workspaceMode === 'tasks' && 'overflow-y-auto px-3 py-2 scrollbar-dark'
         )}>
-          {workspaceMode === 'tasks' ? (
+          {workspaceMode === 'explorer' ? (
+            <ProjectExplorer projectId={project.id} />
+          ) : workspaceMode === 'tasks' ? (
             <TaskBoard
               projectId={project.id}
               projectName={project.name}

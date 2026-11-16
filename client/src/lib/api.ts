@@ -349,6 +349,23 @@ export interface ContentSearchResponse {
   elapsedMs: number
 }
 
+export interface ExplorerSymbol { name: string; kind: 'class' | 'func' | 'signal' | 'id' | 'title' | 'script_class'; line: number }
+export interface ExplorerNode {
+  id: string; kind: 'gd' | 'tscn' | 'tres' | 'missing'; name: string; path: string; dir: string
+  size: number; base?: string; symbols: ExplorerSymbol[]; error?: string
+}
+export interface ExplorerEdge {
+  from: string; to: string; line: number; snippet: string; resolved: boolean
+  kind: 'extends' | 'preload' | 'load' | 'literal' | 'script' | 'scene' | 'resource'
+}
+export type ExplorerResponse =
+  | { godot: false; root: string }
+  | {
+      godot: true; root: string; indexedAt: string; tookMs: number
+      nodes: ExplorerNode[]; edges: ExplorerEdge[]
+      summary: { gd: number; tscn: number; tres: number; missing: number; edges: number; unresolved: number; errors: number; skippedDirs: string[] }
+    }
+
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { timeout, ...fetchOptions } = options || {};
   const headers: Record<string, string> = {};
@@ -431,6 +448,8 @@ export interface AiBackendStatus {
 }
 
 export const api = {
+  getExplorer: (projectId: string, refresh = false) =>
+    request<ExplorerResponse>(`/projects/${projectId}/explorer${refresh ? '?refresh=1' : ''}`, { timeout: 60000 }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),
