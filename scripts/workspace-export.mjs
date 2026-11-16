@@ -175,7 +175,7 @@ Vou configurar o Shipyard neste computador a partir de um bundle exportado da mi
 1. Confirme que \`git\`, \`node\` e \`pnpm\` estão instalados. Se faltar o pnpm: \`npm i -g pnpm\`.
 
 2. Instale o Shipyard. São dois caminhos — me pergunte qual eu quero:
-   - **App pronto**: baixe o instalador mais recente em ${releasesUrl || '<pagina de releases>'} e instale. A data dir fica em \`%APPDATA%\\Shipyard\\data\`.
+   - **App pronto**: baixe o instalador mais recente em ${releasesUrl || '<pagina de releases>'} e instale. A data dir fica em \`%APPDATA%\\JabutiStudio\\data\`.
    - **Do código** (necessário se eu for mexer no próprio Shipyard):
      \`\`\`
      git clone ${shipyardRemote || '<remote do Shipyard>'} <pasta onde o Shipyard deve ficar>
@@ -193,7 +193,7 @@ Vou configurar o Shipyard neste computador a partir de um bundle exportado da mi
    Ele clona cada repositório, desempacota os que vieram em bundle, restaura os \`.env\` e instala a configuração do Shipyard com todos os caminhos reescritos para este computador. Sem \`--install\` ele pula o \`pnpm install\` de cada projeto — o que é mais rápido se eu quiser instalar só nos que for usar. Rodar de novo é seguro.
 
 5. **Importante sobre a data dir.** Na máquina de origem o Shipyard lê${dataDirEnvUsed ? ' a variável de ambiente `SHIPYARD_DATA_DIR`, apontada para `' + manifest.sourceDataDir + '`' : ' a pasta `data/` dentro do próprio repositório'}. O import escreve na data dir que estiver valendo neste computador. Antes de rodar, confirme comigo qual é o caso aqui:
-   - se eu for usar o app Electron instalado, a data dir é \`%APPDATA%\\Shipyard\\data\`
+   - se eu for usar o app Electron instalado, a data dir é \`%APPDATA%\\JabutiStudio\\data\`
    - se eu for rodar \`pnpm dev\`, é a pasta \`data/\` do repositório
    Defina \`SHIPYARD_DATA_DIR\` antes de rodar o import se for preciso, para não escrever no lugar errado.
 

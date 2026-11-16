@@ -18,7 +18,7 @@ export function useAppUpdate() {
     if (!electronAPI?.onUpdateReady) return
 
     const prompt = ({ version }: { version: string }) => {
-      toast(`Shipyard v${version} is ready`, {
+      toast(`JabutiStudio v${version} is ready`, {
         id: 'app-update',
         description: 'Restart to finish updating. Open terminals will close.',
         duration: Infinity,

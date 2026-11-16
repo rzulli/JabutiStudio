@@ -246,7 +246,7 @@ export function RailwaySettingsCard() {
         )}
 
         <p className="text-[10px] text-muted-foreground">
-          Read-only use: Shipyard only asks for the latest deployment. It never redeploys or rolls back.
+          Read-only use: JabutiStudio only asks for the latest deployment. It never redeploys or rolls back.
         </p>
       </CardContent>
     </Card>

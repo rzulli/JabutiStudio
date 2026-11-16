@@ -27,7 +27,7 @@ const statefulDefinitions: ProviderDefinition[] = [
     available: true,
     configFields: [
       { key: 'apiKey', label: 'API Key', type: 'password', required: true, helpText: 'From trello.com/power-ups/admin — create a Power-Up and copy the API Key.' },
-      { key: 'token', label: 'Token', type: 'password', required: true, helpText: 'Use the "Authorize" button in the Shipyard dialog to generate a token.' },
+      { key: 'token', label: 'Token', type: 'password', required: true, helpText: 'Use the "Authorize" button in the JabutiStudio dialog to generate a token.' },
     ],
   },
   {
@@ -41,7 +41,7 @@ const statefulDefinitions: ProviderDefinition[] = [
     available: true,
     configFields: [
       { key: 'token', label: 'Personal API Token', type: 'password', required: true, helpText: 'ClickUp → Settings → Apps → generate a Personal token.' },
-      { key: 'spaceId', label: 'Space', type: 'text', required: true, helpText: 'Pick in the Shipyard dialog after entering your token.' },
+      { key: 'spaceId', label: 'Space', type: 'text', required: true, helpText: 'Pick in the JabutiStudio dialog after entering your token.' },
     ],
   },
 ]

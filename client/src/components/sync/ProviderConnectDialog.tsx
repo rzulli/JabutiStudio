@@ -172,7 +172,7 @@ export function ProviderConnectDialog({ providerId, open, onOpenChange }: Props)
                 placeholder={hasStoredApiKey ? '•••••••• (leave blank to keep)' : ''}
               />
 
-              <OnboardingStep n={2} title="Authorize Shipyard" body="With the API Key above, click Authorize. Trello will show a token; copy it here.">
+              <OnboardingStep n={2} title="Authorize JabutiStudio" body="With the API Key above, click Authorize. Trello will show a token; copy it here.">
                 <Button variant="outline" size="sm" onClick={openTrelloAuthorize} className="h-7 text-xs">
                   <KeyRound className="h-3 w-3 mr-1.5" />
                   Authorize

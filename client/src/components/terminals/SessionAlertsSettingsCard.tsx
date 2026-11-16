@@ -70,7 +70,7 @@ export function SessionAlertsSettingsCard() {
   }
 
   const test = (kind: SessionAlertKind) => {
-    alertSession(kind, { sessionId: 'test', project: 'Shipyard', label: 'This is what an alert looks like', watching: false }, settings)
+    alertSession(kind, { sessionId: 'test', project: 'JabutiStudio', label: 'This is what an alert looks like', watching: false }, settings)
   }
 
   return (
@@ -81,7 +81,7 @@ export function SessionAlertsSettingsCard() {
           Agent session alerts
         </CardTitle>
         <CardDescription className="text-xs">
-          How Shipyard tells you that an agent needs you — also with the window minimised or behind another one.
+          How JabutiStudio tells you that an agent needs you — also with the window minimised or behind another one.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

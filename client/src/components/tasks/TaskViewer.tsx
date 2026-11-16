@@ -185,7 +185,7 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
       {task.context && (
         <div>
           <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Private context</label>
-          <p className="mt-0.5 text-xs text-muted-foreground">Stays in Shipyard. Never sent to Trello, ClickUp or Sheets.</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Stays in JabutiStudio. Never sent to Trello, ClickUp or Sheets.</p>
           <pre className="mt-1.5 text-xs font-mono bg-muted/50 rounded-md p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.context}</pre>
         </div>
       )}

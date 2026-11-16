@@ -181,7 +181,7 @@ export function SyncSettingsCard({ projects }: SyncSettingsCardProps) {
         <CardTitle className="text-base">Integrations</CardTitle>
         <CardDescription>
           Connect your Trello or ClickUp account once — then enable sync for any project from its Sync menu.
-          Credentials live on this machine (under the Shipyard data folder), never in the repo.
+          Credentials live on this machine (under the JabutiStudio data folder), never in the repo.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

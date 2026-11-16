@@ -10,7 +10,7 @@ import type { Task } from '@/hooks/useTasks'
 import { cn } from '@/lib/utils'
 
 /**
- * The WhatsApp inbox's review, inside Shipyard: read what the client said,
+ * The WhatsApp inbox's review, inside JabutiStudio: read what the client said,
  * pick the project and where it lands (new task or a note on one that exists),
  * then send or discard. The web area stays for the phone; the token never
  * leaves the server (it relays through /api/inbox/review).
@@ -61,7 +61,7 @@ const DemandCard = memo(function DemandCard({ d, projects, webUrl }: {
       if (title !== d.title || description !== d.description) await api.updateInboxDemand(d.id, { title, description })
       return api.approveInboxDemand(d.id)
     },
-    onSuccess: () => { toast.success(`#${d.seq} sent to Shipyard`); refresh() },
+    onSuccess: () => { toast.success(`#${d.seq} sent to JabutiStudio`); refresh() },
     onError: (err: any) => toast.error(err.message),
   })
   const discard = useMutation({
@@ -177,7 +177,7 @@ const DemandCard = memo(function DemandCard({ d, projects, webUrl }: {
           <X className="h-3.5 w-3.5" />Discard
         </button>
         <button disabled={busy || !d.project_id} onClick={() => approve.mutate()}
-          title={d.project_id ? 'Send to Shipyard' : 'Pick a project first'}
+          title={d.project_id ? 'Send to JabutiStudio' : 'Pick a project first'}
           className="inline-flex h-7 items-center gap-1 rounded bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-50">
           <Send className="h-3.5 w-3.5" />Send
         </button>

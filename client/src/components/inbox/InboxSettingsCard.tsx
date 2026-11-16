@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 
 /**
  * The WhatsApp inbox reads chosen clients' messages and holds the demands for
- * review in its own web area. Once one is approved there, this Shipyard picks
+ * review in its own web area. Once one is approved there, this JabutiStudio picks
  * it up within a minute and turns it into a task in the project the client is
  * mapped to.
  */
@@ -137,7 +137,7 @@ export function InboxSettingsCard() {
           </div>
         )}
         <p className="text-[10px] text-muted-foreground">
-          Checked every minute while Shipyard is open. Nothing becomes a task without your approval in the inbox.
+          Checked every minute while JabutiStudio is open. Nothing becomes a task without your approval in the inbox.
         </p>
       </CardContent>
     </Card>

@@ -1,18 +1,15 @@
-appId: com.shipyard.dev
-productName: Shipyard
-copyright: Copyright © 2026 Shipyard Contributors. Apache-2.0
+appId: games.jabuti.studio
+productName: JabutiStudio
+copyright: Copyright © 2026 Shipyard Contributors (upstream). JabutiStudio fork. Apache-2.0
 
 directories:
   output: release
   buildResources: assets
 
-# Where the installed app looks for new versions (electron-updater). The
-# release workflow uploads the latest*.yml files this makes electron-builder
-# write next to the installers.
-publish:
-  provider: github
-  owner: defremont
-  repo: Shipyard
+# Auto-update is OFF in JabutiStudio. There is no release channel yet, and
+# the upstream feed (github.com/defremont/Shipyard) must never be used by this
+# fork. Without a `publish` block electron-builder writes no latest*.yml, and
+# main.ts keeps the updater disabled (UPDATES_ENABLED). See UPSTREAM.md.
 
 # Include compiled server, built client, and electron main
 files:
@@ -60,8 +57,8 @@ nsis:
   # used by Windows taskbar pins and Start Menu integration.
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: Shipyard
-  uninstallDisplayName: Shipyard
+  shortcutName: JabutiStudio
+  uninstallDisplayName: JabutiStudio
 
 mac:
   target:
@@ -78,7 +75,7 @@ mac:
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
 dmg:
-  title: Shipyard
+  title: JabutiStudio
   contents:
     - x: 130
       y: 220
@@ -96,13 +93,13 @@ linux:
   icon: assets/icon.png
   category: Development
   artifactName: "${productName}-${version}.${ext}"
-  executableName: shipyard
+  executableName: jabutistudio
   desktop:
     entry:
-      Name: Shipyard
+      Name: JabutiStudio
       Comment: Local Development Dashboard
       Categories: Development;IDE;
-      StartupWMClass: shipyard
+      StartupWMClass: jabutistudio
 
 appImage:
   license: LICENSE

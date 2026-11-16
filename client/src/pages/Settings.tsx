@@ -244,7 +244,7 @@ export function Settings() {
           {/* The Electron Help menu is hidden on a frameless window, so this is
               the only place the running version shows up. */}
           <p className="mt-auto pt-4 px-3 text-[10px] text-muted-foreground">
-            Shipyard v{__APP_VERSION__}
+            JabutiStudio v{__APP_VERSION__}
           </p>
         </nav>
 
@@ -446,7 +446,7 @@ export function Settings() {
             <>
               <div>
                 <h2 className="text-sm font-semibold">Cloud sync</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Use Shipyard on more than one computer.</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Use JabutiStudio on more than one computer.</p>
               </div>
               <CloudSettingsCard />
             </>
@@ -495,7 +495,7 @@ export function Settings() {
                     <div className="space-y-3">
                       <p className="text-xs font-medium text-muted-foreground">Import</p>
                       <p className="text-xs text-muted-foreground">
-                        Upload a Shipyard backup file. Settings and tasks will be merged with existing data.
+                        Upload a JabutiStudio backup file. Settings and tasks will be merged with existing data.
                       </p>
                       <Button onClick={handleImport} disabled={importing} className="gap-2" variant="outline" size="sm">
                         {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}

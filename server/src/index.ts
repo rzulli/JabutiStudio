@@ -40,7 +40,7 @@ const IS_ELECTRON = !!process.env.SHIPYARD_ELECTRON;
 // The API opens terminals and has no login: on a network interface, anyone on
 // the same Wi-Fi could run commands here.
 if (!isLoopbackHost(HOST)) {
-  console.error(`Refusing to listen on ${HOST}: Shipyard has no login and must stay on this machine. Use 127.0.0.1.`);
+  console.error(`Refusing to listen on ${HOST}: JabutiStudio has no login and must stay on this machine. Use 127.0.0.1.`);
   process.exit(1);
 }
 
@@ -131,7 +131,7 @@ try {
   log.info('server', `Claude CLI: ${cliOk ? 'available (subscription)' : 'not found'}`);
   if (IS_ELECTRON) log.info('server', 'Mode: Electron embedded');
 
-  console.log(`Shipyard server running on http://${HOST}:${PORT}`);
+  console.log(`JabutiStudio server running on http://${HOST}:${PORT}`);
   console.log(`Terminal integration: ${termOk ? 'available' : 'disabled (node-pty not found)'}`);
   console.log(`Claude CLI: ${cliOk ? 'available (subscription)' : 'not found'}`);
   console.log(`Claude API: check /api/claude/status`);

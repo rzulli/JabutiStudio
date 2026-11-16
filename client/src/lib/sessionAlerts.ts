@@ -112,7 +112,7 @@ export function alertSession(
   if (channels.sound) playSessionSound(kind)
   if (!channels.desktop && !channels.flash) return
 
-  const title = `${session.project || 'Shipyard'} — ${LABELS[kind]}`
+  const title = `${session.project || 'JabutiStudio'} — ${LABELS[kind]}`
   const desktop = electronAPI()
   if (desktop?.sessionAlert) {
     desktop.sessionAlert({ sessionId: session.sessionId, title, body: session.label, desktop: channels.desktop, flash: channels.flash })

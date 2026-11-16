@@ -6,7 +6,7 @@ import { request } from 'http';
 import { homedir, platform as osPlatform } from 'os';
 import { autoUpdater } from 'electron-updater';
 
-const APP_ID = 'com.shipyard.dev';
+const APP_ID = 'games.jabuti.studio';
 
 // Keep the runtime identity identical to the one embedded by electron-builder.
 // Windows uses it to reconnect taskbar pins after an in-place upgrade, while
@@ -14,7 +14,7 @@ const APP_ID = 'com.shipyard.dev';
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_ID);
 } else if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('class', 'shipyard');
+  app.commandLine.appendSwitch('class', 'jabutistudio');
 }
 
 // ── PATH fix for GUI launch on Linux/macOS ─────────────────────────
@@ -169,7 +169,7 @@ function startServer(): Promise<void> {
     proc.stdout?.on('data', (data: Buffer) => {
       const msg = data.toString();
       console.log('[Server]', msg.trim());
-      // Match our console.log: "Shipyard server running on http://..."
+      // Match our console.log: "JabutiStudio server running on http://..."
       if (!started && (msg.includes('running on') || msg.includes(`${PORT}`))) {
         started = true;
         // Server reported ready via stdout — confirm with HTTP health check
@@ -263,7 +263,7 @@ ipcMain.on('session-alert', (_event, alert: { sessionId: string; title: string; 
   if (!alert.desktop || !Notification.isSupported()) return;
   sessionNotifications.get(alert.sessionId)?.close();
   const notification = new Notification({
-    title: String(alert.title || 'Shipyard'),
+    title: String(alert.title || 'JabutiStudio'),
     body: String(alert.body || ''),
     silent: true, // the renderer plays its own sound
     icon: existsSync(ICON_PATH) ? ICON_PATH : undefined,
@@ -290,7 +290,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: 'Shipyard',
+    title: 'JabutiStudio',
     icon: existsSync(ICON_PATH) ? ICON_PATH : undefined,
     backgroundColor: '#07090c',
     show: false,
@@ -446,9 +446,9 @@ function createApplicationMenu() {
         { type: 'separator' },
         {
           label: 'GitHub Repository',
-          click: () => { shell.openExternal('https://github.com/defremont/Shipyard'); },
+          click: () => { shell.openExternal('https://github.com/rzulli/JabutiStudio'); },
         },
-        { label: `Shipyard v${app.getVersion()}`, enabled: false },
+        { label: `JabutiStudio v${app.getVersion()}`, enabled: false },
       ],
     },
   ];
@@ -460,7 +460,7 @@ function createApplicationMenu() {
 //
 // Releases on GitHub carry latest*.yml next to the installers; electron-updater
 // reads them, downloads the new version in the background and installs it on
-// restart. Shipyard lives in the tray and almost never quits, so waiting for
+// restart. JabutiStudio lives in the tray and almost never quits, so waiting for
 // "install on quit" would mean never — the renderer shows a prompt instead.
 // Drafts are invisible to the updater: publishing the draft is the release.
 
@@ -484,8 +484,13 @@ function setUpdateActivity(next: UpdateActivity) {
   refreshTrayMenu();
 }
 
+// Off until JabutiStudio has its own release channel. Turning it on without one
+// would point the updater at whatever electron-builder was configured with, and
+// this fork must never fetch upstream Shipyard builds. See UPSTREAM.md.
+const UPDATES_ENABLED = false;
+
 function updatesEnabled() {
-  return !isDev && app.isPackaged;
+  return UPDATES_ENABLED && !isDev && app.isPackaged;
 }
 
 function checkForUpdates(manual: boolean) {
@@ -513,7 +518,7 @@ function setupAutoUpdates() {
     if (manualCheck) {
       void dialog.showMessageBox({
         type: 'info',
-        message: 'Shipyard is up to date',
+        message: 'JabutiStudio is up to date',
         detail: `You have the latest version, v${app.getVersion()}.`,
       });
     }
@@ -573,7 +578,7 @@ function createTray() {
 
   tray?.destroy();
   tray = new Tray(icon);
-  tray.setToolTip('Shipyard');
+  tray.setToolTip('JabutiStudio');
   refreshTrayMenu();
 
   tray.on('double-click', () => {
@@ -589,7 +594,7 @@ function refreshTrayMenu() {
   const contextMenu = Menu.buildFromTemplate([
     ...updateMenuItems(),
     {
-      label: 'Show Shipyard',
+      label: 'Show JabutiStudio',
       click: () => {
         mainWindow?.show();
         mainWindow?.focus();
@@ -637,7 +642,7 @@ if (!gotTheLock) {
     } catch (err) {
       console.error('[Electron] Failed to start:', err);
       dialog.showErrorBox(
-        'Shipyard - Failed to Start',
+        'JabutiStudio - Failed to Start',
         `Could not start the server.\n\n${err instanceof Error ? err.message : String(err)}`
       );
       app.quit();

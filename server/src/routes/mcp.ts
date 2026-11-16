@@ -157,7 +157,7 @@ export async function mcpRoutes(app: FastifyInstance) {
     // Return a simple HTML consent page
     const html = `<!DOCTYPE html>
 <html><head>
-<meta charset="utf-8"><title>Shipyard - Authorize</title>
+<meta charset="utf-8"><title>JabutiStudio - Authorize</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; padding: 24px; background: #0a0a0a; color: #e5e5e5; }
   h1 { font-size: 20px; margin-bottom: 8px; }
@@ -177,7 +177,7 @@ export async function mcpRoutes(app: FastifyInstance) {
 </head><body>
 <h1>Authorize Connection</h1>
 <div class="card">
-  <p><span class="client">${field(client.clientName)}</span> wants to connect to your Shipyard dashboard.</p>
+  <p><span class="client">${field(client.clientName)}</span> wants to connect to your JabutiStudio dashboard.</p>
   <p style="font-size: 13px; color: #888;">Permissions requested:</p>
   <ul class="perms">
     <li>View projects, git status, history and diffs</li>

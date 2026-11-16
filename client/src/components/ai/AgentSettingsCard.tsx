@@ -167,7 +167,7 @@ export function AgentSettingsCard() {
             <p><span className="font-mono">{'{cwd}'}</span> — the project folder.</p>
             <p><span className="font-mono">{'{taskFile}'}</span> — a file holding the full task prompt.</p>
             <p><span className="font-mono">{'{task}'}</span> — the prompt as a single-line argument (line breaks collapse to spaces).</p>
-            <p>Leave both prompt placeholders out and Shipyard types the prompt into the CLI once it starts — that keeps the formatting.</p>
+            <p>Leave both prompt placeholders out and JabutiStudio types the prompt into the CLI once it starts — that keeps the formatting.</p>
           </div>
         </div>
       </CardContent>

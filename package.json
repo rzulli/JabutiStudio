@@ -1,9 +1,9 @@
 {
-  "name": "shipyard",
-  "productName": "Shipyard",
-  "desktopName": "shipyard.desktop",
+  "name": "jabutistudio",
+  "productName": "JabutiStudio",
+  "desktopName": "jabutistudio.desktop",
   "version": "1.38.0",
-  "description": "Local-first command center for software projects: tasks, Git, terminals, and coding agents in one workspace",
+  "description": "JabutiStudio (fork of Shipyard): local-first command center for software projects: tasks, Git, terminals, and coding agents in one workspace",
   "author": {
     "name": "Shipyard Contributors",
     "email": "adcoderio@gmail.com"

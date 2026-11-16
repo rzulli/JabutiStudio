@@ -127,9 +127,9 @@ function ShortcutRow({ keys, description }: { keys: string; description: string 
 function SectionOverview() {
   return (
     <>
-      <H2>Shipyard — Local Development Dashboard</H2>
+      <H2>JabutiStudio — Local Development Dashboard</H2>
       <P>
-        Shipyard is a local dashboard for developers who manage multiple projects. It centralizes
+        JabutiStudio is a local dashboard for developers who manage multiple projects. It centralizes
         task management, git operations, terminal launchers, and project navigation in a single
         browser-based interface.
       </P>
@@ -280,7 +280,7 @@ function SectionEditor() {
     <>
       <H2>Code Editor</H2>
       <P>
-        Shipyard includes a built-in code editor powered by CodeMirror 6. Toggle between
+        JabutiStudio includes a built-in code editor powered by CodeMirror 6. Toggle between
         Kanban/List and Editor modes using the mode buttons in the workspace toolbar.
       </P>
 
@@ -508,7 +508,7 @@ function SectionTerminal() {
     <>
       <H2>Integrated Terminal</H2>
       <P>
-        Shipyard includes a full terminal emulator inside the browser, powered by xterm.js and node-pty.
+        JabutiStudio includes a full terminal emulator inside the browser, powered by xterm.js and node-pty.
         It supports colors, interactive programs, and all the features of a real terminal.
       </P>
 
@@ -661,7 +661,7 @@ function SectionSync() {
       <Bullet title="Client screenshots">Images a client attaches to a Trello card show up on the task — thumbnails in the task dialog, click for full size — and a paperclip count appears on the card in the board.</Bullet>
       <Bullet title="Client comments">Comments written on the card are pulled into the task and shown as a thread, newest last.</Bullet>
       <Bullet title="Agents see them too">Claude reads the comments through the MCP server and can open any attached file with <Kbd>get_task_attachment</Kbd>, so a request made entirely in Trello can be worked on without you retyping it.</Bullet>
-      <Bullet title="One direction">Attachments and comments are read-only in Shipyard — write them on the card, and they arrive on the next pull.</Bullet>
+      <Bullet title="One direction">Attachments and comments are read-only in JabutiStudio — write them on the card, and they arrive on the next pull.</Bullet>
 
       <H3>JSON Export</H3>
       <P>
@@ -698,9 +698,9 @@ function SectionSettings() {
 
       <H3>Adding Projects</H3>
       <P>
-        Shipyard doesn't auto-scan your filesystem. You manually select which projects to track:
+        JabutiStudio doesn't auto-scan your filesystem. You manually select which projects to track:
       </P>
-      <Bullet title="Scan a folder">Select a parent directory and Shipyard finds all projects inside it (up to 3 levels deep).</Bullet>
+      <Bullet title="Scan a folder">Select a parent directory and JabutiStudio finds all projects inside it (up to 3 levels deep).</Bullet>
       <Bullet title="Add folder">Select a specific project folder directly.</Bullet>
       <P>
         Projects are detected by markers: package.json, .git, Cargo.toml, go.mod, requirements.txt, pyproject.toml, CLAUDE.md.
@@ -843,7 +843,7 @@ function SectionData() {
 
       <H3>Privacy</H3>
       <P>
-        Shipyard never sends data to external servers. The only network calls are:
+        JabutiStudio never sends data to external servers. The only network calls are:
       </P>
       <Bullet title="AI providers">Only when a provider is connected. Calls go to Anthropic, OpenAI or Google — whichever answers.</Bullet>
       <Bullet title="Google Sheets sync">Only if you configure it. Goes through your own Apps Script URL.</Bullet>
@@ -879,7 +879,7 @@ function SectionClaude() {
       <Bullet title="CLI">
         Install with <code className="bg-muted px-1 rounded">npm i -g @anthropic-ai/claude-code</code> (Node 18+),
         then run <code className="bg-muted px-1 rounded">claude</code> once and log in with your Claude account.
-        Shipyard also reads the CLI's session token directly, so calls run on your Pro/Max plan.
+        JabutiStudio also reads the CLI's session token directly, so calls run on your Pro/Max plan.
       </Bullet>
       <Bullet title="API key">
         Create one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">console.anthropic.com</a>,
@@ -890,7 +890,7 @@ function SectionClaude() {
       <Bullet title="CLI">
         Install with <code className="bg-muted px-1 rounded">npm i -g @openai/codex</code>, then run{' '}
         <code className="bg-muted px-1 rounded">codex</code> once and sign in with your ChatGPT account.
-        Shipyard calls it as <code className="bg-muted px-1 rounded">codex exec</code>, which answers in one
+        JabutiStudio calls it as <code className="bg-muted px-1 rounded">codex exec</code>, which answers in one
         piece rather than streaming word by word.
       </Bullet>
       <Bullet title="API key">
@@ -911,7 +911,7 @@ function SectionClaude() {
       <H3>Security</H3>
       <P>
         Keys are encrypted with AES-256-GCM and stored server-side only — they never reach the
-        browser. Shipyard never reads API keys from environment variables
+        browser. JabutiStudio never reads API keys from environment variables
         (<code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code>,{' '}
         <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code>,{' '}
         <code className="bg-muted px-1 rounded">GEMINI_API_KEY</code>): those belong to other tools.
@@ -948,7 +948,7 @@ function SectionClaude() {
       <H3>AI Task Resolution</H3>
       <P>
         For tasks in progress, click the sparkles button to open Claude Code with the task context
-        pre-loaded. Shipyard tracks the AI session and monitors progress. When Claude completes
+        pre-loaded. JabutiStudio tracks the AI session and monitors progress. When Claude completes
         the work, the task is automatically flagged for review with a pulsing indicator.
       </P>
       <Bullet title="Session tracking">Active AI sessions show a pulsing purple indicator on the task card.</Bullet>
@@ -968,7 +968,7 @@ function SectionClaude() {
 
       <H3>Sound Notifications</H3>
       <P>
-        Shipyard can play a short chime when AI operations complete (bulk import, task analysis, etc.).
+        JabutiStudio can play a short chime when AI operations complete (bulk import, task analysis, etc.).
         Enable or disable this in Settings under the sound toggle. The sound is synthesized via
         Web Audio — no audio files needed.
       </P>
@@ -1001,7 +1001,7 @@ function SectionMcp() {
     <>
       <H2>MCP Server</H2>
       <P>
-        Shipyard can act as a <strong>Model Context Protocol (MCP)</strong> server, allowing
+        JabutiStudio can act as a <strong>Model Context Protocol (MCP)</strong> server, allowing
         Claude Desktop, Claude Code, or any MCP-compatible client to connect and interact with
         your projects and tasks from outside the dashboard.
       </P>
@@ -1057,7 +1057,7 @@ function SectionMcp() {
       <H3>Security</H3>
       <Bullet title="OAuth 2.1 + PKCE">Secure authorization flow with dynamic client registration</Bullet>
       <Bullet title="JWT Tokens">Access tokens expire in 1 hour, refresh tokens in 30 days</Bullet>
-      <Bullet title="Localhost Only">The server only listens on this machine and refuses requests from any web page other than Shipyard itself</Bullet>
+      <Bullet title="Localhost Only">The server only listens on this machine and refuses requests from any web page other than JabutiStudio itself</Bullet>
       <Bullet title="Read-only Git">No push/commit/stage operations exposed — git info is read-only</Bullet>
       <Bullet title="Revoke Access">Revoke any client from Settings &gt; MCP Server</Bullet>
 
@@ -1077,13 +1077,13 @@ function SectionElectron() {
     <>
       <H2>Desktop App (Electron)</H2>
       <P>
-        Shipyard can run as a standalone desktop application. The Electron wrapper packages
+        JabutiStudio can run as a standalone desktop application. The Electron wrapper packages
         the server and client into a single installable app.
       </P>
 
       <H3>Installation</H3>
       <P>
-        Run the installer for your platform (e.g., <code>Shipyard-Setup-1.0.0.exe</code> on Windows).
+        Run the installer for your platform (e.g., <code>JabutiStudio-Setup-1.0.0.exe</code> on Windows).
         The app installs to the default location and creates Start Menu/Desktop shortcuts.
       </P>
 

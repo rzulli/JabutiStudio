@@ -63,7 +63,7 @@ export function McpSettingsCard() {
           )}
         </CardTitle>
         <CardDescription>
-          Expose Shipyard as an MCP server so Claude Desktop, Claude Code, or other MCP clients can read projects, manage tasks, and view git status.
+          Expose JabutiStudio as an MCP server so Claude Desktop, Claude Code, or other MCP clients can read projects, manage tasks, and view git status.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

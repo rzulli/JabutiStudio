@@ -29,7 +29,7 @@ function buildClaudeContext(projectName: string, projectPath: string, projectId:
   const lines = [
     `Project: ${projectName}`,
     `Project path: ${projectPath}`,
-    `Shipyard tasks file: ${tasksFile}`,
+    `JabutiStudio tasks file: ${tasksFile}`,
     '',
   ]
 

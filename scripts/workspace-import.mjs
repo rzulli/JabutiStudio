@@ -147,7 +147,7 @@ function main() {
         : null;
   if (!DATA_DIR) {
     console.error('cannot tell where the Shipyard data dir is. Pass --data-dir <path>, or set SHIPYARD_DATA_DIR.');
-    console.error('  Electron app: %APPDATA%\Shipyard\data   ·   pnpm dev: <shipyard repo>/data');
+    console.error('  Electron app: %APPDATA%\JabutiStudio\data   ·   pnpm dev: <shipyard repo>/data');
     process.exit(1);
   }
 

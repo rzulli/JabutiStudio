@@ -73,7 +73,7 @@ export function AppTitleBar() {
       {desktop && (
       <DropdownMenu>
         <DropdownMenuTrigger
-          aria-label="Shipyard menu"
+          aria-label="JabutiStudio menu"
           title="Menu"
           className="app-no-drag flex h-7 shrink-0 items-center gap-1 rounded px-1.5 hover:bg-accent focus:outline-none data-[state=open]:bg-accent"
         >
@@ -119,7 +119,7 @@ export function AppTitleBar() {
             <DropdownMenuItem onClick={() => navigate('/help')}>Help & Documentation</DropdownMenuItem>
             <DropdownMenuItem onClick={() => navigate('/logs')}>Logs</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => window.open('https://github.com/defremont/Shipyard', '_blank', 'noopener,noreferrer')}>GitHub Repository</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => window.open('https://github.com/rzulli/JabutiStudio', '_blank', 'noopener,noreferrer')}>GitHub Repository</DropdownMenuItem>
           </MenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
