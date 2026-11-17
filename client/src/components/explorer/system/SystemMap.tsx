@@ -4,6 +4,7 @@ import type { SystemView } from '@/lib/api'
 import { buildSystemMap, edgePath, type MapEdge, type MapNode } from '@/lib/systemMap'
 import { cn } from '@/lib/utils'
 import { BasisPill, EvidenceLine, type SystemActions } from './parts'
+import { RelationList, RelationPills } from './RelationList'
 import { AskMenu } from './AskMenu'
 
 /**
@@ -15,12 +16,10 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
   v: SystemView; actions: SystemActions; compact?: boolean
   selectedArea?: string | null; onSelectArea?: (id: string | null) => void
 }) {
-  const [showWeak, setShowWeak] = useState(false)
   const [showTech, setShowTech] = useState(false)
   const [sel, setSel] = useState<{ kind: 'node' | 'edge'; id: string } | null>(null)
-  const layout = useMemo(() => buildSystemMap(v, { showWeak, showTechnical: showTech }), [v, showWeak, showTech])
+  const layout = useMemo(() => buildSystemMap(v, { showTechnical: showTech }), [v, showTech])
   const byId = useMemo(() => new Map(layout.nodes.map(n => [n.id, n])), [layout])
-  const hiddenWeak = v.relations.filter(r => r.basis === 'candidate' || r.basis === 'stale').length
 
   const selNode = sel?.kind === 'node' ? byId.get(sel.id) : undefined
   const selEdge = sel?.kind === 'edge' ? layout.edges.find(e => e.id === sel.id) : undefined
@@ -56,9 +55,6 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
         <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
           <Legend />
           <label className="ml-auto flex items-center gap-1"><input type="checkbox" checked={showTech} onChange={e => setShowTech(e.target.checked)} /> code links</label>
-          <label className="flex items-center gap-1" title="Relations without verifiable evidence in this checkout">
-            <input type="checkbox" checked={showWeak} onChange={e => setShowWeak(e.target.checked)} data-testid="map-show-weak" /> candidates ({hiddenWeak})
-          </label>
         </div>
       )}
       <div className="overflow-x-auto rounded-md border bg-card/30">
@@ -78,6 +74,7 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
           Nothing to draw yet: no responsibilities are described and no gameplay relation is documented. Ask an agent to propose them (it can only propose).
         </p>
       )}
+      {!compact && v.relations.length > 0 && <RelationList v={v} actions={actions} />}
       {!compact && v.relations.length === 0 && !empty && (
         <p className="text-[11px] text-muted-foreground">No gameplay relation is documented for this system. Dashed lines are code references from the graph — they do not prove gameplay responsibility.</p>
       )}
@@ -95,7 +92,8 @@ function Legend() {
   return (
     <span className="flex items-center gap-3">
       <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" /></svg>cited text matched</span>
-      <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" strokeDasharray="5 3" /></svg>inferred / code link</span>
+      <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" strokeDasharray="5 3" /></svg>file pointer / code link</span>
+      <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" strokeDasharray="1.5 3" strokeLinecap="round" /></svg>design only (no code yet)</span>
     </span>
   )
 }
@@ -118,12 +116,13 @@ function Edge({ e, byId, active, onPick }: { e: MapEdge; byId: Map<string, MapNo
   const a = byId.get(e.from), b = byId.get(e.to)
   if (!a || !b) return null
   const { d, mx, my } = edgePath(a, b)
+  const designOnly = e.layer === 'gameplay' && e.basis === 'candidate'
   const dashed = e.layer === 'technical' || e.basis !== 'demonstrated'
   return (
-    <g onClick={onPick} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick() } }} role="button" tabIndex={0} aria-label={`${a.label} ${e.label} ${b.label}`} className="cursor-pointer" data-testid="map-edge" data-layer={e.layer} data-basis={e.basis}>
+    <g onClick={onPick} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick() } }} role="button" tabIndex={0} aria-label={`${a.label} ${e.label} ${b.label}`} className="cursor-pointer" data-testid="map-edge" data-layer={e.layer} data-basis={e.basis} data-status={e.status}>
       <path d={d} fill="none" stroke="transparent" strokeWidth={12} />
       <path d={d} fill="none" className={cn(active ? 'stroke-foreground' : 'stroke-muted-foreground')} strokeWidth={e.layer === 'gameplay' ? 1.6 : 1}
-        strokeDasharray={dashed ? '5 3' : undefined} markerEnd={`url(#${active ? 'arrow-sel' : 'arrow'})`} opacity={e.layer === 'technical' && !active ? 0.55 : 1} />
+        strokeDasharray={designOnly ? '1.5 3.5' : dashed ? '5 3' : undefined} strokeLinecap={designOnly ? 'round' : undefined} markerEnd={`url(#${active ? 'arrow-sel' : 'arrow'})`} opacity={e.layer === 'technical' && !active ? 0.55 : 1} />
       <rect x={mx - 3 - e.label.length * 2.6} y={my - 7} width={e.label.length * 5.2 + 6} height={13} rx={3} className="fill-background" opacity={0.92} />
       <text x={mx} y={my + 3} textAnchor="middle" className="fill-foreground text-[9px]">{e.label}</text>
     </g>
@@ -195,12 +194,11 @@ function EdgeInspector({ e, v, actions }: { e: MapEdge; v: SystemView; actions: 
     <div className="space-y-1.5 text-[11px]" data-testid="edge-inspector">
       <div className="flex flex-wrap items-center gap-1.5">
         <p className="text-xs font-medium">{r.from.label} {r.label} {r.to.label}</p>
-        <BasisPill basis={r.basis} />
-        <span className="rounded bg-accent px-1.5 text-[10px]">{r.status === 'confirmed' ? 'confirmed by you' : `proposed by ${r.origin}`}</span>
+        <RelationPills r={r} />
       </div>
       {r.note && <p className="text-muted-foreground">{r.note}</p>}
       {r.direction !== 'incoming' && <button onClick={() => actions.onQuickEdit?.({ type: 'relation', id: r.id })} data-testid="edit-relation-quick" className="rounded-md border px-2 py-0.5 hover:bg-accent">Edit this relation</button>}
-      {r.evidence.length === 0 && <p className="text-warning">No evidence recorded: shown only because candidates are visible.</p>}
+      {r.evidence.length === 0 && <p className="text-muted-foreground" data-testid="design-only-note">Design only: no code evidence is attached. That is normal before the feature is built; add evidence in the editor once code exists.</p>}
       {r.evidence.map(ev => <EvidenceLine key={`${ev.path}|${ev.needle}`} e={ev} onOpen={actions.onOpen} />)}
       <p className="text-[10px] text-muted-foreground">Checked against {v.checkout.branch ?? '?'} {v.checkout.head ?? ''}{v.checkout.uncommitted ? ` (+${v.checkout.uncommitted} uncommitted)` : ''}. {from !== to ? '' : ''}</p>
       <AskBtn label="Investigate this relation" onClick={() => actions.onAsk('claude', undefined, `Verify this gameplay relation in the real code and report whether it holds: ${r.from.label} ${r.label} ${r.to.label}. Evidence given: ${r.evidence.map(x => `${x.resolvedPath ?? x.path}${x.line ? `:${x.line}` : ''} [${x.state}]`).join('; ') || 'none'}. Do not edit code.`)} />

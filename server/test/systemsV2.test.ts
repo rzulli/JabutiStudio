@@ -149,13 +149,12 @@ test('T5: technical (graph) links stay out of the gameplay relations and are nev
   assert.ok(Array.isArray(v.technical))
 })
 
-test('map: candidates are hidden by default, demonstrated edges are drawn, technical links are a separate layer', async () => {
+test('map: every declared relation is drawn (evidence only changes its style), technical links are a separate layer', async () => {
   const v = await view()
   const def = buildSystemMap(v)
   assert.ok(def.edges.some(e => e.layer === 'gameplay' && e.basis === 'demonstrated'))
-  assert.ok(!def.edges.some(e => e.basis === 'candidate' && e.layer === 'gameplay'))
-  const weak = buildSystemMap(v, { showWeak: true })
-  assert.ok(weak.edges.some(e => e.layer === 'gameplay' && e.basis === 'candidate'))
+  assert.ok(def.edges.some(e => e.basis === 'candidate' && e.layer === 'gameplay'), 'a relation without evidence is still drawn')
+  assert.equal(def.edges.filter(e => e.layer === 'gameplay').length, v.relations.length, 'one edge per declared relation')
   const ids = new Set(def.nodes.map(n => n.id))
   assert.ok(def.edges.every(e => ids.has(e.from) && ids.has(e.to)), 'every edge has both ends')
   assert.equal(new Set(def.nodes.map(n => n.id)).size, def.nodes.length, 'one node per identity')

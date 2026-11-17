@@ -5,6 +5,8 @@ import { api, type SystemMember, type SystemView, type SystemArea } from '@/lib/
 import { cn } from '@/lib/utils'
 import { BasisPill, EvidenceLine, ProvenancePill, Section, StatusPill, baseName, provenanceOfBasis, type SystemActions } from './parts'
 import { AskMenu } from './AskMenu'
+import { RelationPills } from './RelationList'
+import { CONFIRM_MEANING } from '@/lib/relationState'
 import { SystemMap } from './SystemMap'
 
 const FACET: Record<string, string> = { logic: 'logic', data: 'data', ui: 'UI', telemetry: 'telemetry', purchase: 'purchase', requirement: 'requirement', effect: 'effect', test: 'test', other: 'other' }
@@ -152,13 +154,13 @@ function ProposalsCard({ v, projectId, actions }: { v: SystemView; projectId: st
       ))}
       {proposedRels.map(r => (
         <div key={r.id} className="flex flex-wrap items-center gap-2 text-xs" data-testid="proposed-relation">
-          <span className="font-medium">{r.from.label} {r.label} {r.to.label}</span><BasisPill basis={r.basis} />
+          <span className="font-medium">{r.from.label} {r.label} {r.to.label}</span><RelationPills r={r} />
           <button onClick={() => actions.onQuickEdit?.({ type: 'relation', id: r.id })} className="ml-auto text-[11px] underline">Open in editor</button>
-          <button onClick={() => run(() => api.editSystem(projectId, v.id, { confirm: { relations: [r.id] } }), 'Relation confirmed')} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-accent">Accept</button>
+          <button onClick={() => run(() => api.editSystem(projectId, v.id, { confirm: { relations: [r.id] } }), 'Relation confirmed')} title="Confirms immediately, without opening the editor" className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-accent">Accept</button>
           <button onClick={() => run(() => api.editSystem(projectId, v.id, { remove: { relations: [r.id] } }), 'Relation removed')} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-accent">Reject</button>
         </div>
       ))}
-      <p className="text-[10px] text-muted-foreground">“Accept” records that you agree with the classification. It does not approve a design decision, and the evidence is still re-checked against the code.</p>
+      <p className="text-[10px] text-muted-foreground">“Accept” is the same act as ticking “confirm” in the editor and takes effect immediately. {CONFIRM_MEANING}</p>
     </section>
   )
 }
@@ -295,9 +297,11 @@ export function EvidenceTab({ v, actions, projectId, onChanged, onPick }: { v: S
         {v.relations.map(r => (
           <div key={r.id} className="space-y-0.5 rounded-md border p-2" data-testid="relation-row" data-basis={r.basis}>
             <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="font-medium">{r.from.label} {r.label} {r.to.label}</span><BasisPill basis={r.basis} />
-              <span className="text-[10px] text-muted-foreground">{r.status === 'confirmed' ? 'confirmed by you' : `proposed by ${r.origin}`} · {r.direction}</span>
+              <span className="font-medium">{r.from.label} {r.label} {r.to.label}</span><RelationPills r={r} />
+              <span className="text-[10px] text-muted-foreground">{r.direction}</span>
+              {r.direction !== 'incoming' && <button onClick={() => actions.onQuickEdit?.({ type: 'relation', id: r.id })} data-testid="evidence-relation-edit" className="ml-auto rounded-md border px-2 py-0.5 text-[11px] hover:bg-accent">Edit</button>}
             </div>
+            {!r.evidence.length && <p className="text-[11px] text-muted-foreground">Design only: no code evidence attached.</p>}
             {r.note && <p className="text-[11px] text-muted-foreground">{r.note}</p>}
             {r.evidence.map(e => <EvidenceLine key={`${e.path}|${e.needle}`} e={e} onOpen={actions.onOpen} />)}
           </div>

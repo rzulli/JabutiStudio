@@ -135,3 +135,59 @@ test('5. saving a proposal and confirming are different operations; a plain save
   for (const e of relationEdits([cur], [changed])) await svc.review('rel', PDI, e as any)
   assert.equal((await persistedRel()).status, 'proposed')
 })
+
+// ---- RC2: a relation with no code is a complete design relation -------------------------------------------------
+import { buildSystemMap } from '../../client/src/lib/systemMap.js'
+import { relationState } from '../../client/src/lib/relationState.js'
+import { readFileSync } from 'node:fs'
+
+const storeFile = () => readFileSync(join(dataDir, 'systems', 'rel.json'), 'utf8')
+
+test('6. a relation with no evidence/files is drawn on the map by default, with both endpoints, and is not hidden as a "candidate"', async () => {
+  const v = await view(PDI)
+  const r = v.relations.find((x: any) => x.direction !== 'incoming')
+  assert.deepEqual(r.evidence, []); assert.equal(r.basis, 'candidate')
+  const m = buildSystemMap(v) // default options: nothing to tick to see it
+  const e = m.edges.find(x => x.layer === 'gameplay' && x.relationId === r.id)
+  assert.ok(e, 'the conceptual relation has an edge')
+  assert.equal(e!.basis, 'candidate'); assert.match(e!.detail ?? '', /design only/)
+  const ids = new Set(m.nodes.map(n => n.id)); assert.ok(ids.has(e!.from) && ids.has(e!.to))
+  const s = relationState(r)
+  assert.deepEqual([s.design, s.code, s.codeLabel], ['proposed', 'none', 'design only'])
+})
+
+test('7. proposed / confirmed / code-verified are separate facts: confirming does not imply code, code does not imply confirming', async () => {
+  const v0 = await view(PDI); const r0 = v0.relations.find((x: any) => x.direction !== 'incoming')
+  await svc.review('rel', PDI, { confirm: { relations: [r0.id] } })
+  const r1 = (await view(PDI)).relations.find((x: any) => x.direction !== 'incoming')
+  assert.deepEqual([relationState(r1).design, relationState(r1).code], ['confirmed', 'none'], 'confirmed but still design only')
+  assert.equal(relationState({ status: 'proposed', basis: 'demonstrated', evidence: [{ path: 'a.gd', state: 'verified' } as any] }).code, 'matched')
+  assert.equal(relationState({ status: 'proposed', basis: 'inferred', evidence: [{ path: 'a.gd', state: 'file-only' } as any] }).code, 'pointer')
+  assert.equal(relationState({ status: 'confirmed', basis: 'stale', evidence: [{ path: 'a.gd', state: 'stale' } as any] }).code, 'stale')
+  await svc.review('rel', PDI, { replaceRelation: { id: r1.id, relation: { kind: r1.kind, from: r1.from.ref, to: r1.to.ref, note: r1.note } } })
+  assert.equal((await persistedRel()).status, 'confirmed', 'an identical rewrite keeps the confirmation')
+})
+
+test('8. editing the note of a CONFIRMED relation returns it to proposed (as the editor says); evidence is not required to save', async () => {
+  const p = await persistedRel(); assert.equal(p.status, 'confirmed')
+  const d = formToDraft(run(initForm(p), { type: 'setNote', note: NOTE + ' Edited.' }), p, 'x')
+  const edits = relationEdits([p], [d]); assert.equal(edits.length, 1)
+  for (const e of edits) await svc.review('rel', PDI, e as any)
+  const after = await persistedRel()
+  assert.equal(after.note, NOTE + ' Edited.'); assert.equal(after.status, 'proposed'); assert.deepEqual(after.ev, [])
+  assert.equal((await view(PDI)).relations.find((x: any) => x.direction !== 'incoming').basis, 'candidate', 'still no code, still a valid relation')
+})
+
+test('9. quick edit and staged edit plan identical writes; cancel writes nothing (store bytes unchanged)', async () => {
+  const p = await persistedRel()
+  const before = storeFile()
+  // Cancel in either flow = never calling relationEdits/review.
+  const quick = formToDraft(run(initForm(p), { type: 'setNote', note: 'same change' }), p, 'x')
+  const staged: DraftRel = { ...p, note: 'same change' } // the staged list edits the same DraftRel
+  assert.deepEqual(relationEdits([p], [quick]), relationEdits([p], [staged]), 'one contract for both flows')
+  assert.equal(storeFile(), before, 'planning/cancelling never touches the file')
+  for (const e of relationEdits([p], [quick])) await svc.review('rel', PDI, e as any)
+  const reopened = await persistedRel()
+  assert.equal(reopened.note, 'same change'); assert.notEqual(storeFile(), before)
+  await svc.review('rel', PDI, { replaceRelation: { id: reopened.id!, relation: { kind: 'modifies', from: FROM, to: TO, note: NOTE } } })
+})

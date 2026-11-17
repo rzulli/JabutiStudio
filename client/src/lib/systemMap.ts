@@ -37,13 +37,12 @@ const GAP_Y = 14
 const COL_X = [8, 262, 516]
 const SELF_ID = 'self'
 
-/** Whether a relation is drawn when evidence is missing: candidates stay out of the default map. */
-export function visibleEdge(basis: MapEdge['basis'], showWeak: boolean) {
-  return showWeak || basis === 'demonstrated' || basis === 'inferred'
-}
-
-export function buildSystemMap(v: Pick<SystemView, 'id' | 'name' | 'areas' | 'relations' | 'technical'>, opts: { showWeak?: boolean; showTechnical?: boolean } = {}): SystemMapLayout {
-  const showWeak = !!opts.showWeak
+/**
+ * A declared relation is a design record and is ALWAYS drawn: missing or stale code evidence changes how the edge looks
+ * (dotted, "design only"), never whether it exists. Before, basis 'candidate' (= no evidence) was hidden unless a
+ * checkbox was ticked, so a purely conceptual relation had no edge to click and no way into the editor.
+ */
+export function buildSystemMap(v: Pick<SystemView, 'id' | 'name' | 'areas' | 'relations' | 'technical'>, opts: { showTechnical?: boolean } = {}): SystemMapLayout {
   const nodes = new Map<string, MapNode>()
   const edges: MapEdge[] = []
   const mk = (n: Omit<MapNode, 'x' | 'y' | 'w' | 'h'>) => { if (!nodes.has(n.id)) nodes.set(n.id, { ...n, x: 0, y: 0, w: NODE_W, h: NODE_H }); return nodes.get(n.id)! }
@@ -60,7 +59,6 @@ export function buildSystemMap(v: Pick<SystemView, 'id' | 'name' | 'areas' | 're
   const feeds = new Set<string>(); const fed = new Set<string>()
 
   for (const r of v.relations) {
-    if (!visibleEdge(r.basis, showWeak)) continue
     const f = idOf(r.from), t = idOf(r.to)
     for (const [e, id] of [[r.from, f], [r.to, t]] as const) {
       if (nodes.has(id)) continue
@@ -72,7 +70,7 @@ export function buildSystemMap(v: Pick<SystemView, 'id' | 'name' | 'areas' | 're
     if (!fromInternal && toInternal) feeds.add(f)
     edges.push({
       id: r.id, relationId: r.id, from: f, to: t, layer: 'gameplay', label: r.label, basis: r.basis, status: r.status,
-      detail: r.evidence.length ? `${r.evidence.length} evidence item(s)` : 'no evidence recorded',
+      detail: r.evidence.length ? `${r.evidence.length} evidence item(s)` : 'design only: no code evidence',
     })
   }
   for (const id of feeds) if (!fed.has(id)) nodes.get(id)!.column = 0

@@ -6,6 +6,7 @@ import { api, type SystemSummary, type SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { relationProblem, relLabel, type ThingKind } from '@/lib/relationRules'
 import { relSig, relationEdits } from '@/lib/relationForm'
+import { CONFIRM_MEANING, SAVE_MEANING } from '@/lib/relationState'
 import {
   ComponentEditor, IdentityStep, Label, MembersStep, RelationForm, RelationsStep, ResponsibilitiesStep, areaId, areaRef, blankArea, field, uniq,
   type AreaKind, type DraftArea, type DraftRel, type Focus, type RelCtx,
@@ -272,7 +273,7 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
                 <p>Status: <b data-testid="quick-state">{state}</b></p>
                 {canConfirm && (
                   <label className="flex items-start gap-2"><input type="checkbox" checked={alsoConfirm} onChange={e => setAlsoConfirm(e.target.checked)} className="mt-0.5" data-testid="quick-also-confirm" />
-                    <span>Also confirm it. This records on this installation that <i>you</i> accept it as correct. It is not a design approval and can be undone by editing it again.</span></label>
+                    <span>Also confirm it. {CONFIRM_MEANING} Editing it again returns it to proposed.</span></label>
                 )}
                 {!canConfirm && alreadyConfirmed && <p className="text-muted-foreground">Already confirmed and unchanged.</p>}
               </div>
@@ -335,7 +336,7 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
             <button onClick={() => setStep(nextStep(step))} className="flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" data-testid="edit-next">Next <ChevronRight className="h-3 w-3" /></button>
           ) : (
             <>
-              <button disabled={saving || problems.length > 0 || (!draft && !changes.length)} onClick={() => save('proposal')} data-testid="edit-save-proposal" className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40">{draft ? 'Create as proposal' : 'Save as proposal'}</button>
+              <button disabled={saving || problems.length > 0 || (!draft && !changes.length)} onClick={() => save('proposal')} data-testid="edit-save-proposal" className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40">{draft ? 'Create system' : 'Save changes'}</button>
               <button disabled={saving || problems.length > 0 || toConfirm === 0} onClick={() => save('confirm')} data-testid="edit-save-confirm" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-40">
                 Save &amp; confirm selected ({toConfirm})
               </button>
@@ -411,7 +412,7 @@ function ReviewStep({ v, draft, name, kind, summary, planned, resp, changes, pro
         {(alreadyAreas.length > 0 || alreadyRels.length > 0) && (
           <p className="text-[11px] text-muted-foreground"><Check className="mr-1 inline h-3 w-3" />Already confirmed and unchanged: {[...alreadyAreas.map(a => a.name), ...alreadyRels.map(r => `${label(r.from)} ${relLabel(r.kind)} ${label(r.to)}`)].join('; ')}</p>
         )}
-        <p className="text-[10px] text-muted-foreground">“Save as proposal” ignores these ticks. Confirming records, on this installation, that <i>you</i> accept the classification. It does not approve a design decision.</p>
+        <p className="text-[10px] text-muted-foreground">“Save changes” ignores these ticks: {SAVE_MEANING} {CONFIRM_MEANING}</p>
       </section>
 
       <section className="space-y-1.5 rounded-md border bg-card/40 p-3" data-testid="review-preview">

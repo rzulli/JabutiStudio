@@ -93,15 +93,17 @@ test('an agent proposal with an invalid relation is stored without that relation
   assert.deepEqual(s!.relations!.map(x => x.kind), ['depends_on'])
 })
 
-test('editing a relation in place: same meaning keeps its status, a different meaning goes back to proposal; both id forms are accepted', async () => {
+test('editing a relation in place: identical content keeps its status, changed content goes back to proposal; both id forms are accepted', async () => {
   const v0 = await view('sys-economy')
   const rel = v0.relations.find((r: any) => r.kind === 'produces')
   assert.ok(rel.id.startsWith('sys-economy:'), 'the view prefixes ids with their owner')
   await svc.review('auth', 'sys-economy', { confirm: { relations: [rel.id] } })
   assert.equal((await svc.getStored('auth', 'sys-economy'))!.relations!.find(r => r.kind === 'produces')!.status, 'confirmed', 'confirm accepts the view id')
+  const identical = await svc.review('auth', 'sys-economy', { replaceRelation: { id: rel.id, relation: { kind: 'produces', from: 'area:earning', to: 'area:coin' } } })
+  assert.equal(identical!.relations!.find(r => r.kind === 'produces')!.status, 'confirmed', 'an identical rewrite keeps the confirmation')
   const same = await svc.review('auth', 'sys-economy', { replaceRelation: { id: rel.id, relation: { kind: 'produces', from: 'area:earning', to: 'area:coin', note: 'on pickup' } } })
   const kept = same!.relations!.find(r => r.kind === 'produces')!
-  assert.equal(kept.status, 'confirmed'); assert.equal(kept.note, 'on pickup')
+  assert.equal(kept.status, 'proposed', 'a new note is new content: the old confirmation no longer covers it'); assert.equal(kept.note, 'on pickup')
   const changed = await svc.review('auth', 'sys-economy', { replaceRelation: { id: kept.id, relation: { kind: 'stores', from: 'self', to: 'area:coin' } } })
   const moved = changed!.relations!.find(r => r.kind === 'stores')!
   assert.equal(moved.status, 'proposed'); assert.ok(!changed!.relations!.some(r => r.kind === 'produces'))

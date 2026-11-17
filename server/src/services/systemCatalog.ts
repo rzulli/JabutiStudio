@@ -1169,7 +1169,10 @@ export function review(projectId: string, id: string, edit: Edit) {
       const i = (s.relations ?? []).findIndex(x => x.id === rid(edit.replaceRelation!.id));
       if (i < 0) throw new Error('The relation to edit no longer exists.');
       const old = s.relations![i];
-      const same = old.kind === r.kind && old.from === r.from && old.to === r.to;
+      // Any change to what was confirmed (direction, note or evidence) returns it to proposed: the editor says so, and a
+      // confirmation of the old text must not silently cover the new one. An identical rewrite keeps the status.
+      const same = old.kind === r.kind && old.from === r.from && old.to === r.to
+        && (old.note ?? '') === (r.note ?? '') && JSON.stringify(old.evidence ?? []) === JSON.stringify(r.evidence ?? []);
       s.relations![i] = { ...r, status: same ? old.status : 'proposed', evidence: r.evidence };
     }
     for (const aid of edit.confirm?.areas ?? []) { const a = s.areas?.find(x => x.id === aid); if (a) a.status = 'confirmed'; }
