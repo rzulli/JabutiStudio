@@ -15,7 +15,7 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
   selectedArea?: string | null; onSelectArea?: (id: string | null) => void
 }) {
   const [showWeak, setShowWeak] = useState(false)
-  const [showTech, setShowTech] = useState(true)
+  const [showTech, setShowTech] = useState(false)
   const [sel, setSel] = useState<{ kind: 'node' | 'edge'; id: string } | null>(null)
   const layout = useMemo(() => buildSystemMap(v, { showWeak, showTechnical: showTech }), [v, showWeak, showTech])
   const byId = useMemo(() => new Map(layout.nodes.map(n => [n.id, n])), [layout])
@@ -41,7 +41,7 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
         </div>
       )}
       <div className="overflow-x-auto rounded-md border bg-card/30">
-        <svg viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} className="mx-auto block max-w-full" role="img" aria-label={`Map of ${v.name}`}>
+        <svg viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} className="mx-auto block" role="group" aria-label={`Map of ${v.name}`}>
           <defs>
             <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" className="fill-muted-foreground" /></marker>
             <marker id="arrow-sel" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" className="fill-foreground" /></marker>
@@ -73,7 +73,7 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
 function Legend() {
   return (
     <span className="flex items-center gap-3">
-      <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" /></svg>gameplay (demonstrated)</span>
+      <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" /></svg>cited text matched</span>
       <span className="flex items-center gap-1"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" className="stroke-foreground" strokeWidth="1.6" strokeDasharray="5 3" /></svg>inferred / code link</span>
     </span>
   )
@@ -82,7 +82,7 @@ function Legend() {
 function Node({ n, active, onPick }: { n: MapNode; active: boolean; onPick: () => void }) {
   const label = n.label.length > 24 ? `${n.label.slice(0, 23)}…` : n.label
   return (
-    <g onClick={onPick} className="cursor-pointer" data-testid="map-node" data-node={n.id}>
+    <g onClick={onPick} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick() } }} role="button" tabIndex={0} aria-label={n.label} className="cursor-pointer" data-testid="map-node" data-node={n.id}>
       <title>{n.label}{n.sub ? ` — ${n.sub}` : ''}</title>
       <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={6}
         className={cn(n.type === 'self' ? 'fill-accent' : 'fill-card', active ? 'stroke-foreground' : 'stroke-border')}
@@ -99,7 +99,7 @@ function Edge({ e, byId, active, onPick }: { e: MapEdge; byId: Map<string, MapNo
   const { d, mx, my } = edgePath(a, b)
   const dashed = e.layer === 'technical' || e.basis !== 'demonstrated'
   return (
-    <g onClick={onPick} className="cursor-pointer" data-testid="map-edge" data-layer={e.layer} data-basis={e.basis}>
+    <g onClick={onPick} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick() } }} role="button" tabIndex={0} aria-label={`${a.label} ${e.label} ${b.label}`} className="cursor-pointer" data-testid="map-edge" data-layer={e.layer} data-basis={e.basis}>
       <path d={d} fill="none" stroke="transparent" strokeWidth={12} />
       <path d={d} fill="none" className={cn(active ? 'stroke-foreground' : 'stroke-muted-foreground')} strokeWidth={e.layer === 'gameplay' ? 1.6 : 1}
         strokeDasharray={dashed ? '5 3' : undefined} markerEnd={`url(#${active ? 'arrow-sel' : 'arrow'})`} opacity={e.layer === 'technical' && !active ? 0.55 : 1} />

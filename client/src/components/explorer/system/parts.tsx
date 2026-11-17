@@ -23,7 +23,7 @@ export function StatusPill({ status }: { status: SystemStatus | 'inferred' }) {
 }
 
 const BASIS: Record<EvidenceBasis, { label: string; cls: string; title: string }> = {
-  demonstrated: { label: 'demonstrated', cls: 'bg-success/15 text-success', title: 'The cited code still contains the cited text in this checkout' },
+  demonstrated: { label: 'text matched', cls: 'bg-success/15 text-success', title: 'The cited text exists in this checkout; this alone does not prove the proposed relation' },
   inferred: { label: 'inferred', cls: 'border border-dashed text-muted-foreground', title: 'Supported by a file reference only, not by the text it claims' },
   candidate: { label: 'candidate', cls: 'border border-dashed text-warning', title: 'No verifiable evidence' },
   stale: { label: 'stale', cls: 'bg-warning/15 text-warning', title: 'The evidence no longer holds in this checkout' },

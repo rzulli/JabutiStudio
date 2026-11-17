@@ -722,6 +722,18 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   decisoes novas do DK (reaparecem na consulta), projeto sem DK (`design.available=false`, nunca erro)
 - **Worktree**: `?worktree=` muda o checkout examinado (membros por nome/texto, git, dirty, integracao); o grafo
   continua o do canonico e a UI/limitacoes dizem isso. Nunca reescreve o snapshot do canonico
+- **V2**: Overview, Map, Rules & decisions, Implementation e Evidence agrupam responsabilidades, relacoes de
+  gameplay, codigo e registros DK. Areas e relacoes propostas sao julgamentos persistidos, nao descobertas
+  automaticas; facetas por nome sao inferencias. Graphify fornece simbolos e ligacoes tecnicas, nunca causalidade.
+  Evidencia textual e reverificada no checkout: encontrar o trecho nao comprova a relacao nem aprovacao humana.
+  Mudanca de nome detectada no diff Git contra HEAD pode ser seguida; renomeacoes ja commitadas com novo nome
+  podem exigir atualizacao manual das ancoras. O grafo continua descrevendo o checkout canonico ate nova analise.
+- Para outro projeto Godot, descubra candidatos e revise/proponha suas responsabilidades e evidencias; DK e
+  opcional, nao copie dados de outro jogo. Adicione testes de semantica e manutencao em `server/test/systemsV2.test.ts`;
+  rode `pnpm --filter shipyard-server test` (inclui `systems.test.ts` e os testes V2).
+- O catalogo usa o ID de projeto compartilhado pelo app. Projetos com o mesmo nome recebem sufixos conforme a
+  ordem de cadastro; mudar essa ordem pode associar dados ao projeto errado. Nao reorganizar esses projetos sem
+  antes preservar e conferir seus arquivos `data/systems/` (a limitacao tambem afeta outros dados por ID).
 - `designKnowledge.dkScript` cai para o `dk.py` mais novo entre os checkouts quando o do projeto nao tem `--root`
 - Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
   **Nao hardcodar nomes/ids/caminhos de um jogo na logica geral** — so em fixtures

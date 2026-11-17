@@ -351,6 +351,19 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     memo(`files|${root}`, VIEW_TTL, () => listFiles(root)),
   ]);
   const fileSet = new Set(files);
+  const renames = await memo(`renames|${root}`, VIEW_TTL, async () => {
+    const parts = ((await git(root, ['diff', '--name-status', '-z', '-M', 'HEAD'])) ?? '').split('\0');
+    const found = new Map<string, string>();
+    for (let i = 0; i < parts.length - 1;) {
+      const status = parts[i++];
+      const from = parts[i++];
+      if (status.startsWith('R') || status.startsWith('C')) {
+        const to = parts[i++];
+        if (status.startsWith('R')) found.set(posix(from), posix(to));
+      }
+    }
+    return found;
+  });
   const terms = sys.anchors.terms;
   const g = await graphify.loadGraph(project.id).catch(() => null);
   const startedAt = g ? await graphify.buildStartedAt(project.id) : null;
@@ -379,6 +392,8 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   /** An anchored path in THIS checkout: itself, or the single file with the same base name (renamed/moved). */
   const resolvePath = (p: string): { path: string; movedFrom?: string } | null => {
     if (fileSet.has(p)) return { path: p };
+    const renamed = renames.get(p);
+    if (renamed && fileSet.has(renamed)) return { path: renamed, movedFrom: p };
     const moved = files.filter(f => basename(f) === basename(p));
     return moved.length === 1 ? { path: moved[0], movedFrom: p } : null;
   };
@@ -541,7 +556,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
       ...pinned.map(f => ({ path: f.path, tier: 'core' as sem.Tier, facet: sem.facetOf(f.path), line: f.line, uncommitted: dirtyFiles.has(f.path) })),
       ...byTerm.slice(0, 10).map(f => ({ path: f, tier: 'participant' as sem.Tier, facet: sem.facetOf(f), uncommitted: dirtyFiles.has(f) })),
     ];
-    const ev = await Promise.all(a.evidence.map(e => sem.verifyEvidence(root, files, e)));
+    const ev = await Promise.all(a.evidence.map(e => sem.verifyEvidence(root, files, e, renames)));
     areaViews.push({
       id: a.id, name: a.name, kind: a.kind, summary: a.summary, status: a.status, origin: a.origin, inferred: false,
       basis: sem.basisOf(ev), evidence: ev, files: fl.filter(f => !sem.isTestPath(f.path)).slice(0, 14),
@@ -588,7 +603,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
       .filter(r => r.to === `sys:${sys.id}` || r.to.startsWith(`sys:${sys.id}/`)).map(r => ({ r, owner: o, incoming: true }))),
   ];
   for (const { r, owner, incoming } of relPairs) {
-    const ev = await Promise.all(r.evidence.map(e => sem.verifyEvidence(root, files, e)));
+    const ev = await Promise.all(r.evidence.map(e => sem.verifyEvidence(root, files, e, renames)));
     const from = endpoint(r.from, owner), to = endpoint(r.to, owner);
     const internal = !incoming && from.systemId === sys.id && to.systemId === sys.id;
     relViews.push({
@@ -1049,6 +1064,8 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
     `${c.isCanonical ? 'This is the project checkout (not a worktree).' : 'This is a WORKTREE.'} Integration: ${c.integration}.`);
 
   L.push('', '## FACTS (verified now in this checkout, or recorded in git/DK)');
+  L.push('Evidence matching verifies the cited text only; it does not prove a gameplay relation or approve a proposal.');
+  L.push('', '## PROPOSED OR CONFIRMED CLASSIFICATIONS (review status separately from evidence)');
   const showAreas = area ? [area] : v.areas.filter(a => !a.inferred);
   if (showAreas.length) {
     L.push('Responsibilities:');
@@ -1060,12 +1077,13 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
   }
   const rels = area ? v.relations.filter(r => r.from.areaId === area.id || r.to.areaId === area.id) : v.relations;
   if (rels.length) {
-    L.push('Gameplay relations (documented with code evidence; basis shows whether the evidence still holds HERE):');
+    L.push('Gameplay relations (the basis checks cited text, not the truth of the relation):');
     for (const r of rels.slice(0, area ? 12 : 10)) {
       L.push(`- ${r.from.label} ${r.label} ${r.to.label} [${r.status}, basis ${r.basis}, ${r.direction}] ${r.evidence.slice(0, 2).map(ev).join('; ')}`);
     }
   }
   if (!area) {
+    L.push('', '## FACTS: files located in this checkout');
     const core = v.members.filter(m => m.tier === 'core' && m.role !== 'test').slice(0, 12);
     L.push(`Core implementation (${v.tierCounts.core} core, ${v.tierCounts.participant} participants, ${v.tierCounts.test} tests, ${v.tierCounts.candidate} candidates):`);
     for (const m of core) {
@@ -1083,7 +1101,7 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
   for (const k of v.comparisons) {
     L.push(`UNRESOLVED CONFLICT (${k.decisions.join(' vs ')}): do not pick a side; ask the owner.`);
     for (const col of k.columns) {
-      L.push(`  ${k.numeric ? `Value ${col.key}` : col.key}: claimed by ${col.claimedBy.map(x => x.id).join(', ') || '—'}; ${col.implemented ? 'observed in code' : col.inTests ? 'appears only in tests (a fixture or assertion, not proof the game does it)' : 'only declared'}`);
+      L.push(`  ${k.numeric ? `Value ${col.key}` : col.key}: claimed by ${col.claimedBy.map(x => x.id).join(', ') || '—'}; ${col.implemented ? 'observed in code' : col.inTests ? 'appears in tests (a fixture or assertion, not proof the game does it)' : 'only declared'}`);
       for (const r of col.rows.slice(0, 4)) L.push(`    - ${r.label}: ${r.ref}${r.unit ? ` (unit stated in source: ${r.unit})` : ''}`);
     }
   }

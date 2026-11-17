@@ -180,6 +180,7 @@ test('T8: the agent brief separates facts, decisions and hypotheses and stays co
   assert.match(full, /HEAD: [0-9a-f]{7,}/)
   assert.match(full, /basis demonstrated/)
   assert.match(full, /NOT confirmed/)
+  assert.match(full, /does not prove a gameplay relation/)
   assert.ok(full.length < 6000)
   const narrow = svc.brief(v, undefined, 'reserve')
   assert.match(narrow, /Selected responsibility: Reserve/)
@@ -192,6 +193,27 @@ test('T9: without Design Knowledge nothing is invented; areas, relations and imp
   assert.deepEqual(v.comparisons, [])
   assert.ok(v.areas.length >= 2 && v.members.length > 0)
   assert.ok(svc.brief(v).includes('Not indexed'))
+})
+
+test('T5: worktree evidence is checked against its own unintegrated and dirty checkout', async () => {
+  const wt = join(parent, 'hum-worktree')
+  git(hum, 'worktree', 'add', '-qb', 'isolated-review', wt)
+  try {
+    put(wt, 'scripts/HumusReserve.gd', 'extends Node\n# reserve removed\n')
+    git(wt, 'add', '-A'); git(wt, 'commit', '-qm', 'change reserve')
+    put(wt, 'scripts/HumusNew.gd', 'extends Node\n')
+    svc.resetCaches()
+    const w: any = await svc.resolveSystem(P, 'sys-humus', wt)
+    assert.equal(w.checkout.isCanonical, false)
+    assert.match(w.checkout.integration, /NOT integrated/)
+    assert.ok(w.checkout.uncommitted >= 1)
+    assert.equal(w.relations.find((r: any) => r.kind === 'stores').basis, 'stale')
+    assert.match(w.maintenance.graphAgainstCheckout, /different checkout/)
+    const main = await view()
+    assert.equal(main.relations.find((r: any) => r.kind === 'stores').basis, 'demonstrated')
+  } finally {
+    git(hum, 'worktree', 'remove', '--force', wt)
+  }
 })
 
 // ---- maintenance (T7, Etapa G) --------------------------------------------------------------------------
@@ -209,15 +231,22 @@ test('T7: when the cited text disappears the relation goes stale; when it return
 
 test('T7: renaming a cited file is followed (moved), not lost', async () => {
   git(hum, 'mv', 'scripts/HumusReserve.gd', 'scripts/HumusReserveStore.gd')
-  const v = await view()
-  const stored = v.relations.find((r: any) => r.kind === 'stores')
-  assert.equal(stored.evidence[0].state, 'moved')
-  assert.equal(stored.evidence[0].resolvedPath, 'scripts/HumusReserveStore.gd')
-  assert.equal(stored.basis, 'demonstrated')
-  git(hum, 'mv', 'scripts/HumusReserveStore.gd', 'scripts/HumusReserve.gd')
+  try {
+    const v = await view()
+    const stored = v.relations.find((r: any) => r.kind === 'stores')
+    assert.equal(stored.evidence[0].state, 'moved')
+    assert.equal(stored.evidence[0].resolvedPath, 'scripts/HumusReserveStore.gd')
+    assert.equal(stored.basis, 'demonstrated')
+    assert.ok(v.members.some((m: any) => m.path === 'scripts/HumusReserveStore.gd' && m.movedFrom === 'scripts/HumusReserve.gd'))
+  } finally {
+    git(hum, 'mv', 'scripts/HumusReserveStore.gd', 'scripts/HumusReserve.gd')
+  }
 })
 
 test('T7: re-resolving does not duplicate identities, and members that merely drop off the list are not "vanished"', async () => {
+  // The previous test intentionally removed the temporary renamed path again.
+  await view()
+  await svc.review('hum', 'sys-humus', { ackVanished: true })
   svc.resetCaches()
   const before = (await svc.catalog(P) as any).systems.map((s: any) => s.id)
   for (let i = 0; i < 3; i++) { await view(); await svc.discover(P) }

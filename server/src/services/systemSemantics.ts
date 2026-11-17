@@ -83,12 +83,14 @@ export type Basis = 'demonstrated' | 'inferred' | 'candidate' | 'stale';
  * BEING EXAMINED on every call: nothing about it is trusted from the time it was written. A moved file is
  * followed by base name; a needle that is gone makes the evidence `stale`.
  */
-export async function verifyEvidence(root: string, files: string[], ev: EvidenceRef): Promise<ResolvedEvidence> {
+export async function verifyEvidence(root: string, files: string[], ev: EvidenceRef, renames: Map<string, string> = new Map()): Promise<ResolvedEvidence> {
   const want = posix(ev.path);
   let path = want; let moved = false;
   if (!files.includes(want)) {
     const same = files.filter(f => basename(f) === basename(want));
-    if (same.length === 1) { path = same[0]; moved = true; }
+    const renamed = renames.get(want);
+    if (renamed && files.includes(renamed)) { path = renamed; moved = true; }
+    else if (same.length === 1) { path = same[0]; moved = true; }
     else if (!(await exists(join(root, want)))) return { ...ev, state: 'missing' };
   }
   if (!ev.needle) return { ...ev, state: moved ? 'moved' : 'file-only', resolvedPath: path };

@@ -63,8 +63,8 @@ function Column({ col, numeric, actions }: { col: SystemCompareColumn; numeric: 
         <span className={cn('font-semibold tabular-nums', numeric ? 'text-base' : 'font-mono text-xs')} data-testid="compare-value">{col.key}</span>
         {col.unit && <span className="text-[10px] text-muted-foreground">{col.unit}</span>}
         <span className={cn('ml-auto rounded px-1.5 text-[10px]', col.implemented ? 'bg-success/15 text-success' : col.inTests ? 'bg-warning/15 text-warning' : 'border border-dashed text-muted-foreground')}
-          title={col.inTests && !col.implemented ? 'Appears in a test file only: a fixture or assertion, not proof that the game uses it' : undefined} data-testid="compare-status">
-          {col.implemented ? 'observed in code' : col.inTests ? 'only in tests' : 'declared only'}
+          title={col.inTests && !col.implemented ? 'Appears in a test fixture or assertion; this does not prove that the game uses it' : undefined} data-testid="compare-status">
+          {col.implemented ? 'observed in code' : col.inTests ? 'appears in tests' : 'declared only'}
         </span>
       </div>
       {col.claimedBy.map(d => (

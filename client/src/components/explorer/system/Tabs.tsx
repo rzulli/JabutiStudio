@@ -45,7 +45,7 @@ export function OverviewTab({ v, actions, goTab, selectArea }: {
         )}
       </Section>
 
-      <Section title="Map" hint="solid = demonstrated gameplay relation · dashed = inferred or code link">
+      <Section title="Map" hint="solid = cited text matched · dashed = inferred or code link; relations still require review">
         <SystemMap v={v} actions={actions} compact />
         <button onClick={() => goTab('map')} className="text-[11px] underline">Open the full map</button>
       </Section>
