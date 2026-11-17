@@ -1,5 +1,6 @@
 import * as legacy from './designKnowledge.js';
 import * as store from './designDecisions.js';
+import { readLegacyRecords } from './legacyRecords.js';
 
 /**
  * Design Knowledge Core — the one contract the Inspector, System Explorer, routes and MCP consume.
@@ -19,9 +20,10 @@ import * as store from './designDecisions.js';
 
 export type Json = Record<string, any>;
 export interface Project { id: string; path: string }
-export interface QueryOpts { file?: string; q?: string; id?: string; system?: string; worktree?: string; revision?: string }
+export interface QueryOpts { file?: string; q?: string; id?: string; system?: string; worktree?: string; revision?: string; nativeOnly?: boolean }
 
-const words = (s: string) => new Set(s.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().match(/[a-z0-9_]+/g)?.filter(w => w.length > 1) ?? []);
+const STOP = new Set(['a', 'an', 'and', 'are', 'as', 'at', 'by', 'for', 'from', 'how', 'is', 'it', 'of', 'on', 'or', 'the', 'to', 'what', 'which', 'with', 'qual', 'quais', 'que', 'como', 'e', 'de', 'da', 'do', 'dos', 'das', 'em', 'no', 'na', 'os', 'um', 'uma', 'para', 'por', 'sobre']);
+const words = (s: string, dropStop = false) => new Set(s.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().match(/[a-z0-9_]+/g)?.filter(w => w.length > 1 && !(dropStop && STOP.has(w))) ?? []);
 
 async function nativeDecisions(project: Project, root: string, revision?: string) {
   const read = await store.readDecisions(root, revision);
@@ -35,26 +37,43 @@ async function nativeDecisions(project: Project, root: string, revision?: string
     const evidence = await Promise.all(d.evidence.map(e => store.resolveEvidence(reader, e)));
     const claimSha = store.sha256(d.claim);
     const att = ledger.approvals.find(a => a.decision_id === d.id);
+    const lg = d.legacy;
+    // A migrated record's own words ("approved", a human_decision citation) are an unverified claim, never approval.
+    const claimsApproval = !!lg && (['approved', 'rejected', 'revoked'].includes(lg.approvalState) || ['approved', 'superseded', 'rejected'].includes(lg.decisionState));
     let approval: Json = { state: 'unknown', source: 'none' };
     if (att && att.claim_sha256 === claimSha && (att.state === 'approved' || att.state === 'rejected')) approval = { state: att.state, source: 'attested_local', at: att.at };
-    else if (att && att.claim_sha256 !== claimSha) approval = { state: 'unknown', source: 'none', lapsed: true };
-    else if (d.evidence.some(e => e.type === 'human_decision')) approval = { state: 'claimed', source: 'native-file' };
+    else if (att && att.claim_sha256 !== claimSha) approval = lg ? { state: 'claimed', source: 'attestation-lapsed', lapsed: true } : { state: 'unknown', source: 'none', lapsed: true };
+    else if (claimsApproval || d.evidence.some(e => e.type === 'human_decision')) approval = { state: 'claimed', source: lg ? 'repository-claim' : 'native-file' };
     const codeEv = evidence.filter(e => e.type === 'code' && e.needle);
-    const implementation = !codeEv.length ? 'unknown'
+    let implementation = !codeEv.length ? 'unknown'
       : codeEv.some(e => e.freshness === 'STALE' || e.freshness === 'GONE') ? 'divergent' : 'implemented';
-    const decisionState = approval.source === 'attested_local' ? (approval.state === 'approved' ? 'approved' : 'rejected')
+    if (lg) {
+      // Same rule as dk.py: the catalogued classification only stands while every recorded code snapshot still matches.
+      let intact = true;
+      for (const s of lg.implementationSources) { const c = await reader.read(s.path); if (c === null || store.sha256(c) !== s.sha256) { intact = false; break; } }
+      implementation = intact ? lg.implementationState : 'unknown';
+    }
+    const decisionState = approval.source === 'attested_local' && !lg ? (approval.state === 'approved' ? 'approved' : 'rejected')
+      : lg ? (['approved', 'superseded', 'rejected'].includes(lg.decisionState) ? 'unknown' : lg.decisionState)
       : d.status === 'withdrawn' ? 'rejected' : 'hypothesis';
+    // dk.py also judges the recorded implementation snapshots when it aggregates evidence freshness.
+    const implRows = lg ? await Promise.all(lg.implementationSources.map(x => store.resolveEvidence(reader, { type: 'code', path: x.path, sha256: x.sha256 }))) : [];
+    const cited = new Set(d.evidence.filter(e => !e.candidateOnly).map(e => e.path));
     out.push({
       id: d.id, title: d.title, claim: d.claim, claim_sha256: claimSha, source: 'native',
       system: d.systems[0] ?? null, systems: d.systems, scope: d.scope, decision_state: decisionState, approval,
-      evidence_status: store.worstFreshness(evidence), implementation, catalogued_implementation: implementation,
+      evidence_status: store.worstFreshness([...evidence, ...implRows]), evidence_status_legacy: legacyEvidenceStatus([...evidence, ...implRows].map(e => e.freshness)), implementation, catalogued_implementation: lg ? lg.implementationState : implementation,
       supersedes: d.supersedes, conflicts_with: [...new Set([...d.conflictsWith, ...(inverse.get(d.id) ?? [])])],
       record_integration: revision ? 'revision' : 'working-tree',
-      files: d.files.map(path => ({ role: 'declared', path })), tests: d.evidence.filter(e => e.type === 'test').map(e => ({ path: e.path, direct: true })),
-      qps: [], tags: [],
-      evidence: evidence.map(e => ({ type: e.type, ref: e.ref, note: e.note, candidate_only: false, freshness: e.freshness, detail: e.detail,
-        path: e.resolvedPath ?? null, lines: e.startLine ? [e.startLine, e.endLine ?? e.startLine] : null, excerpt: e.excerpt })),
-      provenance: { origin: d.origin, createdAt: d.createdAt, status: d.status },
+      files: lg ? lg.files : d.files.map(path => ({ role: 'declared', path })),
+      tests: lg ? lg.tests.map(path => ({ path, direct: cited.has(path) })) : d.evidence.filter(e => e.type === 'test').map(e => ({ path: e.path, direct: true })),
+      qps: lg ? lg.qps.map(path => ({ path, direct: cited.has(path) })) : [], tags: lg ? lg.tags : [],
+      implementation_sources: lg ? lg.implementationSources.map(s => s.path) : [],
+      evidence: evidence.map(e => ({ type: e.type, ref: e.ref, note: e.note, candidate_only: !!e.candidateOnly, freshness: e.freshness, detail: e.detail,
+        path: e.resolvedPath ?? null, lines: e.freshness === 'MOVED' && e.excerpt.length ? [e.excerpt[0].line, e.excerpt[e.excerpt.length - 1].line] : e.startLine ? [e.startLine, e.endLine ?? e.startLine] : null, excerpt: e.excerpt })),
+      provenance: lg
+        ? { origin: 'legacy-migration', createdAt: d.createdAt, createdAtKnown: lg.createdAtKnown, status: d.status, sourceRecord: lg.sourceRecord, sourceRecordSha256: lg.sourceRecordSha256 }
+        : { origin: d.origin, createdAt: d.createdAt, status: d.status },
     });
   }
   return { read, decisions: out };
@@ -64,12 +83,18 @@ function matches(d: Json, o: QueryOpts): string | null {
   if (o.id) return d.id === o.id ? 'id' : null;
   if (o.system) return (d.systems ?? [d.system]).includes(o.system) ? 'system' : null;
   if (o.file) {
-    const f = o.file;
-    return d.files.some((x: Json) => x.path === f) || d.evidence.some((e: Json) => (e.path ?? e.ref.split('#')[0]) === f || e.ref.split('#')[0] === f) ? 'file' : null;
+    const f = o.file.replace(/\\/g, '/').replace(/^\.\//, '');
+    const impact = [...(d.files ?? []), ...(d.tests ?? []), ...(d.qps ?? [])].some((x: Json) => x.path === f);
+    return impact || (d.implementation_sources ?? []).includes(f) || d.evidence.some((e: Json) => (e.path ?? e.ref.split('#')[0]) === f || e.ref.split('#')[0] === f) ? 'file' : null;
   }
   if (o.q) {
-    const q = words(o.q), hay = words([d.id, d.title, d.claim, ...(d.scope ?? []), ...(d.tags ?? [])].join(' '));
-    return q.size && [...q].every(w => hay.has(w) || [...hay].some(h => h.startsWith(w))) ? 'text' : null;
+    // Same rule as the legacy selector: stop words dropped, at least min(2, terms) of the query words present
+    // (exact or prefix) — so a natural-language question still finds its records.
+    const q = words(o.q, true), hay = words([d.id, d.title, d.claim, ...(d.scope ?? []), ...(d.tags ?? [])].join(' '));
+    if (!q.size) return null;
+    const exact = d.provenance?.origin === 'legacy-migration'; // dk.py compares whole words; prefixes are only for native records
+    const overlap = [...q].filter(w => hay.has(w) || (!exact && [...hay].some(h => h.startsWith(w)))).length;
+    return overlap >= Math.min(2, q.size) ? 'text' : null;
   }
   return null;
 }
@@ -84,7 +109,22 @@ export async function query(project: Project, opts: QueryOpts) {
   const [{ read, decisions: native }, hasLegacy] = [await nativeDecisions(project, root, opts.revision), legacy.hasRegistry(project.path)];
   let legacyRes: Json = { available: false, reason: 'No legacy Design Knowledge registry' };
   const limitations: string[] = [];
-  if (hasLegacy && !opts.system) {
+  // Source selection. Legacy records already present in the native file (a migrated project) are never asked of
+  // dk.py again — that would show every decision twice. `nativeOnly` (or SHIPYARD_DK_NATIVE_ONLY=1) forces the
+  // native engine alone, even for a project that is only partly migrated, and says what it left unread.
+  const nativeIds = new Set(native.map(d => d.id));
+  const legacyIds = hasLegacy ? readLegacyRecords(project.path).records.map(r => String(r.record.id)) : [];
+  const unmigrated = legacyIds.filter(id => !nativeIds.has(id));
+  const forceNative = !!opts.nativeOnly || process.env.SHIPYARD_DK_NATIVE_ONLY === '1';
+  const migrated = hasLegacy && legacyIds.length > 0 && unmigrated.length === 0;
+  const useLegacy = hasLegacy && !opts.system && !forceNative && !migrated;
+  if (hasLegacy && !useLegacy) {
+    legacyRes = { available: false, skipped: true, migrated,
+      reason: migrated ? 'All legacy records are in the native file; dk.py was not consulted'
+        : forceNative ? 'Native-only mode; dk.py was not consulted' : legacyRes.reason };
+    if (forceNative && unmigrated.length) limitations.push(`Native-only mode: ${unmigrated.length} legacy record(s) are not migrated and were not read (${unmigrated.slice(0, 5).join(', ')}).`);
+  }
+  if (useLegacy) {
     if (opts.revision) limitations.push('The legacy registry is read from the checkout, not from a revision.');
     const arg = opts.file ? await legacy.contextForFile(project, opts.file, opts.worktree)
       : opts.id ? await legacy.contextForQuery(project, opts.id, opts.worktree)
@@ -93,6 +133,14 @@ export async function query(project: Project, opts: QueryOpts) {
   }
   const picked: Json[] = [];
   for (const d of native) { const by = matches(d, opts); if (by) picked.push({ ...d, matched_by: d.matched_by ?? by }); }
+  if (opts.q || opts.file) {
+    // Contradictions and supersessions travel with a hit (as in the legacy selector): never show one side alone.
+    const have = new Set(picked.map(d => d.id));
+    for (const d of [...picked]) for (const rel of [...(d.conflicts_with ?? []), ...(d.supersedes ?? [])]) {
+      const other = native.find(n => n.id === rel);
+      if (other && !have.has(rel)) { have.add(rel); picked.push({ ...other, matched_by: 'linked' }); }
+    }
+  }
   const legacyDecisions: Json[] = (legacyRes.available ? legacyRes.decisions ?? [] : [])
     .filter((d: Json) => !opts.id || d.id === opts.id)
     .map((d: Json) => ({ ...d, source: 'legacy', systems: d.system ? [d.system] : [], provenance: { origin: 'legacy-registry' } }));
@@ -110,13 +158,13 @@ export async function query(project: Project, opts: QueryOpts) {
   const conflicts = [...pairs.values()];
   const sources = {
     native: { state: read.state, reason: read.reason, sha256: read.sha256, count: native.length },
-    legacy: { available: !!legacyRes.available, reason: legacyRes.available ? undefined : legacyRes.reason },
+    legacy: { available: !!legacyRes.available, skipped: !!legacyRes.skipped, migrated: !!legacyRes.migrated, reason: legacyRes.available ? undefined : legacyRes.reason },
   };
   const available = read.state === 'present' || !!legacyRes.available || read.state === 'absent';
   return {
     available, reason: available ? undefined : 'No usable source of decisions', decisions, conflicts, sources, limitations,
     indexed: legacyRes.indexed, note: legacyRes.note,
-    graph: opts.file ? await legacy.graphRelations(project.id, opts.file) : undefined, branch: legacyRes.branch, head: legacyRes.head,
+    graph: opts.file ? await legacy.graphRelations(project.id, opts.file) : undefined, branch: legacyRes.branch ?? await store.gitBranch(root), head: legacyRes.head ?? await store.gitHead(root),
     examined: { root, isCanonical: legacy.norm(root) === legacy.norm(project.path), registry: project.path, revision: opts.revision },
   } as Json;
 }
@@ -152,11 +200,58 @@ export async function attest(project: Project, input: { decisionId: string; stat
   if (quote.length < 3) return { ok: false as const, error: 'A quote of what was decided is required' };
   const { read, decisions } = await nativeDecisions(project, project.path);
   const found = decisions.find(d => d.id === input.decisionId);
-  if (!found) return legacy.attest(project, input);
+  if (!found) {
+    if (process.env.SHIPYARD_DK_NATIVE_ONLY === '1') return { ok: false as const, error: `Decision ${input.decisionId} is not in the native file (native-only mode)` };
+    return legacy.attest(project, input);
+  }
   if (read.state !== 'present') return { ok: false as const, error: 'Native decisions are not readable' };
   const entry = { decision_id: input.decisionId, state: input.state, claim_sha256: found.claim_sha256, quote,
     channel: 'ui-request', trust: 'attested_local', at: new Date().toISOString(), projectId: project.id };
   await legacy.recordAttestation(project, entry);
   listeners.forEach(fn => fn());
   return { ok: true as const, entry };
+}
+
+export const notifyDecisionsChanged = () => listeners.forEach(fn => fn());
+
+/** Legacy-vocabulary aggregate (dk.py `evidence_status`): MISSING beats STALE beats UNKNOWN; MOVED still counts as current. */
+export function legacyEvidenceStatus(states: string[]): 'CURRENT' | 'STALE' | 'MISSING' | 'UNKNOWN' {
+  if (!states.length) return 'UNKNOWN';
+  if (states.includes('GONE')) return 'MISSING';
+  if (states.some(s => s === 'CHANGED' || s === 'AMBIGUOUS' || s === 'STALE')) return 'STALE';
+  return states.includes('UNKNOWN') ? 'UNKNOWN' : 'CURRENT';
+}
+
+/**
+ * Registry validation by the native engine alone (the counterpart of `dk.py validate`): schema errors block,
+ * drifting evidence only warns. Needs neither Python nor `docs/design_knowledge`.
+ */
+export async function validateNative(project: Project, worktree?: string): Promise<Json> {
+  const root = await legacy.resolveRoot(project, worktree);
+  if (typeof root !== 'string') return { available: false, reason: root.error };
+  const read = await store.readDecisions(root);
+  if (read.state === 'absent') return { available: false, engine: 'native', reason: 'No native decisions file' };
+  if (read.state !== 'present' || !read.doc) return { available: true, engine: 'native', valid: false, records: 0, errors: [`decisions file is ${read.state}: ${read.reason}`], warnings: [], unresolved_conflicts: [], evidence_statuses: {} };
+  const { decisions } = await nativeDecisions(project, root);
+  const ids = new Set(read.doc.decisions.map(d => d.id));
+  const errors: string[] = [], warnings: string[] = [];
+  for (const d of read.doc.decisions) {
+    for (const r of [...d.conflictsWith, ...d.supersedes]) if (!ids.has(r)) errors.push(`${d.id}: unknown related decision ${r}`);
+    for (const c of d.conflictsWith) {
+      const other = read.doc.decisions.find(x => x.id === c);
+      if (other && !other.conflictsWith.includes(d.id)) warnings.push(`${d.id}: conflict with ${c} is declared on one side only (the inverse is derived)`);
+    }
+    if (d.legacy && (['approved', 'rejected', 'revoked'].includes(d.legacy.approvalState) || ['approved', 'superseded', 'rejected'].includes(d.legacy.decisionState))
+      && !decisions.find(x => x.id === d.id)?.approval.source.startsWith('attested'))
+      warnings.push(`${d.id}: the legacy record asserts an approval that no local attestation backs; it is shown as "claimed"`);
+  }
+  for (const d of decisions) for (const e of d.evidence) {
+    if (['GONE', 'CHANGED', 'AMBIGUOUS', 'STALE'].includes(e.freshness)) warnings.push(`${d.id}: evidence ${e.ref} is ${e.freshness}: ${e.detail}`);
+  }
+  const pairs = new Set<string>();
+  for (const d of decisions) for (const c of d.conflicts_with) pairs.add([d.id, c].sort().join('|'));
+  const statuses: Record<string, number> = { CURRENT: 0, STALE: 0, MISSING: 0, UNKNOWN: 0 };
+  for (const d of decisions) statuses[legacyEvidenceStatus(d.evidence.map((e: Json) => e.freshness))]++;
+  return { available: true, engine: 'native', valid: !errors.length, records: decisions.length, errors, warnings,
+    unresolved_conflicts: [...pairs].map(p => p.split('|')), evidence_statuses: statuses };
 }

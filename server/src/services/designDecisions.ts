@@ -31,17 +31,36 @@ const evidence = z.object({
   type: z.enum(EVIDENCE_TYPES), path: relPath, startLine: z.number().int().positive().optional(),
   endLine: z.number().int().positive().optional(), needle: z.string().min(1).max(500).optional(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), note: z.string().max(1000).optional(),
+  // Carried over from a legacy record (R1-B2). `candidateOnly` marks impact listings that do not support the claim.
+  candidateOnly: z.boolean().optional(), relation: z.string().max(40).optional(),
+  approvalScope: z.string().max(1000).optional(), approvedRule: z.string().max(1000).optional(),
 }).strict();
 const idRef = z.string().min(1).max(120);
-const decision = z.object({
-  id: z.string().regex(/^dec-[a-z0-9-]{3,80}$/), title: text, claim: text,
-  scope: z.array(z.string().max(120)), systems: z.array(idRef), files: z.array(relPath),
-  evidence: z.array(evidence).min(1), conflictsWith: z.array(idRef), supersedes: z.array(idRef),
-  origin: z.enum(['agent', 'user']), status: z.enum(['proposed', 'withdrawn']),
-  createdAt: z.string(), updatedAt: z.string(),
+const sha64 = z.string().regex(/^[a-f0-9]{64}$/);
+/**
+ * What a migrated legacy record (dk.py) carried that the native shape has no field for. Stored verbatim so the
+ * historic state is never reinterpreted: `decisionState`/`approvalState` are the record's own words, NOT an
+ * approval (approval only ever comes from the local attestation ledger).
+ */
+export const legacyBlock = z.object({
+  sourceRecord: relPath, sourceRecordSha256: sha64, createdAtKnown: z.boolean(),
+  decisionState: z.string().max(40), approvalState: z.string().max(40), implementationState: z.string().max(40),
+  implementationSources: z.array(z.object({ path: relPath, sha256: sha64 }).strict()),
+  files: z.array(z.object({ path: relPath, role: z.string().max(1000) }).strict()),
+  tests: z.array(relPath), qps: z.array(relPath), tags: z.array(z.string().max(120)),
 }).strict();
+export type LegacyBlock = z.infer<typeof legacyBlock>;
+export const decisionSchema = z.object({
+  id: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{2,100}$/), title: text, claim: text,
+  scope: z.array(z.string().max(120)), systems: z.array(idRef), files: z.array(relPath),
+  evidence: z.array(evidence), conflictsWith: z.array(idRef), supersedes: z.array(idRef),
+  origin: z.enum(['agent', 'user', 'legacy']), status: z.enum(['proposed', 'withdrawn']),
+  createdAt: z.string(), updatedAt: z.string(), legacy: legacyBlock.optional(),
+}).strict()
+  .refine(d => d.evidence.length > 0 || d.origin === 'legacy', { message: 'At least one piece of evidence is required' })
+  .refine(d => (d.origin === 'legacy') === !!d.legacy, { message: 'Only legacy-origin decisions carry a legacy block, and they must' });
 export const decisionsSchema = z.object({
-  version: z.literal(1), gitRoots: z.array(z.string().regex(/^[a-f0-9]{40,64}$/)).min(1), decisions: z.array(decision),
+  version: z.literal(1), gitRoots: z.array(z.string().regex(/^[a-f0-9]{40,64}$/)).min(1), decisions: z.array(decisionSchema),
 }).strict().superRefine((doc, ctx) => {
   if (new Set(doc.decisions.map(d => d.id)).size !== doc.decisions.length)
     ctx.addIssue({ code: 'custom', message: 'Duplicate decision ID' });
@@ -53,7 +72,7 @@ export const decisionsSchema = z.object({
   };
   scan(doc.decisions);
 });
-export type NativeDecision = z.infer<typeof decision>;
+export type NativeDecision = z.infer<typeof decisionSchema>;
 export type NativeEvidence = z.infer<typeof evidence>;
 export type DecisionsDoc = z.infer<typeof decisionsSchema>;
 
@@ -63,6 +82,9 @@ async function git(root: string, args: string[], buffer = false): Promise<any> {
   try { return (await run('git', ['-C', root, ...args], { timeout: 20_000, maxBuffer: 64 * 1024 * 1024, encoding: buffer ? 'buffer' : 'utf8' })).stdout; }
   catch { return null; }
 }
+
+export const gitHead = async (root: string): Promise<string | null> => (await git(root, ['rev-parse', '--short', 'HEAD']))?.trim() || null;
+export const gitBranch = async (root: string): Promise<string | null> => (await git(root, ['branch', '--show-current']))?.trim() || null;
 
 /** First commits of the history: an id that stops a decisions file from one game being read in another. */
 export async function historyRoots(root: string): Promise<string[]> {
@@ -126,7 +148,19 @@ export function makeReader(root: string, revision?: string) {
     const out = revision ? await git(root, ['ls-tree', '-r', '--name-only', revision]) : await git(root, ['ls-files', '--cached', '--others', '--exclude-standard']);
     return out ? String(out).split(/\r?\n/).filter(Boolean) : [];
   };
-  return { read, list };
+  /** The committed version of `path` whose fingerprint is `expected` (LF or CRLF checkout), from the history of the examined ref. */
+  const baseline = async (path: string, expected: string): Promise<string | null> => {
+    if (!safeRel(path)) return null;
+    const log = await git(root, ['log', '--format=%H', '-n', '80', ...(revision ? [revision] : []), '--', path]);
+    for (const commit of String(log ?? '').split(/\s+/).filter(Boolean)) {
+      const blob = await git(root, ['show', `${commit}:${path}`], true) as Buffer | null;
+      if (!blob) continue;
+      const crlf = Buffer.from(blob.toString('latin1').replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'), 'latin1');
+      for (const v of [blob, crlf]) if (sha256(v) === expected) return v.toString('utf8');
+    }
+    return null;
+  };
+  return { read, list, baseline };
 }
 export type Reader = ReturnType<typeof makeReader>;
 
@@ -139,9 +173,34 @@ const excerptOf = (content: string, ev: NativeEvidence) => {
   return lines.slice(start - 1, end).map((t, i) => ({ line: start! + i, text: t.slice(0, 240) }));
 };
 
+/** Whitespace-insensitive units: blank lines and indentation are not evidence (same rule as the legacy dk.py). */
+const normLines = (lines: string[]) => lines.map(l => l.trim()).filter(Boolean);
+
+/**
+ * Line-scoped fingerprint (legacy evidence: whole-file sha256 + cited lines, no needle). When the file differs,
+ * find the recorded version in Git history and look for its cited block in the current file.
+ */
+async function locate(reader: Reader, ev: NativeEvidence, path: string, content: string): Promise<{ state: Freshness; detail: string; lines?: [number, number] }> {
+  const first = ev.startLine!, last = ev.endLine ?? first;
+  const baseline = await reader.baseline(path, ev.sha256!);
+  if (baseline === null) return { state: 'STALE', detail: 'file changed and the recorded version is not in git history; cannot localize the cited lines' };
+  const block = normLines(baseline.split(/\r?\n/).slice(first - 1, last));
+  if (!block.length) return { state: 'UNKNOWN', detail: 'cited block was blank in the recorded version' };
+  const indexed = content.split(/\r?\n/).map((t, i) => [i + 1, t.trim()] as const).filter(([, t]) => t);
+  const hits: number[] = [];
+  for (let k = 0; k + block.length <= indexed.length; k++) if (block.every((b, j) => indexed[k + j][1] === b)) hits.push(k);
+  if (!hits.length) return { state: 'CHANGED', detail: 'the cited text no longer appears in the file' };
+  if (hits.length > 1) return { state: 'AMBIGUOUS', detail: `the cited text appears ${hits.length} times` };
+  const start = indexed[hits[0]][0], end = indexed[hits[0] + block.length - 1][0];
+  if (start === first && end === last) return { state: 'CURRENT', detail: 'file edited elsewhere; cited lines unchanged', lines: [start, end] };
+  return { state: 'MOVED', detail: `cited text moved from L${first}-L${last} to L${start}-L${end}`, lines: [start, end] };
+}
+
 export async function resolveEvidence(reader: Reader, ev: NativeEvidence): Promise<ResolvedEvidence> {
   const ref = ev.path + (ev.startLine ? `#L${ev.startLine}${ev.endLine && ev.endLine !== ev.startLine ? `-L${ev.endLine}` : ''}` : '');
   const base = { ...ev, ref, excerpt: [] as { line: number; text: string }[] };
+  // A reference outside the checkout (e.g. `@economy_csv:row`, legacy): the native engine cannot read it, and says so.
+  if (ev.path.startsWith('@')) return { ...base, freshness: 'UNKNOWN', detail: 'external source: not verifiable by the native engine' };
   let content = await reader.read(ev.path);
   let resolvedPath: string | undefined, moved = false;
   if (content === null) {
@@ -165,6 +224,11 @@ export async function resolveEvidence(reader: Reader, ev: NativeEvidence): Promi
   const same = ev.sha256 ? sha256(content) === ev.sha256 : undefined;
   const needleOk = ev.needle ? content.includes(ev.needle) : undefined;
   let freshness: Freshness, detail: string;
+  if (same === false && !ev.needle && ev.startLine) {
+    const found = await locate(reader, ev, resolvedPath ?? ev.path, content);
+    const ex = found.lines ? excerptOf(content, { ...ev, startLine: found.lines[0], endLine: found.lines[1] }) : [];
+    return { ...base, freshness: moved && found.state === 'CURRENT' ? 'MOVED' : found.state, detail: found.detail + (moved ? `; file moved to ${resolvedPath}` : ''), resolvedPath, excerpt: ex };
+  }
   if (needleOk === false) { freshness = 'STALE'; detail = 'the registered text is no longer in the file'; }
   else if (moved) { freshness = 'MOVED'; detail = `now at ${resolvedPath}`; }
   else if (same === false) { freshness = 'CHANGED'; detail = needleOk ? 'file changed; registered text still present' : 'file changed since registered'; }
@@ -180,7 +244,7 @@ export const worstFreshness = (items: { freshness: Freshness }[]): Freshness =>
 // ---- writing -------------------------------------------------------------------------------------
 
 let chain: Promise<unknown> = Promise.resolve();
-const withLock = <T,>(fn: () => Promise<T>): Promise<T> => { const next = chain.then(fn, fn); chain = next.catch(() => undefined); return next; };
+export const withLock = <T,>(fn: () => Promise<T>): Promise<T> => { const next = chain.then(fn, fn); chain = next.catch(() => undefined); return next; };
 
 export interface ProposalInput {
   title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[];

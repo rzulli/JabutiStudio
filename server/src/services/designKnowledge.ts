@@ -43,7 +43,11 @@ export const hasRegistry = (projectPath: string) =>
 // ---- python -------------------------------------------------------------------------------------
 
 let pythonCmd: string | null | undefined;
+/** Every attempt to start dk.py, for the native-only proof (R1-B2). SHIPYARD_DK_FORBID_PYTHON=1 makes an attempt throw. */
+export const pythonAttempts = { count: 0 };
 async function python(): Promise<string | null> {
+  pythonAttempts.count++;
+  if (process.env.SHIPYARD_DK_FORBID_PYTHON === '1') throw new Error('Python is forbidden (SHIPYARD_DK_FORBID_PYTHON=1)');
   if (pythonCmd !== undefined) return pythonCmd;
   const candidates = [process.env.SHIPYARD_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[];
   for (const c of candidates) {

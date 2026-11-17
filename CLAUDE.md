@@ -723,7 +723,33 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - `available` agora e verdadeiro para qualquer repo git (a fonte nativa pode estar vazia): o catalogo de sistemas mostra
   "None recorded" + "Propose decision…" em vez de "Not indexed". Rotas: `GET /design` (`file|q|id|system`, `worktree`,
   `revision`), `POST /design/proposals`, `POST /design/approve` (so UI). Testes: `server/test/designCore.test.ts`
-  (T1-T11 do R1-B1). Pendente (R1-B2/B3): paridade e migracao dos registros do PNMG, aposentar dk.py
+  (T1-T11 do R1-B1). Pendente (R1-B3): aposentar dk.py
+
+### Migracao do DK legado (R1-B2: `designMigration.ts`)
+- `docs/design_knowledge/records/*.md` (cabecalho `<!-- dk-record {json} -->`, lido por `legacyRecords.ts`, **sem Python**) ->
+  `jabutistudio.decisions.json`. Deterministica e idempotente: mesmo legado = mesmos bytes; segunda rodada = `nothing-to-do`
+  (resultado `equivalent` por registro). Os arquivos legados e o `dk.py` **nunca** sao tocados. Cada decisao migrada guarda o
+  bloco `legacy` (`sourceRecord`, `sourceRecordSha256`, estados catalogados, `implementationSources`, ids) e entra como `proposed`
+  com `origin: legacy`: **nada e promovido**. Aprovacao continua so no ledger `attested_local` (preso ao sha256 do claim: editar
+  o texto migrado a faz caducar -> `attestation-lapsed`); `decision_state`/`approval_state` do registro viram, no maximo, `claimed`
+- `plan(project, resolutions?)` so le e devolve `planSha256`; `apply` exige esse hash (a tela/CLI aplica o que foi revisado) e
+  grava com backup + manifesto em `<data>/design-migration/<projectId>/<id>.json`; `rollback(manifestId)` restaura o arquivo
+  anterior (ou remove o criado) e recusa se o arquivo foi editado depois. Registro que nao converte sem perda (campo sem
+  equivalente, referencia inexistente ou fora do checkout, id invalido, arquivo ilegivel) **bloqueia**: nada e escrito. Decisao
+  nativa com mesmo id e conteudo diferente = `divergent` e bloqueia; so `keep-native`/`take-legacy` explicitos resolvem. Os dois
+  lados nunca sao mesclados. Evidencia externa (`@economy_csv:...`) fica `UNKNOWN` no nativo (dk.py lia via env): diferenca documentada
+- Rotas: `GET /design/migration` (previa), `POST /design/migration/apply|rollback` (so navegador, `fromAppUi`). CLI:
+  `node scripts/design-migrate.mjs <projeto> [--data-dir d] [--apply <hash> | --rollback <id>] [--keep-native|--take-legacy <id>]`
+  (use `--data-dir` num ensaio). Sempre ensaie numa copia descartavel
+- **Selecao de fonte sem duplicar**: registro ja presente no arquivo nativo nao e perguntado ao dk.py de novo. Todos migrados =
+  dk.py nem e chamado (`sources.legacy.migrated`); parcial = os nao migrados ainda vem do dk.py (`source: legacy`); `nativeOnly`
+  (`?nativeOnly=1` ou `SHIPYARD_DK_NATIVE_ONLY=1`) forca so o nativo e diz o que deixou de ler. `SHIPYARD_DK_FORBID_PYTHON=1` faz
+  qualquer tentativa de subir Python falhar; `pythonAttempts` conta as tentativas (prova de que o caminho nativo nao usa Python)
+- Paridade: `server/test/support/parity.ts` compara campo a campo o dk.py endurecido (`test/fixtures/dk`) com o nativo migrado;
+  `designMigration.test.ts` (M0-M13) cobre id/termo/arquivo/conflito, CURRENT/MOVED/CHANGED/STALE/GONE, atestacao valida e
+  caducada, worktree, revisao, rollback e modo so-nativo. Regras que **nao** mudam: legado compara palavra inteira (prefixo so em
+  decisao nativa pura); `decision_state` de registro migrado nao sobe por atestacao (so `approval` sobe). Diferencas aceitas e
+  medidas: `ref` de uma linha (`#L2-L2` vs `#L2`), trecho (6 vs 12 linhas), CSV externo `UNKNOWN`, `record_integration`
 
 ### System Explorer (Projeto -> Sistemas -> Sistema)
 - Aba **Systems** dentro do Explorer (`SystemsExplorer.tsx`, montada por `ExplorerHost`; "Files & symbols" e o
