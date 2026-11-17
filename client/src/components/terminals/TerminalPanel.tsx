@@ -35,6 +35,9 @@ import type { TerminalState } from './IntegratedTerminal'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
+/** Outcome of opening a session from `shipyard:open-terminal`: a session with the prompt, or why not. */
+export type TabResult = { ok: true; sessionId: string } | { ok: false; error: string }
+
 interface GlobalTab {
   sessionId: string
   projectId: string
@@ -649,10 +652,10 @@ export function TerminalPanel() {
   }, [panelHeight])
 
   // Create a new terminal tab for a given project (or active project)
-  const handleNewTab = useCallback(async (type = 'shell', forProjectId?: string, taskId?: string, prompt?: string, taskNumber?: number, agent?: string, resume?: { id: string; title?: string }) => {
+  const handleNewTab = useCallback(async (type = 'shell', forProjectId?: string, taskId?: string, prompt?: string, taskNumber?: number, agent?: string, resume?: { id: string; title?: string }): Promise<TabResult> => {
     if (!status?.available) {
       toast.error('Integrated terminal not available')
-      return
+      return { ok: false, error: 'Integrated terminal not available' }
     }
 
     const targetProject = forProjectId
@@ -661,7 +664,7 @@ export function TerminalPanel() {
 
     if (!targetProject) {
       toast.error('No project selected')
-      return
+      return { ok: false, error: 'No project selected' }
     }
 
     try {
@@ -708,8 +711,11 @@ export function TerminalPanel() {
       if (taskId && prompt) {
         aiSessions.register({ taskId, sessionId: session.id, projectId: targetProject })
       }
+      return { ok: true, sessionId: session.id }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to create terminal')
+      const error = err?.message || 'Failed to create terminal'
+      toast.error(error)
+      return { ok: false, error }
     }
   }, [status, createSession, aiSessions])
 
@@ -1142,8 +1148,10 @@ export function TerminalPanel() {
 
   // Listen for shipyard:open-terminal events (from TerminalLauncher) for ANY project
   useEffect(() => {
-    const handler = (e: CustomEvent<{ projectId: string; type: string; taskId?: string; taskNumber?: number; prompt?: string; agent?: string; resume?: { id: string; title?: string } }>) => {
+    const handler = (e: CustomEvent<{ projectId: string; type: string; taskId?: string; taskNumber?: number; prompt?: string; agent?: string; resume?: { id: string; title?: string }; onResult?: (r: TabResult) => void }>) => {
+      // A caller that sent a prompt wants to know whether the session took it.
       handleNewTab(e.detail.type, e.detail.projectId, e.detail.taskId, e.detail.prompt, e.detail.taskNumber, e.detail.agent, e.detail.resume)
+        .then(r => e.detail.onResult?.(r))
     }
     window.addEventListener('shipyard:open-terminal' as any, handler as any)
     return () => window.removeEventListener('shipyard:open-terminal' as any, handler as any)

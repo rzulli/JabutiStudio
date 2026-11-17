@@ -115,6 +115,23 @@ function emitSessionEvent(event: SessionEvent): void {
 // an agent — the bare Claude tab keeps its own launch.
 const AGENT_SESSION_TYPES = new Set(['claude', 'claude-yolo', 'ai-resolve', 'ai-manage']);
 
+/**
+ * The bare Claude tab (plain `claude`, no prompt). A tab that carries a prompt
+ * cannot take the bare launch: that launch has no place for the prompt, so it
+ * was dropped and the tab opened empty. Such a tab takes the agent path below.
+ */
+export function usesBareClaudeTab(type: string, agentId?: string, prompt?: string): boolean {
+  return type === 'claude' && !agentId && !prompt;
+}
+
+/**
+ * Which agent a session runs. A Claude tab is Claude even when the settings
+ * default to another CLI; other agent sessions fall back to the default.
+ */
+export function agentIdForSession(type: string, agentId?: string): string | undefined {
+  return agentId ?? (type === 'claude' ? DEFAULT_AGENT_ID : undefined);
+}
+
 export function isAvailable(): boolean {
   return nodePty !== null;
 }
@@ -201,13 +218,13 @@ export async function createSession(
 
   if (type === 'dev') {
     initialCommand = await detectDevCommand(workdir);
-  } else if (type === 'claude' && !agentId) {
+  } else if (usesBareClaudeTab(type, agentId, prompt)) {
     // Plain Claude tab from the project menu — permissions prompt intact.
     env['CLAUDECODE'] = '';
     initialCommand = ['claude', resumeArgs, await hookArgs(id)].filter(Boolean).join(' ');
     runsClaude = true;
   } else if (AGENT_SESSION_TYPES.has(type)) {
-    agent = resolveAgent(agentId);
+    agent = resolveAgent(agentIdForSession(type, agentId));
     runsClaude = agent.id === DEFAULT_AGENT_ID;
     if (runsClaude) env['CLAUDECODE'] = '';
     yolo = runsClaude && (agent.args || '').includes('--dangerously-skip-permissions');
