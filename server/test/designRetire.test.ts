@@ -198,8 +198,8 @@ test('A5: a worktree registered as the project is NOT "integrated" until its com
   write(wt, f, '{}\n'); git(wt, 'add', f); git(wt, 'commit', '-qm', 'decisions on the branch only')
   // The worktree may be the registered project path, yet main does not contain the commit yet.
   assert.equal(await dd.fileIntegration(wt, true), 'committed')
-  const slash = (p?: string) => (p ?? '').split('\').join('/').toLowerCase()
-  assert.equal(slash((await dd.mainCheckout(wt))?.root), slash(main))
+  const { canonicalPath } = await import('../src/services/pathIdentity.js')
+  assert.equal(canonicalPath((await dd.mainCheckout(wt))!.root), canonicalPath(main))
   git(main, 'merge', '-q', '--ff-only', 'migration/x')
   assert.equal(await dd.fileIntegration(wt, true), 'integrated')
   assert.equal(await dd.fileIntegration(main, true), 'integrated')
