@@ -219,14 +219,14 @@ export async function taskRoutes(app: FastifyInstance) {
   app.delete<{ Params: { projectId: string; taskId: string } }>(
     '/api/projects/:projectId/tasks/:taskId',
     async (request, reply) => {
-      // Read before deleting: afterwards nothing points at the worktree and
-      // the folder would linger until the orphan sweep.
+      // Gate first: a task that still owns a worktree it cannot safely close is the only
+      // record of why that worktree exists, so it is not deleted (R2 consolidation).
       const existing = await taskStore.getTask(request.params.projectId, request.params.taskId);
+      if (!existing) return reply.status(404).send({ error: 'Task not found' });
+      const gate = await worktreeService.canDeleteTask(existing);
+      if (!gate.ok) return reply.status(409).send({ error: gate.reason, code: 'worktree-pending' });
       const deleted = await taskStore.deleteTask(request.params.projectId, request.params.taskId);
       if (!deleted) return reply.status(404).send({ error: 'Task not found' });
-      if (existing?.worktreePath) {
-        await worktreeService.removeTaskWorktree(existing, { clearTask: false });
-      }
       log.info('tasks', `Task deleted: ${request.params.taskId}`, undefined, request.params.projectId);
       afterTaskMutation(request.params.projectId);
       return { success: true };
@@ -254,10 +254,13 @@ export async function taskRoutes(app: FastifyInstance) {
     async (request) => {
       const taskIds = request.body?.taskIds || [];
       const wanted = new Set(taskIds);
-      const doomed = (await taskStore.getTasks(request.params.projectId))
-        .filter(t => wanted.has(t.id) && t.worktreePath);
-      const result = await taskStore.bulkDeleteTasks(request.params.projectId, taskIds);
-      for (const task of doomed) await worktreeService.removeTaskWorktree(task, { clearTask: false });
+      const blocked: { id: string; reason: string }[] = [];
+      const deletable: string[] = [];
+      for (const task of (await taskStore.getTasks(request.params.projectId)).filter(t => wanted.has(t.id))) {
+        const gate = await worktreeService.canDeleteTask(task);
+        if (gate.ok) deletable.push(task.id); else blocked.push({ id: task.id, reason: gate.reason });
+      }
+      const result = { ...(await taskStore.bulkDeleteTasks(request.params.projectId, deletable)), blocked };
       log.info('tasks', `Bulk deleted ${result.deleted} tasks`, undefined, request.params.projectId);
       afterTaskMutation(request.params.projectId);
       return result;

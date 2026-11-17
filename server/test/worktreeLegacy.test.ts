@@ -110,13 +110,45 @@ test('L3 removeTaskWorktree is the safe close: it refuses unmerged and dirty wor
   assert.equal(existsSync(ok.path), false); assert.equal(branchExists(ok.branch), false)
 })
 
-test('L4 deleting a task over HTTP never takes an unmerged worktree with it', async () => {
+test('L4 deleting a task with an unmerged worktree is refused: the task stays and nothing is touched', async () => {
   const t = await delivered('L4 delete task', 'scripts/l4.gd')
+  const res = await app.inject({ method: 'DELETE', url: `${base()}/tasks/${t.id}`, headers: UI })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().code, 'worktree-pending')
+  assert.match(res.json().error, /cannot be closed yet/)
+  assert.ok(await taskStore.getTask(project.id, t.id), 'the task that explains the worktree is kept')
+  assert.ok(existsSync(t.path), 'the worktree is left in place')
+  assert.equal(git(repo, 'rev-parse', t.branch), t.head)
+})
+
+test('L8 deleting an integrated, clean task runs the safe close first, then deletes', async () => {
+  const t = await integrated('L8 integrated delete', 'scripts/l8.gd')
   const res = await app.inject({ method: 'DELETE', url: `${base()}/tasks/${t.id}`, headers: UI })
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(await taskStore.getTask(project.id, t.id), undefined)
-  assert.ok(existsSync(t.path), 'the worktree is left in place (it shows as unlinked in the inventory)')
-  assert.equal(git(repo, 'rev-parse', t.branch), t.head)
+  assert.ok(!existsSync(t.path))
+  assert.ok(!branchExists(t.branch))
+})
+
+test('L9 an integrated task with local changes in its worktree cannot be deleted', async () => {
+  const t = await integrated('L9 dirty delete', 'scripts/l9.gd')
+  appendFileSync(join(t.path, 'scripts/l9.gd'), '# unsaved'+String.fromCharCode(92)+'n')
+  const res = await app.inject({ method: 'DELETE', url: `${base()}/tasks/${t.id}`, headers: UI })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.ok(await taskStore.getTask(project.id, t.id))
+  assert.ok(existsSync(t.path)); assert.ok(branchExists(t.branch))
+})
+
+test('L10 bulk delete removes only the deletable tasks and reports the blocked ones', async () => {
+  const ok = await integrated('L10 ok', 'scripts/l10a.gd')
+  const stuck = await delivered('L10 stuck', 'scripts/l10b.gd')
+  const plain = await taskStore.createTask(project.id, { title: 'L10 no worktree', description: '', priority: 'low', status: 'todo' } as any)
+  const res = await app.inject({ method: 'POST', url: `${base()}/tasks/bulk-delete`, headers: UI, payload: { taskIds: [ok.id, stuck.id, plain.id] } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().deleted, 2)
+  assert.deepEqual(res.json().blocked.map((b: any) => b.id), [stuck.id])
+  assert.ok(await taskStore.getTask(project.id, stuck.id)); assert.ok(existsSync(stuck.path))
+  assert.equal(await taskStore.getTask(project.id, ok.id), undefined)
 })
 
 test('L6 the scheduled sweep only prunes: a worktree of a long-finished task stays', async () => {

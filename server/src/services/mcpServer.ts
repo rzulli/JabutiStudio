@@ -279,9 +279,13 @@ export async function bulkUpdateTasks(projectId: string, taskIds: string[], data
 export async function bulkDeleteTasks(projectId: string, taskIds: string[]): Promise<McpToolResult> {
   if (!Array.isArray(taskIds) || taskIds.length === 0) return fail('taskIds must be a non-empty array');
   const wanted = new Set(taskIds);
-  const doomed = (await taskStore.getTasks(projectId)).filter(t => wanted.has(t.id) && t.worktreePath);
-  const result = await taskStore.bulkDeleteTasks(projectId, taskIds);
-  for (const task of doomed) await worktreeService.removeTaskWorktree(task, { clearTask: false });
+  const blocked: { id: string; reason: string }[] = [];
+  const deletable: string[] = [];
+  for (const task of (await taskStore.getTasks(projectId)).filter(t => wanted.has(t.id))) {
+    const gate = await worktreeService.canDeleteTask(task);
+    if (gate.ok) deletable.push(task.id); else blocked.push({ id: task.id, reason: gate.reason });
+  }
+  const result = { ...(await taskStore.bulkDeleteTasks(projectId, deletable)), blocked };
   afterTaskMutation(projectId);
   return ok(result);
 }
@@ -294,14 +298,13 @@ export async function reorderTasks(projectId: string, taskIds: string[]): Promis
 }
 
 export async function deleteTask(projectId: string, taskId: string): Promise<McpToolResult> {
-  // Read first: once the task is gone there is nothing left pointing at its
-  // worktree, and the folder would sit there until the orphan sweep.
+  // Gate first: a task that still owns a worktree it cannot safely close stays (R2 consolidation).
   const existing = await taskStore.getTask(projectId, taskId);
+  if (!existing) return fail(`Task "${taskId}" not found`);
+  const gate = await worktreeService.canDeleteTask(existing);
+  if (!gate.ok) return fail(gate.reason);
   const deleted = await taskStore.deleteTask(projectId, taskId);
   if (!deleted) return fail(`Task "${taskId}" not found`);
-  if (existing?.worktreePath) {
-    await worktreeService.removeTaskWorktree(existing, { clearTask: false });
-  }
   afterTaskMutation(projectId);
   return ok({ deleted: taskId });
 }

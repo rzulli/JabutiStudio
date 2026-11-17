@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Badge } from '@/components/ui/badge'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Pencil, Copy, Inbox, Loader, CheckCircle2, Trash2, Check, Wand2, Loader2, GitCommit, GitBranch, History } from 'lucide-react'
+import { Pencil, Copy, Inbox, Loader, CheckCircle2, Trash2, Check, Wand2, Loader2, GitCommit, GitBranch, History, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUpdateTask, useDeleteTask, type Task } from '@/hooks/useTasks'
 import { buildTaskPrompt } from '@/lib/promptBuilder'
@@ -24,6 +24,8 @@ import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { playAiCompleteSound } from '@/lib/sounds'
 import { priorityVisual, statusVisual } from '@/lib/taskVisuals'
+import { useTaskLifecycle } from '@/hooks/useGit'
+import { readStage, TONE_CLASS, STATUS_MEANING } from '@/lib/lifecycleCopy'
 
 interface TaskViewerProps {
   task: Task | null
@@ -103,14 +105,19 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
     }
   }, [open, task?.id, task?.needsReview])
 
+  // Same query key the Review and History tabs use, so the header costs no extra request.
+  const lcQuery = useTaskLifecycle(task?.projectId, task?.id, !!task && !!open && (!!task.inProgressAt || !!task.worktreeBranch))
+
   if (!task) return null
 
   // A task that never reached In Progress has no window of commits to show.
   const showReview = !!task.inProgressAt
+  const lcReading = lcQuery.data ? readStage(lcQuery.data) : null
 
   const pri = priorityVisual(task.priority)
   const sts = statusVisual(task.status)
   const PriIcon = pri.icon
+  const StsIcon = sts.icon
 
   const handleCopy = () => {
     const prompt = buildTaskPrompt(task, projectName, projectPath, settings?.tasksDir)
@@ -164,177 +171,187 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
     { status: 'done' as const, label: 'Done', icon: CheckCircle2, color: 'text-success' },
   ]
 
+  const lines = (t: string) => `${t.split('\n').length} line${t.split('\n').length === 1 ? '' : 's'}`
+
+  const dates: { label: string; value: string | null; strong?: boolean }[] = [
+    { label: 'Created', value: task.createdAt ? formatDate(task.createdAt) : null },
+    { label: 'Started', value: task.inProgressAt ? formatDate(task.inProgressAt) : null },
+    { label: 'Done', value: task.doneAt ? formatDate(task.doneAt) : null },
+    { label: 'Follow-up', value: task.followUpAt ? formatDate(task.followUpAt) : null, strong: true },
+  ]
+
   const detailsBody = (
-    <>
-      <TaskOutcomeCard task={task} onEdit={handleEdit} />
+    <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_200px]">
+      <div className="space-y-4 min-w-0">
+        <TaskOutcomeCard task={task} onEdit={handleEdit} />
 
-      {task.description && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Description</label>
-          <p className="mt-1.5 text-sm whitespace-pre-wrap leading-relaxed">{task.description}</p>
-        </div>
-      )}
+        {task.description ? (
+          <Section title="Description">
+            <p className="text-sm whitespace-pre-wrap leading-relaxed break-words">{task.description}</p>
+          </Section>
+        ) : !task.prompt && (
+          <p className="text-sm text-muted-foreground">No description yet. <button className="underline underline-offset-2 hover:text-foreground" onClick={handleEdit}>Add one</button></p>
+        )}
 
-      {task.prompt && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Details</label>
-          <pre className="mt-1.5 text-xs font-mono bg-muted/50 rounded-md p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.prompt}</pre>
-        </div>
-      )}
+        {task.subtasks && task.subtasks.length > 0 && (
+          <Section title={`Subtasks (${task.subtasks.filter(s => s.done).length}/${task.subtasks.length})`}>
+            <ul className="space-y-1">
+              {task.subtasks.map((st) => (
+                <li key={st.id} className="flex items-start gap-2">
+                  {st.done ? (
+                    <Check className="h-3.5 w-3.5 text-success shrink-0 mt-1" />
+                  ) : (
+                    <div className="h-3.5 w-3.5 rounded-sm border border-muted-foreground/40 shrink-0 mt-1" />
+                  )}
+                  <span className={cn('text-sm', st.done && 'text-muted-foreground')}>{st.title}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
 
-      {task.context && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Private context</label>
-          <p className="mt-0.5 text-xs text-muted-foreground">Stays in JabutiStudio. Never sent to Trello, ClickUp or Sheets.</p>
-          <pre className="mt-1.5 text-xs font-mono bg-muted/50 rounded-md p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.context}</pre>
-        </div>
-      )}
-
-      {task.attachments && task.attachments.length > 0 && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Attachments</label>
-          <div className="mt-1.5">
+        {task.attachments && task.attachments.length > 0 && (
+          <Section title="Attachments">
             <TaskAttachments
               projectId={task.projectId}
               taskId={task.id}
               milestoneId={task.milestoneId}
               attachments={task.attachments}
             />
-          </div>
-        </div>
-      )}
+          </Section>
+        )}
 
-      {task.subtasks && task.subtasks.length > 0 && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Subtasks ({task.subtasks.filter(s => s.done).length}/{task.subtasks.length})
-          </label>
-          <div className="mt-1.5 space-y-1">
-            {task.subtasks.map((st) => (
-              <div key={st.id} className="flex items-center gap-2">
-                {st.done ? (
-                  <Check className="h-3.5 w-3.5 text-success shrink-0" />
-                ) : (
-                  <div className="h-3.5 w-3.5 rounded-sm border border-muted-foreground/40 shrink-0" />
-                )}
-                <span className={cn('text-sm', st.done && 'text-muted-foreground')}>{st.title}</span>
+        {task.comments && task.comments.length > 0 && (
+          <Section title={`Comments (${task.comments.length})`}>
+            <TaskComments comments={task.comments} />
+          </Section>
+        )}
+
+        {task.prompt && (
+          <Fold title="Technical notes" hint={lines(task.prompt)}>
+            <pre className="text-xs font-mono bg-muted/50 rounded-md p-3 whitespace-pre-wrap max-h-64 overflow-y-auto">{task.prompt}</pre>
+          </Fold>
+        )}
+
+        {task.context && (
+          <Fold title="Private context" hint="never sent to Trello, ClickUp or Sheets">
+            <pre className="text-xs font-mono bg-muted/50 rounded-md p-3 whitespace-pre-wrap max-h-64 overflow-y-auto">{task.context}</pre>
+          </Fold>
+        )}
+      </div>
+
+      {/* Properties: administrative, so they sit beside the content and stay quiet */}
+      <aside aria-label="Properties" className="space-y-4 sm:border-l sm:pl-5 text-xs">
+        <div className="space-y-1.5">
+          <h3 className="font-medium text-muted-foreground uppercase tracking-wider">Agent</h3>
+          <AgentSelect value={task.agent} onChange={handleAgentChange} />
+          <p className="text-muted-foreground/80 leading-snug">Runs this task when you pick Run with AI.</p>
+        </div>
+
+        {task.worktreeBranch && (
+          <div className="space-y-1.5">
+            <h3 className="font-medium text-muted-foreground uppercase tracking-wider">Worktree</h3>
+            <p className="flex items-start gap-1.5 font-mono break-all" title={task.worktreePath}>
+              <GitBranch className="h-3.5 w-3.5 shrink-0 mt-px text-muted-foreground" />
+              {task.worktreeBranch}
+            </p>
+            {/* R2-A2 integration point: linked-worktree health, local changes and cleanup safety. */}
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <h3 className="font-medium text-muted-foreground uppercase tracking-wider">Timeline</h3>
+          <dl className="space-y-1">
+            {dates.filter(d => d.value).map(d => (
+              <div key={d.label} className="grid grid-cols-[64px_1fr] gap-2">
+                <dt className="text-muted-foreground">{d.label}</dt>
+                <dd className={cn(d.strong && 'text-foreground')}>{d.value}</dd>
               </div>
             ))}
-          </div>
+          </dl>
         </div>
-      )}
-
-      {task.comments && task.comments.length > 0 && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Comments ({task.comments.length})
-          </label>
-          <div className="mt-1.5">
-            <TaskComments comments={task.comments} />
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 pt-2 border-t">
-        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Agent</label>
-        <AgentSelect value={task.agent} onChange={handleAgentChange} />
-        <span className="text-[11px] text-muted-foreground/70">Runs this task when you pick Run with AI.</span>
-      </div>
-
-      {task.worktreeBranch && (
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground pt-2 border-t">
-          <GitBranch className="h-3.5 w-3.5 shrink-0" />
-          <span className="font-mono truncate" title={task.worktreePath}>{task.worktreeBranch}</span>
-          <span className="text-muted-foreground/70 shrink-0">worktree</span>
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-muted-foreground pt-2 border-t">
-        {task.createdAt && <span>Created {formatDate(task.createdAt)}</span>}
-        {task.inProgressAt && <span>Started {formatDate(task.inProgressAt)}</span>}
-        {task.doneAt && <span>Done {formatDate(task.doneAt)}</span>}
-        {task.followUpAt && <span className="text-foreground/80">Client follow-up {formatDate(task.followUpAt)}</span>}
-      </div>
-    </>
+      </aside>
+    </div>
   )
+
+  const current = statusActions.find(a => task.status === a.status || (a.status === 'todo' && task.status === 'backlog'))
+  const needsAction = lcQuery.data?.stage === 'REVIEW' && lcQuery.data.delivery.mode === 'branch'
+  const lcTone = lcReading ? TONE_CLASS[lcReading.tone] : null
+  const lower = (t: string) => t.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={cn(
-          'max-h-[85vh] flex flex-col transition-[max-width] duration-200',
-          showReview && tab === 'review' ? 'sm:max-w-[860px]' : 'sm:max-w-[550px]'
-        )}
+        // One size for every tab: the dialog must not jump when the tab changes.
+        className="h-[min(84vh,700px)] max-h-[86vh] flex flex-col gap-3 sm:max-w-[780px] w-[calc(100vw-2rem)]"
       >
-        <DialogHeader className="shrink-0">
-          <div className="flex items-start gap-3">
-            <PriIcon className={cn('h-5 w-5 mt-0.5 shrink-0', pri.color)} />
-            <div className="flex-1 min-w-0">
-              <DialogTitle className="text-base leading-snug">{task.title}</DialogTitle>
-              <div className="flex items-center gap-2 mt-2">
-                <Badge variant={sts.badgeVariant} className="text-[10px]">{sts.label}</Badge>
-                <Badge variant="outline" className="text-[10px] gap-1">
-                  <PriIcon className={cn('h-2.5 w-2.5', pri.color)} />
-                  {pri.label}
-                </Badge>
-                {task.effort && (
-                  <Badge variant="outline" className="text-[10px]">{task.effort} pts effort</Badge>
-                )}
-                <span className="text-[10px] text-muted-foreground/60 font-mono select-all ml-auto">#{task.number || '?'}</span>
-              </div>
-            </div>
+        <DialogHeader className="shrink-0 space-y-2 pr-6">
+          <p className="text-xs text-muted-foreground font-mono select-all">
+            #{task.number || '?'}{projectName ? <span className="font-sans"> · {projectName}</span> : null}
+          </p>
+          <DialogTitle className="text-lg leading-snug font-semibold break-words">{task.title}</DialogTitle>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs" title={STATUS_MEANING[task.status]}>
+              <StsIcon className={cn('h-3 w-3', sts.color)} />
+              <span className="text-muted-foreground">Status</span>
+              <span className="font-medium">{sts.label}</span>
+            </span>
+            {lcReading && lcTone && lcQuery.data && (
+              <button
+                type="button"
+                onClick={() => showReview && setTab('review')}
+                title="Open the Review tab"
+                className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', lcTone.chip)}
+              >
+                <span className={cn('h-1.5 w-1.5 rounded-full', lcTone.dot)} aria-hidden />
+                <span className="opacity-80">Delivery</span>
+                <span className="font-medium">{lcReading.label}</span>
+              </button>
+            )}
+            <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs">
+              <PriIcon className={cn('h-3 w-3', pri.color)} />
+              {pri.label}
+            </span>
+            {task.effort && <span className="rounded-full border px-2.5 py-0.5 text-xs">{task.effort} pts</span>}
           </div>
+          {lcReading && lcQuery.data && (
+            <p className="text-xs text-muted-foreground leading-snug">
+              <span className="text-foreground/80">{sts.label}</span> is the board column: {lower(STATUS_MEANING[task.status])}.{' '}
+              <span className="text-foreground/80">{lcReading.label}</span> is the delivery stage: {lower(lcReading.meaning)}.
+            </p>
+          )}
         </DialogHeader>
 
         <Tabs value={tab} onValueChange={v => setTab(v as 'details' | 'history' | 'review')} className="flex flex-col min-h-0 flex-1">
-          <TabsList className="h-8 p-0.5 self-start shrink-0">
-            <TabsTrigger value="details" className="h-7 text-xs px-2.5">Details</TabsTrigger>
-            <TabsTrigger value="history" className="h-7 text-xs px-2.5 gap-1.5">
+          <TabsList className="h-9 p-0.5 self-start shrink-0">
+            <TabsTrigger value="details" className="h-8 text-xs px-3">Details</TabsTrigger>
+            <TabsTrigger value="history" className="h-8 text-xs px-3 gap-1.5">
               <History className="h-3 w-3" />
               History
             </TabsTrigger>
             {showReview && (
-              <TabsTrigger value="review" className="h-7 text-xs px-2.5 gap-1.5">
+              <TabsTrigger value="review" className="h-8 text-xs px-3 gap-1.5">
                 <GitCommit className="h-3 w-3" />
                 Review
+                {needsAction && <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-label="needs your review" />}
               </TabsTrigger>
             )}
           </TabsList>
-          <TabsContent value="details" className="space-y-4 py-2 overflow-y-auto min-h-0 flex-1">
+          {/* One scroll region, always the same box: tabs differ in content, not in frame */}
+          <TabsContent value="details" className="mt-3 overflow-y-auto min-h-0 flex-1 pr-1">
             {detailsBody}
           </TabsContent>
-          <TabsContent value="history" className="py-3 overflow-y-auto min-h-0 flex-1">
+          <TabsContent value="history" className="mt-3 overflow-y-auto min-h-0 flex-1 pr-1">
             <TaskHistory task={task} seenBefore={unseenSince} />
           </TabsContent>
           {showReview && (
-            <TabsContent value="review" className="py-2 overflow-y-auto min-h-0 flex-1">
+            <TabsContent value="review" className="mt-3 overflow-y-auto min-h-0 flex-1 pr-1">
               <TaskReviewPanel task={task} onDone={() => onOpenChange(false)} />
             </TabsContent>
           )}
         </Tabs>
 
-        {/* Status actions */}
-        <div className="flex items-center gap-2 pt-2 border-t shrink-0">
-          <span className="text-xs text-muted-foreground mr-1">Move to:</span>
-          {statusActions.map(({ status, label, icon: Icon, color }) => {
-            const isCurrent = task.status === status || (status === 'todo' && task.status === 'backlog')
-            return (
-              <Button
-                key={status}
-                variant={isCurrent ? 'secondary' : 'outline'}
-                size="sm"
-                className={cn('gap-1.5 text-xs', isCurrent && 'pointer-events-none opacity-60')}
-                onClick={() => handleStatusChange(status)}
-                disabled={isCurrent}
-              >
-                <Icon className={cn('h-3.5 w-3.5', color)} />
-                {label}
-              </Button>
-            )
-          })}
-        </div>
-
-        <div className="flex items-center justify-between pt-2 shrink-0">
+        <div className="flex items-center justify-between gap-2 pt-3 border-t shrink-0 flex-wrap">
           <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
             <Button variant="ghost" size="sm" className="gap-1.5 text-xs text-destructive hover:text-destructive" onClick={() => setDeleteOpen(true)}>
               <Trash2 className="h-3.5 w-3.5" />
@@ -356,7 +373,24 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
             </AlertDialogContent>
           </AlertDialog>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                  Move to
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {statusActions.map(({ status, label, icon: Icon, color }) => (
+                  <DropdownMenuItem key={status} disabled={current?.status === status} className="gap-2 text-xs" onSelect={() => handleStatusChange(status)}>
+                    <Icon className={cn('h-3.5 w-3.5', color)} />
+                    {label}
+                    {current?.status === status && <Check className="h-3 w-3 ml-auto" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button variant="ghost" size="sm" className="gap-1.5 text-xs" onClick={handleCopy}>
               <Copy className="h-3.5 w-3.5" />
               Copy as Prompt
@@ -381,5 +415,28 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-1.5">
+      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+/** Technical text stays one click away: it is reference, not the answer. */
+function Fold({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <details className="group rounded-lg border px-3 py-2">
+      <summary className="flex items-center gap-1.5 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden text-xs font-medium rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+        {title}
+        {hint && <span className="font-normal text-muted-foreground">· {hint}</span>}
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
   )
 }

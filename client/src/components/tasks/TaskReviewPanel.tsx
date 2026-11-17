@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { useMemo, useState, type ReactNode } from 'react'
+import { TaskOutcomeCard } from '@/components/tasks/TaskOutcomeCard'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  GitBranch, GitCommit, ChevronDown, ChevronRight, Plus, Minus,
+  GitCommit, ChevronDown, ChevronRight, Plus, Minus,
   Loader2, AlertTriangle, RotateCcw, X,
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
@@ -105,9 +105,11 @@ function CommitEntry({ projectId, commit }: { projectId: string; commit: TaskCom
 interface TaskReviewPanelProps {
   task: Task
   onDone: () => void
+  /** R2-A2 integration point: worktree, local-change and cleanup sections, rendered inside the delivery card. */
+  extraSections?: ReactNode
 }
 
-export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
+export function TaskReviewPanel({ task, onDone, extraSections }: TaskReviewPanelProps) {
   const until = task.doneAt
     ? new Date(new Date(task.doneAt).getTime() + DONE_GRACE_MS).toISOString()
     : undefined
@@ -164,44 +166,45 @@ export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
   }
 
   const commits = data?.commits || []
+  const files = data?.files || []
+
+  const needsChanges = reasonOpen ? null : (
+    <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setReasonOpen(true)}>
+      <RotateCcw className="h-3.5 w-3.5" />
+      Needs changes
+    </Button>
+  )
 
   return (
     <div className="space-y-4">
-      {lc && <LifecycleBar lc={lc} task={task} />}
-      {/* Summary bar */}
-      <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
-        {data?.branch && (
-          <Badge variant="outline" className="gap-1 text-[10px] font-mono">
-            <GitBranch className="h-2.5 w-2.5" />
-            {data.branch}
-          </Badge>
-        )}
-        <span>
-          {commits.length} commit{commits.length !== 1 ? 's' : ''}{' '}
-          {branchMode ? `ahead of ${lc?.target.branch ?? 'target'}` : <>since started {relative(task.inProgressAt)}</>}
-        </span>
-        {(data?.files.length ?? 0) > 0 && (
-          <>
-            <span className="text-muted-foreground/50">&middot;</span>
-            <span>{data!.files.length} file{data!.files.length !== 1 ? 's' : ''}</span>
-          </>
-        )}
-        {(data?.additions ?? 0) > 0 && (
-          <span className="text-success flex items-center gap-0.5">
-            <Plus className="h-2.5 w-2.5" />{data!.additions}
-          </span>
-        )}
-        {(data?.deletions ?? 0) > 0 && (
-          <span className="text-destructive flex items-center gap-0.5">
-            <Minus className="h-2.5 w-2.5" />{data!.deletions}
-          </span>
-        )}
-      </div>
+      {lc && <LifecycleBar lc={lc} task={task} extraActions={needsChanges}>{extraSections}</LifecycleBar>}
+
+      {reasonOpen && (
+        <div className="space-y-2 rounded-lg border p-3">
+          <Textarea
+            autoFocus
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="What still needs to change?"
+            className="text-xs min-h-[70px]"
+          />
+          <div className="flex items-center gap-2">
+            <Button size="sm" className="gap-1.5 text-xs" onClick={handleNeedsChanges} disabled={!reason.trim() || addNote.isPending}>
+              {addNote.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              Send back to In Progress
+            </Button>
+            <Button variant="ghost" size="sm" className="gap-1.5 text-xs" onClick={() => setReasonOpen(false)}>
+              <X className="h-3.5 w-3.5" />
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
 
       {dirty > 0 && (
-        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2" role="alert">
           <AlertTriangle className="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" />
-          <p className="text-[11px] leading-relaxed">
+          <p className="text-xs leading-relaxed">
             {dirty} change{dirty !== 1 ? 's' : ''} left uncommitted in the working tree
             {data?.working && (
               <span className="text-muted-foreground">
@@ -213,76 +216,66 @@ export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
         </div>
       )}
 
-      {commits.length === 0 ? (
-        <div className="text-center py-6 space-y-1">
-          <GitCommit className="h-5 w-5 mx-auto text-muted-foreground/50" />
-          <p className="text-sm text-muted-foreground">No commits since task started</p>
-          <p className="text-[11px] text-muted-foreground/70 max-w-sm mx-auto leading-relaxed">
-            The work may still be uncommitted, may live on another branch
-            {data?.branch && <> (this one is <span className="font-mono">{data.branch}</span>)</>}
-            , or in a sub-repository.
+      {/* What was delivered */}
+      <section aria-label="Delivered work" className="space-y-2">
+        <div className="flex items-baseline gap-x-3 gap-y-1 flex-wrap">
+          <h3 className="text-sm font-medium">Delivered work</h3>
+          <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+            <span>
+              {commits.length} commit{commits.length !== 1 ? 's' : ''}{' '}
+              {branchMode ? `ahead of ${lc?.target.branch ?? 'target'}` : <>since started {relative(task.inProgressAt)}</>}
+            </span>
+            {files.length > 0 && <span>· {files.length} file{files.length !== 1 ? 's' : ''}</span>}
+            {(data?.additions ?? 0) > 0 && <span className="text-success inline-flex items-center gap-0.5"><Plus className="h-2.5 w-2.5" />{data!.additions}</span>}
+            {(data?.deletions ?? 0) > 0 && <span className="text-destructive inline-flex items-center gap-0.5"><Minus className="h-2.5 w-2.5" />{data!.deletions}</span>}
           </p>
         </div>
-      ) : (
-        <div>
-          {commits.map(commit => (
-            <CommitEntry key={commit.hash} projectId={task.projectId} commit={commit} />
-          ))}
-        </div>
-      )}
 
-      {/* Files touched across the whole window */}
-      {(data?.files.length ?? 0) > 0 && (
-        <div>
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Files touched ({data!.files.length})
-          </label>
-          <div className="mt-1.5 space-y-0.5">
-            {data!.files.map(f => (
+        {commits.length === 0 ? (
+          <div className="rounded-lg border border-dashed text-center py-6 px-4 space-y-1">
+            <GitCommit className="h-5 w-5 mx-auto text-muted-foreground/50" />
+            <p className="text-sm text-muted-foreground">No commits since task started</p>
+            <p className="text-xs text-muted-foreground/80 max-w-sm mx-auto leading-relaxed">
+              The work may still be uncommitted, may live on another branch
+              {data?.branch && <> (this one is <span className="font-mono">{data.branch}</span>)</>}
+              , or in a sub-repository.
+            </p>
+          </div>
+        ) : (
+          <div>
+            {commits.map(commit => (
+              <CommitEntry key={commit.hash} projectId={task.projectId} commit={commit} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Files touched across the whole delivery */}
+      {files.length > 0 && (
+        <details className="group rounded-lg border px-3 py-2">
+          <summary className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium list-none [&::-webkit-details-marker]:hidden rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+            Files touched ({files.length})
+          </summary>
+          <div className="mt-2 space-y-0.5">
+            {files.map(f => (
               <div key={f.file} className="flex items-center gap-2 text-[11px]">
-                <span className="font-mono truncate flex-1">{f.file}</span>
+                <span className="font-mono truncate flex-1" title={f.file}>{f.file}</span>
                 {f.additions > 0 && <span className="text-success shrink-0">+{f.additions}</span>}
                 {f.deletions > 0 && <span className="text-destructive shrink-0">-{f.deletions}</span>}
               </div>
             ))}
           </div>
-        </div>
+        </details>
       )}
 
-      {/* Needs changes */}
-      <div className="pt-2 border-t">
-        {reasonOpen ? (
-          <div className="space-y-2">
-            <Textarea
-              autoFocus
-              value={reason}
-              onChange={e => setReason(e.target.value)}
-              placeholder="What still needs to change?"
-              className="text-xs min-h-[70px]"
-            />
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                className="gap-1.5 text-xs"
-                onClick={handleNeedsChanges}
-                disabled={!reason.trim() || addNote.isPending}
-              >
-                {addNote.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                Send back to In Progress
-              </Button>
-              <Button variant="ghost" size="sm" className="gap-1.5 text-xs" onClick={() => setReasonOpen(false)}>
-                <X className="h-3.5 w-3.5" />
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setReasonOpen(true)}>
-            <RotateCcw className="h-3.5 w-3.5" />
-            Needs changes
-          </Button>
-        )}
-      </div>
+      {/* Evidence: what the agent reported, when it recorded anything */}
+      {(task.resolution || task.rootCause) && (
+        <section aria-label="Agent report" className="space-y-1.5">
+          <h3 className="text-sm font-medium">Agent report</h3>
+          <TaskOutcomeCard task={task} />
+        </section>
+      )}
     </div>
   )
 }

@@ -193,6 +193,41 @@ export async function removeTaskWorktree(
   }
 }
 
+/**
+ * Gate for deleting a task (R2 consolidation). A task that still owns a worktree or
+ * branch is the only record that explains why that worktree exists, so it may only be
+ * deleted when nothing is left behind: either there is nothing on disk/in Git, or the
+ * safe close (R2-A2) is allowed and completes. Otherwise the task stays and the caller
+ * reports `reason`. Nothing is forced, removed or recorded to make a delete possible.
+ * Must run BEFORE the task is deleted.
+ */
+export async function canDeleteTask(
+  task: Task,
+  options: { project?: Project } = {},
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { withLink } = await import('./worktreeLinks.js');
+  const linked = await withLink(task);
+  if (!linked.worktreePath && !linked.worktreeBranch) return { ok: true };
+  try {
+    const project = options.project || (await getProjects()).find(p => p.id === task.projectId);
+    if (!project?.isGitRepo) return { ok: false, reason: 'This task has a worktree and the project is not a Git repository, so Shipyard cannot prove removing it is safe. Nothing was deleted.' };
+    const closer = await import('./worktreeClose.js');
+    const preview = await closer.previewClose(project, task);
+    if (preview.mode === 'none') return { ok: true };
+    if (!preview.allowed) {
+      const why = preview.blockers.map(b => b.message).join('; ') || 'the worktree cannot be closed safely';
+      return { ok: false, reason: `Task #${task.number ?? task.id} still owns a worktree that cannot be closed yet: ${why}. Resolve that (Review tab > Close worktree) before deleting the task. Nothing was deleted.` };
+    }
+    const res = await closer.closeTask(project, task, { expectedToken: preview.token });
+    if (!res.ok) return { ok: false, reason: `The worktree could not be closed: ${res.message}. Nothing was deleted.` };
+    if (!res.complete) return { ok: false, reason: 'The worktree was only partly closed (see the task lifecycle). The task was kept so it can be finished.' };
+    log.info('git', `Worktree closed before deleting task #${task.number ?? task.id}`, task.worktreePath, task.projectId);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, reason: `Could not verify the worktree is safe to close: ${err?.message || 'unexpected error'}. Nothing was deleted.` };
+  }
+}
+
 // -- Listing and cleanup --------------------------------------------------
 
 export interface WorktreeInfo {
