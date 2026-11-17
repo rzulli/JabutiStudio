@@ -19,6 +19,16 @@ export function localOrigins(port: number): string[] {
   return ports.flatMap(p => [`http://localhost:${p}`, `http://127.0.0.1:${p}`, `http://[::1]:${p}`]);
 }
 
+/** True for an http(s) origin whose host is this machine (the backend, Vite, or the Electron window). */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const u = new URL(origin);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && isLoopbackHost(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function hostnameOf(hostHeader: string): string {
   return hostHeader.replace(/:\d+$/, '');
 }

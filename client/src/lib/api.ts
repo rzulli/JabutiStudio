@@ -1126,6 +1126,9 @@ export const api = {
   getMcpStatus: () => request<{
     enabled: boolean;
     requireAuth: boolean;
+    /** disabled: MCP is off · needs-authorization: on, no client approved yet · ready */
+    state: 'disabled' | 'needs-authorization' | 'ready';
+    endpoint: string;
     clients: Array<{ clientId: string; clientName: string; createdAt: string }>;
   }>('/mcp/status'),
   saveMcpConfig: (data: { enabled: boolean; requireAuth?: boolean }) =>

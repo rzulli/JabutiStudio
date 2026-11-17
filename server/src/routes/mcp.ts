@@ -1,35 +1,9 @@
 import { FastifyInstance } from 'fastify';
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
 import { MCP_TOOLS, handleToolCall } from '../services/mcpServer.js';
 import * as mcpAuth from '../services/mcpAuth.js';
-import { DATA_DIR } from '../services/dataDir.js';
+import { getMcpConfig, loadMcpConfig, saveMcpConfig } from '../services/mcpConfig.js';
+import { knowledgeState, mcpEndpoint } from '../services/agentMcp.js';
 import * as log from '../services/logService.js';
-
-const MCP_CONFIG_FILE = join(DATA_DIR, 'mcp-config.json');
-
-interface McpConfig {
-  enabled: boolean;
-  requireAuth: boolean;
-}
-
-let mcpConfig: McpConfig = { enabled: false, requireAuth: true };
-
-async function loadMcpConfig(): Promise<McpConfig> {
-  try {
-    const raw = await readFile(MCP_CONFIG_FILE, 'utf-8');
-    mcpConfig = { enabled: false, requireAuth: true, ...JSON.parse(raw) };
-  } catch {
-    mcpConfig = { enabled: false, requireAuth: true };
-  }
-  return mcpConfig;
-}
-
-async function saveMcpConfig(config: McpConfig): Promise<void> {
-  mcpConfig = config;
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(MCP_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
-}
 
 // JSON-RPC helpers
 function jsonRpcResponse(id: any, result: any) {
@@ -54,8 +28,10 @@ export async function mcpRoutes(app: FastifyInstance) {
 
   app.get('/api/mcp/status', async () => {
     return {
-      enabled: mcpConfig.enabled,
-      requireAuth: mcpConfig.requireAuth,
+      enabled: getMcpConfig().enabled,
+      requireAuth: getMcpConfig().requireAuth,
+      state: knowledgeState(),
+      endpoint: mcpEndpoint(),
       clients: mcpAuth.listClients().map(c => ({
         clientId: c.clientId,
         clientName: c.clientName,
@@ -70,9 +46,9 @@ export async function mcpRoutes(app: FastifyInstance) {
     const { enabled, requireAuth } = request.body;
     await saveMcpConfig({
       enabled,
-      requireAuth: requireAuth !== undefined ? requireAuth : mcpConfig.requireAuth,
+      requireAuth: requireAuth !== undefined ? requireAuth : getMcpConfig().requireAuth,
     });
-    return { ok: true, ...mcpConfig };
+    return { ok: true, ...getMcpConfig() };
   });
 
   app.delete<{
@@ -105,7 +81,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   app.post<{
     Body: { client_name: string; redirect_uris: string[]; grant_types?: string[]; response_types?: string[]; token_endpoint_auth_method?: string }
   }>('/register', async (request, reply) => {
-    if (!mcpConfig.enabled) {
+    if (!getMcpConfig().enabled) {
       return reply.status(403).send({ error: 'MCP server is disabled' });
     }
     const { client_name, redirect_uris } = request.body;
@@ -138,7 +114,7 @@ export async function mcpRoutes(app: FastifyInstance) {
       code_challenge_method: string;
     }
   }>('/authorize', async (request, reply) => {
-    if (!mcpConfig.enabled) {
+    if (!getMcpConfig().enabled) {
       return reply.status(403).send('MCP server is disabled');
     }
 
@@ -299,11 +275,11 @@ export async function mcpRoutes(app: FastifyInstance) {
 
   // Auth middleware for MCP endpoint
   async function checkMcpAuth(request: any, reply: any): Promise<boolean> {
-    if (!mcpConfig.enabled) {
+    if (!getMcpConfig().enabled) {
       reply.status(403).send(jsonRpcError(null, -32000, 'MCP server is disabled'));
       return false;
     }
-    if (mcpConfig.requireAuth) {
+    if (getMcpConfig().requireAuth) {
       const auth = await mcpAuth.validateBearerToken(request.headers.authorization);
       if (!auth.valid) {
         log.warn('mcp', 'Invalid bearer token rejected');

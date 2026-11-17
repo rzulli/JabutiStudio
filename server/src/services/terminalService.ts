@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { resolveAgent, buildAgentLaunch, quote, DEFAULT_AGENT_ID } from './agentRegistry.js';
+import { agentMcpConfigFile } from './agentMcp.js';
 import { aiTitlesEnabled, cleanTerminalOutput, summarizeTerminal } from './terminalSummary.js';
 import { endsWithQuestion, removeHookSettings, writeHookSettings } from './claudeHooks.js';
 import { trackConversation } from './claudeConversations.js';
@@ -125,6 +126,15 @@ export function usesBareClaudeTab(type: string, agentId?: string, prompt?: strin
 }
 
 /**
+ * `--mcp-config` for a Claude session: the Knowledge tools, while the MCP server is on. Kept last on the command line
+ * because the flag takes a list of files, and it would swallow what follows it.
+ */
+async function claudeMcpArgs(): Promise<string> {
+  const file = await agentMcpConfigFile();
+  return file ? `--mcp-config ${quote(file)}` : '';
+}
+
+/**
  * Which agent a session runs. A Claude tab is Claude even when the settings
  * default to another CLI; other agent sessions fall back to the default.
  */
@@ -221,14 +231,14 @@ export async function createSession(
   } else if (usesBareClaudeTab(type, agentId, prompt)) {
     // Plain Claude tab from the project menu — permissions prompt intact.
     env['CLAUDECODE'] = '';
-    initialCommand = ['claude', resumeArgs, await hookArgs(id)].filter(Boolean).join(' ');
+    initialCommand = ['claude', resumeArgs, await hookArgs(id), await claudeMcpArgs()].filter(Boolean).join(' ');
     runsClaude = true;
   } else if (AGENT_SESSION_TYPES.has(type)) {
     agent = resolveAgent(agentIdForSession(type, agentId));
     runsClaude = agent.id === DEFAULT_AGENT_ID;
     if (runsClaude) env['CLAUDECODE'] = '';
     yolo = runsClaude && (agent.args || '').includes('--dangerously-skip-permissions');
-    const extraArgs = runsClaude ? [resumeArgs, await hookArgs(id)].filter(Boolean).join(' ') : '';
+    const extraArgs = runsClaude ? [resumeArgs, await hookArgs(id), await claudeMcpArgs()].filter(Boolean).join(' ') : '';
     const launch = await buildAgentLaunch(agent, { cwd: workdir, prompt: resume ? undefined : prompt, extraArgs });
     initialCommand = launch.command;
     injectPrompt = launch.injectsPrompt;

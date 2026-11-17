@@ -6,11 +6,18 @@ import { EVIDENCE_TYPES } from '../services/designDecisions.js';
 import * as migration from '../services/designMigration.js';
 import * as sources from '../services/designSources.js';
 import { readLegacyRecords } from '../services/legacyRecords.js';
+import { isLoopbackOrigin } from '../services/localAccess.js';
 
-/** The browser renderer sets these on its own fetches; an agent, MCP client or plain curl does not. */
+/**
+ * The browser sets Origin and Sec-Fetch-* on its own fetches and page script cannot change them; an agent,
+ * MCP client or plain curl normally sends none. The page may be served by the backend, by Vite (its proxy
+ * rewrites Host, so Host is not compared), or by the Electron window on 127.0.0.1. Every request still passes
+ * the Host and Origin allow-list in localAccess before it reaches a route.
+ */
 export function fromAppUi(h: Record<string, unknown>) {
-  const sameOrigin = typeof h.origin === 'string' && h.origin.replace(/^https?:\/\//, '') === h.host;
-  return sameOrigin && h['sec-fetch-site'] === 'same-origin' && h['sec-fetch-dest'] === 'empty';
+  const origin = h.origin;
+  if (typeof origin !== 'string' || !isLoopbackOrigin(origin)) return false;
+  return h['sec-fetch-site'] === 'same-origin' && h['sec-fetch-dest'] === 'empty';
 }
 
 export async function designRoutes(app: FastifyInstance) {
