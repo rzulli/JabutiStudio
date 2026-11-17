@@ -222,3 +222,45 @@ export function useDiscardAll() {
     },
   })
 }
+
+/** Derived lifecycle of one task: execution, delivery, acceptance, integration (see server taskLifecycle.ts). */
+export function useTaskLifecycle(projectId: string | undefined, taskId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['task-lifecycle', projectId, taskId],
+    queryFn: () => api.getTaskLifecycle(projectId!, taskId!),
+    enabled: enabled && !!projectId && !!taskId,
+    refetchInterval: 8_000,
+  })
+}
+
+/**
+ * Stage of every task with a worktree branch, in one request. A map by task id:
+ * tasks without a branch are absent on purpose (nothing about them is verifiable).
+ * Only runs while a board or rail is mounted.
+ */
+export function useLifecycleSummary(projectId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['task-lifecycle-summary', projectId],
+    queryFn: () => api.getLifecycleSummary(projectId!),
+    enabled: enabled && !!projectId,
+    refetchInterval: 10_000,
+    select: data => new Map(data.tasks.map(t => [t.taskId, t])),
+  })
+}
+
+export function useTaskLifecycleActions(projectId: string, taskId: string) {
+  const qc = useQueryClient()
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ['task-lifecycle', projectId, taskId] })
+    qc.invalidateQueries({ queryKey: ['task-lifecycle-summary', projectId] })
+    qc.invalidateQueries({ queryKey: ['tasks', projectId] })
+    qc.invalidateQueries({ queryKey: ['tasks', 'all'] })
+    qc.invalidateQueries({ queryKey: ['git-status', projectId] })
+    qc.invalidateQueries({ queryKey: ['git-pending', projectId] })
+  }
+  return {
+    accept: useMutation({ mutationFn: (b: { targetBranch: string; expectedHeadSha: string; note?: string }) => api.acceptTaskDelivery(projectId, taskId, b), onSettled: done }),
+    revoke: useMutation({ mutationFn: () => api.revokeTaskAcceptance(projectId, taskId), onSettled: done }),
+    integrate: useMutation({ mutationFn: (b: { targetBranch: string; expectedHeadSha: string; branch: string }) => api.integrateTask(projectId, taskId, b), onSettled: done }),
+  }
+}

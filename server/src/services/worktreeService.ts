@@ -179,7 +179,9 @@ export async function removeTaskWorktree(
     if (project?.isGitRepo) {
       await gitService.removeWorktree(project.path, task.worktreePath);
       if (options.deleteBranch !== false && task.worktreeBranch) {
-        await gitService.deleteBranch(project.path, task.worktreeBranch);
+        // -d, not -D: a branch holding commits that are not in the checked-out branch survives.
+        // Deleting it would destroy work no one integrated (R2-A1).
+        await gitService.deleteBranch(project.path, task.worktreeBranch, false);
       }
     } else {
       await rm(task.worktreePath, { recursive: true, force: true });

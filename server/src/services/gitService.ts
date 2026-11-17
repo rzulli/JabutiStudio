@@ -1,6 +1,7 @@
 import { simpleGit, SimpleGit, StatusResult, LogResult } from 'simple-git';
 import path from 'path';
 import { promises as fsp } from 'fs';
+import { execFile } from 'child_process';
 
 // Cache SimpleGit instances per resolved path so that all operations on the
 // same repo go through one instance's internal task queue. This serializes git
@@ -337,29 +338,7 @@ export interface TaskCommit {
 const REC = '\x1e'; // record separator — one per commit
 const UNIT = '\x1f'; // unit separator — between header fields
 
-/**
- * Commits whose date falls inside a window, each with the files it touched.
- * One `git log --numstat` call covers the whole range; the per-commit diff is
- * fetched on demand by getCommitDiff when the user expands a commit.
- */
-export async function getCommitsSince(projectPath: string, since: string, until?: string): Promise<TaskCommit[]> {
-  const git = getGit(projectPath);
-  const args = [
-    'log',
-    `--since=${since}`,
-    '--numstat',
-    `--format=${REC}%H${UNIT}%s${UNIT}%aI${UNIT}%an`,
-  ];
-  if (until) args.push(`--until=${until}`);
-
-  let raw: string;
-  try {
-    raw = await git.raw(args);
-  } catch {
-    // No commits yet, or not a repo — nothing to review
-    return [];
-  }
-
+function parseNumstatLog(raw: string): TaskCommit[] {
   const commits: TaskCommit[] = [];
   for (const record of raw.split(REC)) {
     if (!record.trim()) continue;
@@ -389,6 +368,32 @@ export async function getCommitsSince(projectPath: string, since: string, until?
   }
 
   return commits;
+}
+
+/**
+ * Commits whose date falls inside a window, each with the files it touched.
+ * One `git log --numstat` call covers the whole range; the per-commit diff is
+ * fetched on demand by getCommitDiff when the user expands a commit.
+ */
+export async function getCommitsSince(projectPath: string, since: string, until?: string): Promise<TaskCommit[]> {
+  const git = getGit(projectPath);
+  const args = [
+    'log',
+    `--since=${since}`,
+    '--numstat',
+    `--format=${REC}%H${UNIT}%s${UNIT}%aI${UNIT}%an`,
+  ];
+  if (until) args.push(`--until=${until}`);
+
+  let raw: string;
+  try {
+    raw = await git.raw(args);
+  } catch {
+    // No commits yet, or not a repo — nothing to review
+    return [];
+  }
+
+  return parseNumstatLog(raw);
 }
 
 // ── Worktrees ────────────────────────────────────────────
@@ -488,4 +493,115 @@ export async function deleteBranch(projectPath: string, branch: string, force = 
   } catch {
     // Already gone, or still checked out somewhere — not worth failing over.
   }
+}
+
+// ── Lifecycle primitives (R2-A1) ─────────────────────────
+// Fresh reads, never the 2.5 s status cache: acceptance and integration decide
+// on what git says now. They run `git` directly so exit codes (merge-tree,
+// merge-base --is-ancestor) are observable instead of folded into an exception.
+
+
+export interface GitRun { code: number; stdout: string; stderr: string }
+
+export function runGit(cwd: string, args: string[]): Promise<GitRun> {
+  return new Promise(resolve => {
+    execFile('git', ['-c', 'core.quotepath=false', ...args], { cwd, maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err: any, stdout, stderr) => {
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 128) : 0, stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+}
+
+/** Commit a ref points to, or null when the ref does not exist. */
+export async function resolveRef(cwd: string, ref: string): Promise<string | null> {
+  const r = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+export async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  return (await runGit(cwd, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0;
+}
+
+/** Checked-out branch of a working directory; null when detached. */
+export async function currentBranch(cwd: string): Promise<string | null> {
+  const r = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+/** True only when git says `ancestor` is reachable from `descendant`. */
+export async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+  return (await runGit(cwd, ['merge-base', '--is-ancestor', ancestor, descendant])).code === 0;
+}
+
+export async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {
+  const r = await runGit(cwd, ['merge-base', a, b]);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+/** Commits reachable from `head` but not from `base`, oldest last, with their files. */
+export async function getCommitsBetween(cwd: string, base: string, head: string): Promise<TaskCommit[]> {
+  const r = await runGit(cwd, ['log', '--numstat', `--format=${REC}%H${UNIT}%s${UNIT}%aI${UNIT}%an`, `${base}..${head}`]);
+  return r.code === 0 ? parseNumstatLog(r.stdout) : [];
+}
+
+/**
+ * Patch-equivalence: how many of head's commits have no equivalent patch in
+ * `upstream` (`+`) and how many do (`-`). Equivalent without ancestry is the
+ * cherry-pick / rebase / squash case — reported, never trusted as integrated.
+ */
+export async function cherryCounts(cwd: string, upstream: string, head: string): Promise<{ unique: number; equivalent: number }> {
+  const r = await runGit(cwd, ['cherry', upstream, head]);
+  let unique = 0, equivalent = 0;
+  if (r.code === 0) for (const l of r.stdout.split('\n')) { if (l.startsWith('+')) unique++; else if (l.startsWith('-')) equivalent++; }
+  return { unique, equivalent };
+}
+
+export interface DirtySummary { count: number; files: string[] }
+
+/** Uncommitted and untracked (non-ignored) entries of a working directory, read fresh. */
+export async function dirtySummary(cwd: string): Promise<DirtySummary> {
+  invalidateStatus(cwd);
+  const r = await runGit(cwd, ['status', '--porcelain=v1', '--untracked-files=all']);
+  const lines = r.code === 0 ? r.stdout.split('\n').filter(Boolean) : [];
+  return { count: lines.length, files: lines.slice(0, 20).map(l => l.slice(3)) };
+}
+
+/** A merge, rebase, cherry-pick or revert left half-done in this checkout. */
+export async function operationInProgress(cwd: string): Promise<string | null> {
+  for (const [ref, label] of [['MERGE_HEAD', 'merge'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert']] as const) {
+    if ((await runGit(cwd, ['rev-parse', '--verify', '--quiet', ref])).code === 0) return label;
+  }
+  for (const dir of ['rebase-merge', 'rebase-apply']) {
+    const p = await runGit(cwd, ['rev-parse', '--git-path', dir]);
+    if (p.code === 0) { try { await fsp.access(path.resolve(cwd, p.stdout.trim())); return 'rebase'; } catch { /* absent */ } }
+  }
+  return null;
+}
+
+/** Would merging `head` into `target` conflict? Computed in the object store; touches no checkout. */
+export async function predictMerge(cwd: string, target: string, head: string): Promise<'clean' | 'conflict' | 'unknown'> {
+  const r = await runGit(cwd, ['merge-tree', '--write-tree', '--no-messages', target, head]);
+  if (r.code === 0) return 'clean';
+  if (r.code === 1) return 'conflict';
+  return 'unknown';
+}
+
+/**
+ * Merge an exact commit (never a branch name) with --no-ff into the branch
+ * checked out in `cwd`. On any failure the merge is aborted so the checkout is
+ * left as it was.
+ */
+export async function mergeCommitNoFf(cwd: string, sha: string, message: string): Promise<{ ok: boolean; conflict: boolean; output: string }> {
+  const r = await runGit(cwd, ['merge', '--no-ff', '-m', message, sha]);
+  if (r.code === 0) { invalidateStatus(cwd); return { ok: true, conflict: false, output: r.stdout.trim() }; }
+  const output = (r.stdout + r.stderr).trim();
+  const conflict = /CONFLICT|Automatic merge failed/i.test(output);
+  await runGit(cwd, ['merge', '--abort']);
+  invalidateStatus(cwd);
+  return { ok: false, conflict, output };
+}
+
+/** Branch name -> path of the worktree that has it checked out (from `git worktree list`). */
+export async function worktreeOfBranch(cwd: string, branch: string): Promise<string | null> {
+  const all = await listWorktrees(cwd);
+  return all.find(w => w.branch === branch)?.path ?? null;
 }

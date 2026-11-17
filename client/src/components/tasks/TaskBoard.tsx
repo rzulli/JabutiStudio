@@ -1,5 +1,5 @@
-import { useState, useCallback, useDeferredValue, useMemo, useRef, useEffect, memo, lazy, Suspense } from 'react'
-import { Plus, Inbox, Loader, CheckCircle2, Copy, Import, LayoutGrid, List, ChevronDown, CheckCheck, Eye, EyeOff, FileText, MoreHorizontal } from 'lucide-react'
+import { useState, useCallback, useDeferredValue, useMemo, useRef, useEffect, memo, lazy, Suspense, createContext, useContext } from 'react'
+import { Plus, Inbox, Loader, CheckCircle2, Copy, Import, LayoutGrid, List, ChevronDown, CheckCheck, Eye, EyeOff, FileText, MoreHorizontal, GitMerge } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -47,7 +47,9 @@ import { parseSearchTerms, taskMatchesTerms } from '@/lib/taskSearch'
 import { PENDING_NEW_TASK_KEY } from '@/lib/shortcuts'
 import { useAutoSync } from '@/hooks/useSheetSync'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { api, type TaskLifecycleSummary } from '@/lib/api'
+import { useLifecycleSummary } from '@/hooks/useGit'
+import { lifecycleVisual } from '@/lib/taskVisuals'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -316,7 +318,11 @@ function BacklogSubHeader({ count, forecast, headerExtra, children }: { count: n
 
 // Memoized: useSortable rebuilds `listeners` on every render, so without this
 // each poll would re-render every card through the drag wrapper.
+// Provided by TaskBoard so every card reads its lifecycle without threading a prop through six call sites.
+const LifecycleMapContext = createContext<Map<string, TaskLifecycleSummary> | undefined>(undefined)
+
 const SortableTaskItem = memo(function SortableTaskItem({ task, projectName, projectPath, onEdit, onView, onAiResolve }: { task: Task; projectName?: string; projectPath?: string; onEdit: (task: Task) => void; onView: (task: Task) => void; onAiResolve?: (task: Task) => void }) {
+  const lifecycle = useContext(LifecycleMapContext)?.get(task.id)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
     data: { task },
@@ -341,6 +347,7 @@ const SortableTaskItem = memo(function SortableTaskItem({ task, projectName, pro
         onEdit={onEdit}
         onView={onView}
         onAiResolve={onAiResolve}
+        lifecycle={lifecycle}
         dragListeners={listeners as unknown as Record<string, Function>}
       />
     </div>
@@ -511,8 +518,27 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
   }, [grouped.inbox])
 
   // Split done tasks into unread and read based on doneReadAt timestamp
+  const lifecycleSummary = useLifecycleSummary(projectId)
+  const lifecycleMap = lifecycleSummary.data
+
+  // Done is a queue, not a pile: what still needs a person comes first, what Git
+  // already holds goes behind a toggle. Tasks with no verifiable lifecycle (no
+  // worktree branch) fall through to the old unread/read split untouched.
+  const { reviewDone, readyDone, mergedDone, restDone } = useMemo(() => {
+    const review: Task[] = [], ready: Task[] = [], merged: Task[] = [], rest: Task[] = []
+    for (const task of grouped.done || []) {
+      const g = lifecycleVisual(task, lifecycleMap?.get(task.id))?.group
+      if (g === 'review') review.push(task)
+      else if (g === 'ready') ready.push(task)
+      else if (g === 'merged') merged.push(task)
+      else rest.push(task)
+    }
+    return { reviewDone: review, readyDone: ready, mergedDone: merged, restDone: rest }
+  }, [grouped.done, lifecycleMap])
+
+  // Split the rest of done into unread and read based on doneReadAt timestamp
   const { unreadDone, readDone } = useMemo(() => {
-    const allDone = grouped.done || []
+    const allDone = restDone
     // While filtering, a match must never hide behind "Show N read".
     if (!doneReadAt || isFiltering) return { unreadDone: allDone, readDone: [] as Task[] }
     const cutoff = new Date(doneReadAt).getTime()
@@ -524,7 +550,8 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
       else unread.push(task)
     }
     return { unreadDone: unread, readDone: read }
-  }, [grouped.done, doneReadAt, isFiltering])
+  }, [restDone, doneReadAt, isFiltering])
+  const [showMergedDone, setShowMergedDone] = useState(false)
 
   const handleMarkAllRead = useCallback(() => {
     const now = new Date().toISOString()
@@ -690,6 +717,7 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
         </div>
       </div>
 
+      <LifecycleMapContext.Provider value={lifecycleMap}>
       {viewMode === 'kanban' ? (
         <DndContext
           sensors={sensors}
@@ -703,14 +731,53 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
               const isInboxCol = col.key === 'inbox'
               const colTasks = grouped[col.key] || []
               // For done column: show unread tasks, optionally show read tasks
-              const visibleUnread = isDoneCol ? unreadDone : colTasks
+              const visibleUnread = isDoneCol ? [...reviewDone, ...readyDone, ...unreadDone] : colTasks
               const limit = visibleCounts[col.key] || INITIAL_VISIBLE
               const visibleTasks = isDoneCol ? visibleUnread : colTasks.slice(0, limit)
               const hiddenCount = isDoneCol ? 0 : colTasks.length - visibleTasks.length
-              // Include read done task IDs in SortableContext so DnD works when expanded
-              const allVisibleTasks = isDoneCol && showReadDone
-                ? [...visibleTasks, ...readDone]
+              // A match must never hide behind "Show N merged"
+              const mergedShown = showMergedDone || isFiltering
+              // Include read and merged done task IDs in SortableContext so DnD works when expanded
+              const allVisibleTasks = isDoneCol
+                ? [...visibleTasks, ...(showReadDone ? readDone : []), ...(mergedShown ? mergedDone : [])]
                 : visibleTasks
+              const mergedToggle = isDoneCol && mergedDone.length > 0 && !isFiltering ? (
+                <button
+                  onClick={() => setShowMergedDone(v => !v)}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent/30 rounded transition-colors"
+                >
+                  <GitMerge className="h-3 w-3" />
+                  {showMergedDone ? 'Hide' : 'Show'} {mergedDone.length} merged
+                </button>
+              ) : null
+              const mergedList = isDoneCol && mergedShown ? mergedDone.map(task => (
+                <SortableTaskItem
+                  key={task.id}
+                  task={task}
+                  projectName={projectName}
+                  projectPath={projectPath}
+                  onEdit={handleEdit}
+                  onView={handleView}
+                  onAiResolve={terminalStatus?.available ? handleAiResolve : undefined}
+                />
+              )) : null
+              // Section labels only appear once at least one task has a verifiable lifecycle,
+              // so a board without worktrees looks exactly as before.
+              const sectionLabel = (text: string, n: number) => (
+                <div className="px-1 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">{text} <span className="tabular-nums">{n}</span></div>
+              )
+              const renderItem = (task: Task) => (
+                <SortableTaskItem
+                  key={task.id}
+                  task={task}
+                  projectName={projectName}
+                  projectPath={projectPath}
+                  onEdit={handleEdit}
+                  onView={handleView}
+                  onAiResolve={terminalStatus?.available ? handleAiResolve : undefined}
+                />
+              )
+              const hasLifecycleDone = isDoneCol &&(reviewDone.length + readyDone.length + mergedDone.length) > 0
               const taskIds = allVisibleTasks.map(t => t.id)
               // For inbox column header, the bulk menu acts only on the To Do
               // subset — backlog has its own menu inside the sub-section.
@@ -741,6 +808,13 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
                   }
                   headerExtra={
                     <>
+                      {isDoneCol && (reviewDone.length > 0 || readyDone.length > 0) && (
+                        <span className="text-[10px] tabular-nums text-warning" title="Delivered work that still needs a person">
+                          {reviewDone.length > 0 && `${reviewDone.length} to review`}
+                          {reviewDone.length > 0 && readyDone.length > 0 && ' · '}
+                          {readyDone.length > 0 && <span className="text-primary">{readyDone.length} to merge</span>}
+                        </span>
+                      )}
                       {isDoneCol && unreadDone.length > 0 && (
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -807,18 +881,17 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
                               ))}
                           </BacklogSubHeader>
                         </>
+                      ) : hasLifecycleDone ? (
+                        <>
+                          {reviewDone.length > 0 && sectionLabel('Needs review', reviewDone.length)}
+                          {reviewDone.map(renderItem)}
+                          {readyDone.length > 0 && sectionLabel('Ready to merge', readyDone.length)}
+                          {readyDone.map(renderItem)}
+                          {unreadDone.length > 0 && (reviewDone.length + readyDone.length) > 0 && sectionLabel('Other', unreadDone.length)}
+                          {unreadDone.map(renderItem)}
+                        </>
                       ) : (
-                        visibleTasks.map(task => (
-                          <SortableTaskItem
-                            key={task.id}
-                            task={task}
-                            projectName={projectName}
-                            projectPath={projectPath}
-                            onEdit={handleEdit}
-                            onView={handleView}
-                            onAiResolve={terminalStatus?.available ? handleAiResolve : undefined}
-                          />
-                        ))
+                        visibleTasks.map(renderItem)
                       )}
                       {isDoneCol && readDone.length > 0 && (
                         <button
@@ -841,6 +914,8 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
                           />
                         </div>
                       ))}
+                      {mergedToggle}
+                      {mergedList}
                     </>
                   ) : (
                     <>
@@ -869,6 +944,8 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
                           />
                         </div>
                       ))}
+                      {mergedToggle}
+                      {mergedList}
                     </>
                   )}
                 </DroppableColumn>
@@ -893,6 +970,7 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
           onView={handleView}
         />
       )}
+      </LifecycleMapContext.Provider>
 
       <TaskViewer
         task={viewingTask}

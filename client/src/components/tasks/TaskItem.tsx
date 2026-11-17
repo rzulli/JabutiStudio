@@ -19,7 +19,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 import { scheduleAutoSync } from '@/lib/sync/autoSync'
-import { priorityVisual, statusVisual } from '@/lib/taskVisuals'
+import { priorityVisual, statusVisual, lifecycleVisual } from '@/lib/taskVisuals'
+import type { TaskLifecycleSummary } from '@/lib/api'
 
 // Module-level store for AI improve operations — survives component unmounts
 const _improvingTasks = new Set<string>()
@@ -41,12 +42,25 @@ interface TaskItemProps {
   onView?: (task: Task) => void
   onAiResolve?: (task: Task) => void
   dragListeners?: Record<string, Function>
+  /** Lifecycle summary for this task, when it has a worktree branch. Drives the icon and chip of a done card. */
+  lifecycle?: TaskLifecycleSummary
+}
+
+/** Delivered / accepted / integrated, as three dots: the same steps the Review tab shows. */
+function LifecycleTrail({ filled }: { filled: number }) {
+  return (
+    <span className="inline-flex items-center gap-[3px]" aria-hidden>
+      {[0, 1, 2].map(i => (
+        <span key={i} className={cn('h-1 w-1 rounded-full', i < filled ? 'bg-current' : 'border border-current opacity-50')} />
+      ))}
+    </span>
+  )
 }
 
 // react-query's structural sharing keeps `task` referentially stable across
 // polls when nothing changed, so memoizing here stops a board's worth of cards
 // from re-rendering every few seconds.
-export const TaskItem = memo(function TaskItem({ task, projectName, projectPath, showProjectBadge, projectLink, onEdit, onView, onAiResolve, dragListeners }: TaskItemProps) {
+export const TaskItem = memo(function TaskItem({ task, projectName, projectPath, showProjectBadge, projectLink, onEdit, onView, onAiResolve, dragListeners, lifecycle }: TaskItemProps) {
   const createTask = useCreateTask()
   const updateTask = useUpdateTask()
   const deleteTask = useDeleteTask()
@@ -64,6 +78,9 @@ export const TaskItem = memo(function TaskItem({ task, projectName, projectPath,
   const priority = priorityVisual(task.priority)
   const status = statusVisual(task.status)
   const PriorityIcon = priority.icon
+  const lc = lifecycleVisual(task, lifecycle)
+  const LcIcon = lc?.icon
+  const trailFilled = lc ? (lc.group === 'merged' ? 3 : lc.group === 'ready' ? 2 : 1) : 0
   // The cross-project list endpoint sends counts, the per-project one the
   // full arrays.
   const attachmentCount = task.attachments?.length ?? task.attachmentCount ?? 0
@@ -171,6 +188,8 @@ export const TaskItem = memo(function TaskItem({ task, projectName, projectPath,
         <button onClick={handleStatusToggle} className="shrink-0 mt-0.5">
           {isAiResolving ? (
             <Sparkles className="h-3.5 w-3.5 text-primary animate-pulse" />
+          ) : LcIcon ? (
+            <LcIcon className={cn('h-3.5 w-3.5', lc!.color)} />
           ) : task.status === 'done' ? (
             <Check className="h-3.5 w-3.5 text-success" />
           ) : (
@@ -307,6 +326,17 @@ export const TaskItem = memo(function TaskItem({ task, projectName, projectPath,
           >
             <Play className="h-2.5 w-2.5" />
             Run
+          </button>
+        )}
+        {lc && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onView?.(task) }}
+            onPointerDown={(e) => e.stopPropagation()}
+            title={lc.title}
+            className={cn('ml-1.5 inline-flex h-4 items-center gap-1 rounded px-1.5 text-[10px] font-medium', lc.chip)}
+          >
+            <LifecycleTrail filled={trailFilled} />
+            {lc.label}
           </button>
         )}
         <span className="flex-1" />

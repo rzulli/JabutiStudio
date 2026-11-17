@@ -8,7 +8,8 @@ import {
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
-import { useTaskGitReview, useCommitDiff } from '@/hooks/useGit'
+import { useTaskGitReview, useCommitDiff, useTaskLifecycle } from '@/hooks/useGit'
+import { LifecycleBar } from '@/components/tasks/LifecycleBar'
 import { useAddTaskNote, type Task } from '@/hooks/useTasks'
 import { DiffFileEntry, parseDiffByFile } from '@/components/git/DiffView'
 import type { TaskCommit } from '@/lib/api'
@@ -110,12 +111,21 @@ export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
   const until = task.doneAt
     ? new Date(new Date(task.doneAt).getTime() + DONE_GRACE_MS).toISOString()
     : undefined
-  const { data, isLoading } = useTaskGitReview(task.projectId, task.inProgressAt, until)
+  const lifecycle = useTaskLifecycle(task.projectId, task.id)
+  const lc = lifecycle.data
+  // With a worktree branch the review is exact (branch vs target). Without one only the
+  // old date window exists, and the lifecycle says plainly that nothing can be verified.
+  const branchMode = lc?.delivery.mode === 'branch'
+  const windowReview = useTaskGitReview(task.projectId, task.inProgressAt, until, undefined, lifecycle.isFetched && !branchMode)
+  const data = branchMode && lc
+    ? { available: true, branch: lc.delivery.branch ?? null, commits: lc.delivery.commits, files: lc.delivery.files, additions: lc.delivery.additions, deletions: lc.delivery.deletions, working: null }
+    : windowReview.data
+  const isLoading = lifecycle.isLoading || (!branchMode && windowReview.isLoading)
   const addNote = useAddTaskNote()
   const [reasonOpen, setReasonOpen] = useState(false)
   const [reason, setReason] = useState('')
 
-  const dirty = data?.working
+  const dirty = !branchMode && data?.working
     ? data.working.staged + data.working.unstaged + data.working.untracked
     : 0
 
@@ -157,6 +167,7 @@ export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
 
   return (
     <div className="space-y-4">
+      {lc && <LifecycleBar lc={lc} task={task} />}
       {/* Summary bar */}
       <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
         {data?.branch && (
@@ -166,7 +177,8 @@ export function TaskReviewPanel({ task, onDone }: TaskReviewPanelProps) {
           </Badge>
         )}
         <span>
-          {commits.length} commit{commits.length !== 1 ? 's' : ''} since started {relative(task.inProgressAt)}
+          {commits.length} commit{commits.length !== 1 ? 's' : ''}{' '}
+          {branchMode ? `ahead of ${lc?.target.branch ?? 'target'}` : <>since started {relative(task.inProgressAt)}</>}
         </span>
         {(data?.files.length ?? 0) > 0 && (
           <>

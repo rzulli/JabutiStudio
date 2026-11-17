@@ -24,6 +24,7 @@ import { inboxRoutes } from './routes/inbox.js';
 import { explorerRoutes } from './routes/explorer.js';
 import { designRoutes } from './routes/design.js';
 import { systemRoutes } from './routes/systems.js';
+import { taskLifecycleRoutes } from './routes/taskLifecycle.js';
 import { initProjectDiscovery } from './services/projectDiscovery.js';
 import { loadSettings } from './services/settingsStore.js';
 import { startWorktreeCleanup } from './services/worktreeService.js';
@@ -112,6 +113,7 @@ await app.register(inboxRoutes);
 await app.register(explorerRoutes);
 await app.register(designRoutes);
 await app.register(systemRoutes);
+await app.register(taskLifecycleRoutes);
 
 // SPA fallback: serve index.html for all non-API, non-WS routes
 if (STATIC_DIR) {

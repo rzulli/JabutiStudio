@@ -515,6 +515,46 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   prompt (mesmo formato do `log_task_progress` do MCP, via
   `taskStore.appendPromptSection`) e move a task de volta para in_progress
 
+### Ciclo de vida da tarefa (R2-A1: entrega, aceite, integracao)
+- `taskLifecycle.ts` **deriva** `READY -> RUNNING -> REVIEW -> ACCEPTED -> INTEGRATED -> CLOSED` a cada leitura; nao ha
+  estado novo na task. Quatro fatos, cada um com a sua autoridade: **execucao** (status + sessoes vivas), **entrega**
+  (commits `alvo..branch` da task, no Git), **aceite** (registro humano) e **integracao** (`merge-base --is-ancestor`).
+  `done` do agente e so execucao: nunca vira aceite nem integracao
+- O unico dado gravado e o **aceite**, em `data/task-lifecycle/{projectId}.json` (`taskLifecycleStore.ts`), fora do
+  arquivo de tasks de proposito (MCP `update_task`, pull do Trello e cloud sync nao o forjam nem apagam; nao e sincronizado).
+  Preso ao sha do commit revisado: a branch andou = `lapsed`, revisar e aceitar de novo. Guarda tambem o historico
+  (accepted / acceptance-revoked / integrated / integration-refused). Mesma ressalva do DK: `fromAppUi` e forjavel por
+  qualquer processo local; o registro prova que alguem chamou a rota, nao que uma pessoa clicou. **Nao existe tool MCP
+  de aceitar nem de integrar — nao criar**
+- Rotas (`routes/taskLifecycle.ts`): `GET /api/projects/:id/tasks/:tid/lifecycle` (aberta), `POST .../lifecycle/accept`
+  (`targetBranch` + `expectedHeadSha` obrigatorios: o alvo nunca e adivinhado), `DELETE .../lifecycle/accept`,
+  `POST .../lifecycle/integrate` (`targetBranch`, `expectedHeadSha`, `branch`) — as tres so do navegador (403 senao)
+- Integrar = `git merge --no-ff <sha aceito>` no checkout do projeto (nunca o nome da branch), com tudo relido do Git na
+  hora: aceite valido para esse sha e esse alvo, branch = a da task (`wrong-branch`), worktree limpa e registrada no git
+  para essa branch, checkout do projeto **na branch alvo, limpo e sem merge/rebase em andamento**, `merge-tree` sem
+  conflito, sem sessao do agente trabalhando. Falhou = `merge --abort`, alvo intacto. Depois confirma por
+  ancestralidade; so entao grava o historico e move a task para done (timestamps cascading intactos)
+- Patch equivalente sem ancestralidade (cherry-pick, rebase, squash) e um caso proprio (`patch-equivalent`): reportado,
+  nunca tratado como integrado, nao aceitavel. Branch sem commits alem do alvo = `nothing-to-integrate`
+- So existe para task com worktree criada pelo Shipyard (`task.worktreeBranch`). Sem branch o estado diz `no-branch`:
+  nada e verificavel. Worktrees criadas a mao (ex.: PNMG/worktrees) nao estao ligadas a task nenhuma
+- UI: a aba Review do TaskViewer (`LifecycleBar.tsx` + `TaskReviewPanel`). Com branch, a revisao e exata (branch vs
+  alvo) em vez da janela de datas, que olhava o checkout do projeto e nao a worktree da task
+- `removeTaskWorktree` apaga a branch com `-d`, nao `-D`: branch com commits fora do checkout sobrevive. CLOSED = integrado
+  e worktree removida (limpeza continua manual / varredura existente)
+- **Board**: o cartao `done` nao mostra mais o check verde fixo — `lifecycleVisual` (`lib/taskVisuals.ts`, fonte unica)
+  devolve icone, chip e grupo: `Review` (warning, o unico tom quente = "precisa de voce"), `Ready to merge` (primary),
+  `Merged` (neutro), `Re-review`/`Conflict` (destructive), `Equivalent`, `No changes`, `Branch gone`. Tres pontinhos
+  no chip = entregue/aceito/integrado, o mesmo vocabulario da `LifecycleBar`. A coluna Done agrupa em **Needs review ·
+  Ready to merge · Other** e esconde os integrados atras de "Show N merged" (filtro ativo mostra tudo: match nunca some).
+  Tarefa **sem `worktreeBranch` fica fora** (nada verificavel; cai no unread/read antigo, sem chip)
+- Dados do board: `GET /api/projects/:id/lifecycle/summary` (`summarizeProject`): uma chamada para o projeto todo, so
+  tarefas com branch, sem dirty scan nem diff (rev-parse, is-ancestor, rev-list --count; cherry e merge-tree so para
+  `done`/aceita), 4 branches por vez, cache de 5 s por projeto derrubado por qualquer escrita de aceite/integracao. Usa
+  o mesmo `deriveStage` do `resolveLifecycle`, entao nao pode discordar da aba Review. Cliente: `useLifecycleSummary`
+  (10 s, so com o board montado) e `LifecycleMapContext` no `TaskBoard`
+- Testes: `server/test/taskLifecycle.test.ts` (repos Git reais, worktree pelo mecanismo oficial, rotas com os headers do renderer)
+
 ### Feed de atividade no Dashboard (o que os agentes fizeram)
 - `lib/activityFeed.ts` deriva a linha do tempo das ultimas 24h a partir da
   lista de tasks que o Dashboard ja busca: `inProgressAt` vira **started**,

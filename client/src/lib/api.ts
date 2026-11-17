@@ -265,6 +265,39 @@ export interface TaskGitReview {
   working: { staged: number; unstaged: number; untracked: number } | null;
 }
 
+export type LifecycleStage = 'READY' | 'RUNNING' | 'REVIEW' | 'ACCEPTED' | 'INTEGRATED' | 'CLOSED';
+
+/** What the board needs per task: enough to draw a chip, never to act on. */
+export interface TaskLifecycleSummary {
+  taskId: string
+  stage: TaskLifecycle['stage']
+  acceptance: 'none' | 'accepted' | 'lapsed'
+  integration: 'integrated' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'
+  commits: number
+  flag?: 'conflict' | 'branch-missing' | 'patch-equivalent'
+}
+
+export interface TaskLifecycle {
+  taskId: string;
+  projectId: string;
+  stage: LifecycleStage;
+  execution: { status: string; finished: boolean; sessionActive: boolean; sessions: { id: string; agent?: string; type?: string; state?: string | null; cwd?: string }[] };
+  delivery: {
+    mode: 'branch' | 'none'; branch?: string; head?: string | null; worktreePath?: string; worktreeExists: boolean; worktreeMatches: boolean;
+    dirty: { count: number; files: string[] };
+    commits: TaskCommit[];
+    files: { file: string; additions: number; deletions: number; commits: number }[];
+    additions: number; deletions: number;
+  };
+  target: { branch: string | null; exists: boolean; head?: string | null; baseline?: string | null; checkoutBranch: string | null; checkoutDirty: number; operation: string | null };
+  acceptance: { state: 'none' | 'accepted' | 'lapsed'; reason?: string; record?: { at: string; headSha: string; targetBranch: string; branch: string; note?: string } };
+  integration: { state: 'integrated' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'; mergeable: 'clean' | 'conflict' | 'unknown' | null; mergeCommit?: string };
+  blockers: { code: string; message: string }[];
+  canAccept: boolean;
+  canIntegrate: boolean;
+  history: { at: string; event: string; detail?: Record<string, unknown> }[];
+}
+
 export type UsageSeverity = 'normal' | 'warning' | 'critical';
 
 export interface UsageWindow {
@@ -401,7 +434,7 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(error.error || 'Request failed');
+    throw new Error(error.error || error.message || 'Request failed');
   }
 
   return res.json();
@@ -822,6 +855,14 @@ export const api = {
     request<TaskGitReview>(
       `/projects/${projectId}/git/task-review?since=${encodeURIComponent(since)}${until ? `&until=${encodeURIComponent(until)}` : ''}${subrepo ? `&subrepo=${encodeURIComponent(subrepo)}` : ''}`
     ),
+  getLifecycleSummary: (projectId: string) => request<{ tasks: TaskLifecycleSummary[] }>(`/projects/${projectId}/lifecycle/summary`),
+  getTaskLifecycle: (projectId: string, taskId: string) => request<TaskLifecycle>(`/projects/${projectId}/tasks/${taskId}/lifecycle`),
+  acceptTaskDelivery: (projectId: string, taskId: string, body: { targetBranch: string; expectedHeadSha: string; note?: string }) =>
+    request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/accept`, { method: 'POST', body: JSON.stringify(body) }),
+  revokeTaskAcceptance: (projectId: string, taskId: string) =>
+    request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/accept`, { method: 'DELETE' }),
+  integrateTask: (projectId: string, taskId: string, body: { targetBranch: string; expectedHeadSha: string; branch: string }) =>
+    request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/integrate`, { method: 'POST', body: JSON.stringify(body) }),
   discardFile: (projectId: string, file: string, type: 'staged' | 'unstaged' | 'untracked', subrepo?: string) =>
     request(`/projects/${projectId}/git/discard`, { method: 'POST', body: JSON.stringify({ file, type, subrepo }) }),
   discardAll: (projectId: string, section: 'staged' | 'unstaged', subrepo?: string) =>
