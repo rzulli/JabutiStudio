@@ -568,6 +568,7 @@ export interface DesignDecision {
 export type SystemStatus = 'proposed' | 'confirmed' | 'dismissed' | 'merged'
 export interface SystemSummary {
   id: string; name: string; summary: string; status: SystemStatus; origin: 'discovery' | 'agent' | 'user'
+  kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean; createdAt: string
   files: number; decisions: number; conflicts: number; flags: string[]
 }
 export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; uncommitted: number; integration: string }
@@ -591,6 +592,8 @@ export interface SystemArea {
   evidence: SystemEvidence[]
   files: { path: string; tier: SystemTier; facet: SystemFacet; line?: number; uncommitted: boolean }[]
   fileCount: number; testCount: number; families: SystemFamily[]
+  anchors?: { files: string[]; terms: string[] }
+  responsibilities?: string[]; planned?: boolean
 }
 export interface SystemEndpoint { ref: string; label: string; type: 'self' | 'area' | 'system' | 'entity'; systemId?: string; areaId?: string; known: boolean }
 export interface SystemRelation {
@@ -619,7 +622,7 @@ export interface SystemDecision {
 }
 export interface SystemView {
   id: string; name: string; summary: string; responsibilities: string[]
-  kind: 'system' | 'subsystem' | 'mechanic' | 'entity'
+  kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean
   areas: SystemArea[]; relations: SystemRelation[]; technical: SystemTechnicalLink[]; comparisons: SystemComparison[]
   families: SystemFamily[]; testGroups: { dir: string; count: number; paths: string[] }[]
   overlaps: { id: string; name: string; shared: number; ratio: number }[]
@@ -642,10 +645,16 @@ export interface SystemView {
   }
   limitations: string[]
 }
+export interface SystemRelationInput { id?: string; kind: string; from: string; to: string; note?: string; evidence?: { path: string; needle?: string; note?: string }[] }
+export interface SystemCreate { name: string; summary?: string; kind?: 'system' | 'subsystem' | 'mechanic' | 'entity'; terms?: string[]; files?: string[]; planned?: boolean; createOnly?: boolean }
 export interface SystemEdit {
   name?: string; summary?: string; responsibilities?: string[]; status?: 'confirmed' | 'proposed' | 'dismissed'
   anchors?: { terms?: string[]; files?: string[]; decisions?: string[] }; ackVanished?: boolean; clearSuggestions?: boolean
   confirm?: { areas?: string[]; relations?: string[] }; remove?: { areas?: string[]; relations?: string[] }; adoptSuggestion?: number
+  kind?: 'system' | 'subsystem' | 'mechanic' | 'entity'; dropSuggestion?: number
+  setArea?: { id?: string; name: string; kind?: 'subsystem' | 'mechanic' | 'entity'; summary?: string; files?: string[]; terms?: string[]; responsibilities?: string[]; planned?: boolean; evidence?: { path: string; needle?: string; note?: string }[] }
+  upsertRelation?: SystemRelationInput; planned?: boolean
+  replaceRelation?: { id: string; relation: SystemRelationInput }
 }
 /** Portable system as published in jabutistudio.systems.json (only the fields the UI compares). */
 export interface PortableSystem {
@@ -728,6 +737,8 @@ export const api = {
     request<{ added: number; candidates: number }>(`/projects/${projectId}/systems/discover?${wt(worktree)}`, { method: 'POST' }),
   editSystem: (projectId: string, id: string, body: SystemEdit) =>
     request<unknown>(`/projects/${projectId}/systems/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  createSystem: (projectId: string, body: SystemCreate) =>
+    request<{ id: string; outcome: string }>(`/projects/${projectId}/systems`, { method: 'POST', body: JSON.stringify(body) }),
   mergeSystems: (projectId: string, into: string, from: string[]) =>
     request<unknown>(`/projects/${projectId}/systems/${encodeURIComponent(into)}/merge`, { method: 'POST', body: JSON.stringify({ from }) }),
   splitSystem: (projectId: string, id: string, body: { name: string; terms?: string[]; files?: string[] }) =>
@@ -741,8 +752,6 @@ export const api = {
     request<{ updated: string[]; unchanged: string[]; sha256: string }>(`/projects/${projectId}/systems/knowledge/update`, { method: 'POST', body: JSON.stringify(body) }),
   importKnowledge: (projectId: string, expectedSha256: string) =>
     request<{ added: number }>(`/projects/${projectId}/systems/knowledge/import`, { method: 'POST', body: JSON.stringify({ expectedSha256 }) }),
-  createSystem: (projectId: string, body: { name: string; summary?: string; terms?: string[]; files?: string[] }) =>
-    request<{ id: string }>(`/projects/${projectId}/systems`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

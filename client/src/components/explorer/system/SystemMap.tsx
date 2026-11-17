@@ -4,6 +4,7 @@ import type { SystemView } from '@/lib/api'
 import { buildSystemMap, edgePath, type MapEdge, type MapNode } from '@/lib/systemMap'
 import { cn } from '@/lib/utils'
 import { BasisPill, EvidenceLine, type SystemActions } from './parts'
+import { AskMenu } from './AskMenu'
 
 /**
  * The map: responsibilities in the middle, gameplay relations as solid edges (with their evidence basis),
@@ -29,6 +30,26 @@ export function SystemMap({ v, actions, compact, selectedArea, onSelectArea }: {
   }
 
   const empty = layout.nodes.length <= 1 && !layout.edges.length
+  const nominalOnly = !compact && v.relations.length === 0 && !showTech
+  if (nominalOnly) {
+    return (
+      <div className="space-y-3" data-testid="system-map">
+        <div className="rounded-md border border-dashed p-4 text-xs" data-testid="map-limit">
+          <p className="font-medium">There is no gameplay map to draw yet.</p>
+          <p className="mt-1 text-muted-foreground">
+            Nobody has declared how {v.name} connects to other parts of the game. What the screen can see today is a grouping of files by the words in their names
+            ({v.areas.filter(a => a.inferred).length} inferred groups) and code references from the graph. Neither says who produces, consumes or unlocks what, so drawing them as a diagram would look like knowledge it is not.
+          </p>
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            <button onClick={() => actions.onEdit?.('relations')} data-testid="map-add-relation" className="rounded-md bg-primary px-2.5 py-1 text-[11px] text-primary-foreground">Add a relation</button>
+            <AskMenu actions={actions} target={`the gameplay relations of "${v.name}"`} label="Ask an agent to investigate" />
+            <button onClick={() => setShowTech(true)} className="rounded-md border px-2.5 py-1 text-[11px] hover:bg-accent" data-testid="map-show-code">Show code links anyway</button>
+          </div>
+        </div>
+        {v.technical.length > 0 && <p className="text-[10px] text-muted-foreground">{v.technical.length} other systems are referenced from the code of this system.</p>}
+      </div>
+    )
+  }
   return (
     <div className="space-y-2" data-testid="system-map">
       {!compact && (
@@ -178,6 +199,7 @@ function EdgeInspector({ e, v, actions }: { e: MapEdge; v: SystemView; actions: 
         <span className="rounded bg-accent px-1.5 text-[10px]">{r.status === 'confirmed' ? 'confirmed by you' : `proposed by ${r.origin}`}</span>
       </div>
       {r.note && <p className="text-muted-foreground">{r.note}</p>}
+      {r.direction !== 'incoming' && <button onClick={() => actions.onQuickEdit?.({ type: 'relation', id: r.id })} data-testid="edit-relation-quick" className="rounded-md border px-2 py-0.5 hover:bg-accent">Edit this relation</button>}
       {r.evidence.length === 0 && <p className="text-warning">No evidence recorded: shown only because candidates are visible.</p>}
       {r.evidence.map(ev => <EvidenceLine key={`${ev.path}|${ev.needle}`} e={ev} onOpen={actions.onOpen} />)}
       <p className="text-[10px] text-muted-foreground">Checked against {v.checkout.branch ?? '?'} {v.checkout.head ?? ''}{v.checkout.uncommitted ? ` (+${v.checkout.uncommitted} uncommitted)` : ''}. {from !== to ? '' : ''}</p>

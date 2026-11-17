@@ -117,13 +117,20 @@ function DecisionCard({ d, onOpen }: { d: SystemDecision; onOpen: SystemActions[
   return (
     <div className="space-y-1.5 rounded-md border p-2" data-testid="system-decision" data-id={d.id}>
       <div className="flex flex-wrap items-center gap-1.5"><span className="font-mono text-[11px] font-medium">{d.id}</span><span className="text-xs">{d.title}</span>{d.origin === 'native' && <span className="rounded border px-1 text-[9px] uppercase text-muted-foreground">proposal</span>}</div>
-      <p className="text-[11px] text-muted-foreground">{d.claim}</p>
+      <p className="text-[11px]">{d.claim}</p>
+      <p className="text-[10px] text-muted-foreground" data-testid="decision-impact">
+        Impact: {d.implementation === 'implemented' ? 'the code implements it' : `implementation ${d.implementation}`} · touches {d.files.length} file{d.files.length === 1 ? '' : 's'}
+        {d.tests.length ? ` · ${d.tests.length} tests reference it` : ''}{d.conflictsWith.length ? ` · conflicts with ${d.conflictsWith.join(', ')}` : ''}
+      </p>
       <div className="flex flex-wrap gap-1.5 text-[10px]">
         <span className="rounded bg-accent px-1.5 py-0.5">human approval: {approval === 'unknown' ? 'not located' : `${approval} (${d.approval?.source})`}</span>
         <span className="rounded bg-accent px-1.5 py-0.5">evidence: {d.evidenceStatus}</span>
         <span className="rounded bg-accent px-1.5 py-0.5">implementation: {d.implementation}</span>
         {d.relevance === 'touches-member' && <span className="rounded border border-dashed px-1.5 py-0.5 text-muted-foreground">touches a member file only</span>}
       </div>
+      <details className="text-[11px]" data-testid="decision-evidence">
+        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Technical evidence ({d.evidence.length} sources{d.tests.length ? `, ${d.tests.length} tests` : ''})</summary>
+        <div className="mt-1 space-y-1">
       {d.evidence.map(e => (
         <div key={e.ref} className="text-[11px]">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -134,6 +141,8 @@ function DecisionCard({ d, onOpen }: { d: SystemDecision; onOpen: SystemActions[
           {e.excerpt.slice(0, 2).map(x => <pre key={x} className="overflow-x-auto rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px]">{x}</pre>)}
         </div>
       ))}
+        </div>
+      </details>
       {d.tests.length > 0 && <p className="text-[10px] text-muted-foreground">Tests referenced (static; no result available): {d.tests.map(baseName).join(', ')}</p>}
     </div>
   )

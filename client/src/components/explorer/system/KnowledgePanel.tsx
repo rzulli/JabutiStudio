@@ -23,7 +23,7 @@ const FILE_TEXT: Record<KnowledgeReconciliation['file']['state'], string> = {
   absent: 'Nothing published in this revision', invalid: 'File is not usable', incompatible: 'File belongs to another Git history',
 }
 const INTEGRATION: Record<string, string> = {
-  same: 'same file as the main checkout', differs: 'differs from the main checkout (not integrated there)', 'absent-in-main': 'the main checkout has no file yet',
+  same: 'same file as the project checkout', differs: 'differs from the project checkout (not integrated there)', 'absent-in-main': 'the project checkout has no file yet',
 }
 
 const shown = (v: unknown) => (v === undefined || v === null || v === '' ? '—' : Array.isArray(v) ? (v.length ? v.join(' · ') : '—') : String(v))
