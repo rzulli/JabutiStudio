@@ -332,7 +332,7 @@ export async function getDesignContext(projectId: string, file?: string, query?:
   }));
   return { content: [{ type: 'text', text: compact({
     examined: { ...res.examined, branch: res.branch, head: res.head },
-    sources: res.sources, indexed: res.indexed, note: res.note ?? undefined, limitations: res.limitations?.length ? res.limitations : undefined,
+    sources: res.sources, limitations: res.limitations?.length ? res.limitations : undefined,
     decisions, conflicts: res.conflicts?.length ? res.conflicts : undefined,
     graph: res.graph && res.graph.built ? { incoming: res.graph.incoming, outgoing: res.graph.outgoing } : undefined,
     rules: 'approval.state "approved" with source "attested_local" is a local UI attestation (not cryptographic proof of a person); "claimed" is an unverified assertion in a document; "unknown" means nobody confirmed it. '

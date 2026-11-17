@@ -4,6 +4,8 @@ import * as dk from '../services/designKnowledge.js';
 import * as core from '../services/designCore.js';
 import { EVIDENCE_TYPES } from '../services/designDecisions.js';
 import * as migration from '../services/designMigration.js';
+import * as sources from '../services/designSources.js';
+import { readLegacyRecords } from '../services/legacyRecords.js';
 
 /** The browser renderer sets these on its own fetches; an agent, MCP client or plain curl does not. */
 export function fromAppUi(h: Record<string, unknown>) {
@@ -16,14 +18,14 @@ export async function designRoutes(app: FastifyInstance) {
 
   // Read-only. `file`, `q`, `id` or `system`; `worktree` selects which checkout's code is judged and
   // `revision` reads native decisions as of a commit. Works for projects with no decisions at all.
-  app.get<{ Params: { id: string }; Querystring: { file?: string; q?: string; id?: string; system?: string; worktree?: string; revision?: string; nativeOnly?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { file?: string; q?: string; id?: string; system?: string; worktree?: string; revision?: string } }>(
     '/api/projects/:id/design',
     async (request, reply) => {
       const project = await resolve(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
-      const { file, q, id, system, worktree, revision, nativeOnly } = request.query;
+      const { file, q, id, system, worktree, revision } = request.query;
       if (!file && !q && !id && !system) return reply.status(400).send({ error: 'file, q, id or system is required' });
-      return core.query(project, { file, q, id, system, worktree, revision, nativeOnly: nativeOnly === '1' || nativeOnly === 'true' });
+      return core.query(project, { file, q, id, system, worktree, revision });
     },
   );
 
@@ -44,17 +46,28 @@ export async function designRoutes(app: FastifyInstance) {
     return res.decision;
   });
 
-  app.get<{ Params: { id: string }; Querystring: { worktree?: string; engine?: 'native' | 'legacy' } }>('/api/projects/:id/design/validate', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { worktree?: string } }>('/api/projects/:id/design/validate', async (request, reply) => {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
-    // The native engine validates whenever the project has a native file (or when asked); dk.py only for a
-    // project that still has nothing but its legacy registry.
-    const engine = request.query.engine;
-    if (engine !== 'legacy') {
-      const native = await core.validateNative(project, request.query.worktree);
-      if (native.available || engine === 'native') return native;
-    }
-    return dk.validateRegistry(project, request.query.worktree);
+    return core.validateNative(project, request.query.worktree);
+  });
+
+  // External evidence sources (@name:key): where each name points on THIS machine. Reading is open; configuring
+  // is UI-only, and only an absolute local file is accepted. Nothing outside a configured file is ever read.
+  app.get<{ Params: { id: string } }>('/api/projects/:id/design/sources', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    return { sources: Object.entries(await sources.configuredSources(project.id)).map(([name, v]) => ({ name, path: v.path, origin: v.origin })) };
+  });
+  app.put<{ Params: { id: string; name: string }; Body: { path?: string | null } }>('/api/projects/:id/design/sources/:name', async (request, reply) => {
+    if (!fromAppUi(request.headers)) return reply.status(403).send({ error: 'External sources can only be configured from the JabutiStudio UI' });
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const p = request.body?.path;
+    const res = await sources.setSource(project.id, request.params.name, typeof p === 'string' ? p : null);
+    if (!res.ok) return reply.status(400).send({ error: res.error });
+    core.notifyDecisionsChanged();
+    return { ok: true };
   });
 
   // Legacy dk.py records -> jabutistudio.decisions.json. The preview writes nothing; apply and rollback are UI-only
@@ -85,7 +98,7 @@ export async function designRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/api/projects/:id/design/checkouts', async (request, reply) => {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
-    return { registry: dk.hasRegistry(project.path), checkouts: await dk.listCheckouts(project.path) };
+    return { legacyRecords: readLegacyRecords(project.path).records.length, checkouts: await dk.listCheckouts(project.path) };
   });
 
   // The only way an approval comes to exist. The Origin/Sec-Fetch check stops an agent or a script that

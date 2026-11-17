@@ -24,11 +24,13 @@ const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, '-c
 const write = (dir: string, p: string, c: string) => { mkdirSync(dirname(join(dir, p)), { recursive: true }); writeFileSync(join(dir, p), c) }
 
 const game = join(root, 'game')
+// the external economy table the DK-EXTERNAL record cites (@economy_csv:spore_source): lives outside the game repo
+const CSV = 'id;cost\nspore_source;44000\n'
+const csvPath = join(root, 'economy.csv')
 let P: { id: string; path: string }
 let core: typeof import('../src/services/designCore.js')
 let store: typeof import('../src/services/designDecisions.js')
 let mig: typeof import('../src/services/designMigration.js')
-let dkMod: typeof import('../src/services/designKnowledge.js')
 let legacyChecks: Check[] = []
 let planSha = ''
 let ledgerPath = ''
@@ -71,7 +73,7 @@ const RECORDS = [
   rec('DK-MOVEDFILE', { claim: 'Moved file keeps its constant.', evidence: [ev('code', 'scripts/old_name.gd', null)], scope: ['rename'], tags: ['rename'] }),
   rec('DK-NOEVIDENCE', { claim: 'A claim nobody has evidence for.', scope: ['orphan'], tags: ['orphan'] }),
   rec('DK-EXTERNAL', { claim: 'Spore source costs 44000 per the external table.', scope: ['spore'], tags: ['spore'],
-    evidence: [ev('data', '@economy_csv:spore_source', null, { sha256: 'c'.repeat(64) }), ev('code', 'scripts/spore.tres', 'L1-L1')] }),
+    evidence: [ev('data', '@economy_csv:spore_source', null, { sha256: sha(CSV) }), ev('code', 'scripts/spore.tres', 'L1-L1')] }),
   rec('DK-HUMAN', { claim: 'A human decision is cited but not attested.', scope: ['human'], tags: ['human'], approval_state: 'claimed',
     evidence: [ev('human_decision', 'docs/report.md', 'L2-L2', { note: 'owner said so' })] }),
   rec('DK-IMPL', { claim: 'Spore cost is implemented at 44000.', scope: ['impl'], tags: ['impl'], evidence: [ev('code', 'scripts/spore.tres', 'L1-L1')],
@@ -84,7 +86,7 @@ const snapshot = (dir: string) => Object.fromEntries(readdirSync(dir, { recursiv
   const p = join(e.parentPath ?? (e as any).path, e.name); return [p, sha(readFileSync(p, 'utf8'))] }))
 
 before(async () => {
-  mkdirSync(game, { recursive: true })
+  mkdirSync(game, { recursive: true }); writeFileSync(csvPath, CSV)
   for (const [p, c] of Object.entries(FILES)) write(game, p, c)
   mkdirSync(join(game, 'tools/design_knowledge'), { recursive: true }); copyFileSync(DKPY, join(game, 'tools/design_knowledge/dk.py'))
   for (const r of RECORDS) write(game, `docs/design_knowledge/records/${r.id.toLowerCase()}.md`, `<!-- dk-record\n${JSON.stringify(r, null, 2)}\n-->\n\n# ${r.id}\n`)
@@ -102,7 +104,7 @@ before(async () => {
   const found = (await discovery.addProjects([game])).find(x => x.path === game)!
   P = { id: found.id, path: game }
   core = await import('../src/services/designCore.js'); store = await import('../src/services/designDecisions.js')
-  mig = await import('../src/services/designMigration.js'); dkMod = await import('../src/services/designKnowledge.js')
+  mig = await import('../src/services/designMigration.js')
 
   // local attestation ledger (what the app UI writes): one valid, one made against a different claim text
   mkdirSync(join(dataDir, 'design-approvals'), { recursive: true })
@@ -122,7 +124,8 @@ const queries = () => [
 ]
 
 test('M0: baseline — the hardened legacy engine answers every query before any migration', async () => {
-  assert.equal(dkMod.pythonAttempts.count, 0)
+  process.env.PNMG_ECO_CSV = csvPath   // how the legacy fixture engine finds the external table
+  process.env.SHIPYARD_DK_SOURCE_ECONOMY_CSV = csvPath   // how the native engine is told, explicitly
   legacyChecks = []
   for (const q of queries()) {
     const legacy = runLegacy(PY, DKPY, q.legacy, game, join(game, 'docs/design_knowledge/records'), ledgerPath)
@@ -174,29 +177,25 @@ test('M3: idempotent — a second run is a no-op (no write, no new backup, same 
   assert.deepEqual(readFileSync(file), before); assert.equal(dirs(), n)
 })
 
-test('M4: differential parity — native (migrated) vs hardened dk.py, field by field, Python forbidden on the native side', async () => {
-  process.env.SHIPYARD_DK_FORBID_PYTHON = '1'
-  const attempts0 = dkMod.pythonAttempts.count
+test('M4: differential parity — native (migrated) vs hardened dk.py, field by field, the native side never starts Python', async () => {
   const all: Check[] = []
   for (const q of queries()) {
     const legacy = runLegacy(PY, DKPY, q.legacy, game, join(game, 'docs/design_knowledge/records'), ledgerPath)
     const native: any = await core.query(P, q.native)
-    assert.equal(native.sources.legacy.migrated, true, q.label)
+    assert.equal(native.sources.native.state, 'present', q.label)
     all.push(...compareQuery(q.label, legacy, native))
   }
-  assert.equal(dkMod.pythonAttempts.count, attempts0, 'the native engine never tried to start Python')
   legacyChecks = all
   const s = summarize(all)
-  const known = (c: Check) => /^DK-EXTERNAL\.evidence\[0\]\.freshness$/.test(c.field) || /^DK-EXTERNAL\.evidence_status$/.test(c.field)
+  const known = (_c: Check) => false   // R1-B3: external CSV configured, no known functional difference remains
   const unexpected = s.differences.filter(c => c.verdict === 'different' && !known(c))
   const uniq = [...new Set(unexpected.map(c => `${c.field} legacy=${JSON.stringify(c.legacy)} native=${JSON.stringify(c.native)}`))]
   assert.deepEqual(uniq, [], 'unexpected semantic differences')
-  // the one capability gap, recorded rather than hidden: an external CSV row dk.py can try to read and the native engine cannot
+  // the former gap, now closed: with the source configured both engines read the same external row as CURRENT
   const ext = all.find(c => c.field === 'DK-EXTERNAL.evidence[0].freshness')!
-  assert.deepEqual([ext.legacy, ext.native], ['GONE', 'UNKNOWN'])
+  assert.deepEqual([ext.legacy, ext.native], ['CURRENT', 'CURRENT'])
   assert.ok(s.total > 500 && s.equal > 0)
   writeFileSync(join(dataDir, 'parity-fixture-report.json'), JSON.stringify({ total: s.total, equal: s.equal, representation: s.representation, different: s.different, byField: s.byField }, null, 2))
-  delete process.env.SHIPYARD_DK_FORBID_PYTHON
 })
 
 test('M5: freshness states reproduce for every legacy evidence kind (current, edited elsewhere, shifted, changed, stale, gone, moved, none)', async () => {
@@ -283,11 +282,9 @@ test('M9: records that cannot be converted losslessly are blocked, not dropped, 
   assert.equal(res.ok, false); assert.equal(existsSync(join(other, store.DECISIONS_FILE)), false)
 })
 
-test('M10: native-only mode answers a migrated project with no Python at all (also for validate and MCP-shaped queries)', async () => {
-  process.env.SHIPYARD_DK_FORBID_PYTHON = '1'; process.env.SHIPYARD_DK_NATIVE_ONLY = '1'
-  const a0 = dkMod.pythonAttempts.count
+test('M10: a migrated project answers with no Python at all (also validate, systems and MCP-shaped queries)', async () => {
   const r = await core.query(P, { file: 'scripts/p.gd' })
-  assert.ok(r.available && r.decisions.length >= 2); assert.equal(r.sources.legacy.skipped, true)
+  assert.ok(r.available && r.decisions.length >= 2); assert.equal(r.sources.native.state, 'present')
   const v = await core.validateNative(P)
   assert.equal(v.valid, true, JSON.stringify(v.errors)); assert.equal(v.records, RECORDS.length)
   const lv = (globalThis as any).__legacyValidate
@@ -297,8 +294,6 @@ test('M10: native-only mode answers a migrated project with no Python at all (al
   const mcp = await import('../src/services/mcpServer.js')
   const ctx = JSON.parse((await mcp.getDesignContext(P.id, undefined, 'first maturation cost')).content[0].text)
   assert.deepEqual(ctx.decisions.map((d: any) => d.id).sort(), ['DK-HUMUS-001', 'DK-HUMUS-002']); assert.equal(ctx.decisions[0].origin, 'native')
-  assert.equal(dkMod.pythonAttempts.count, a0, 'no Python was started')
-  delete process.env.SHIPYARD_DK_FORBID_PYTHON; delete process.env.SHIPYARD_DK_NATIVE_ONLY
 })
 
 test('M11: history — a revision is read from Git (not today\'s legacy), and a checkout is judged on its own files', async () => {
@@ -315,17 +310,14 @@ test('M11: history — a revision is read from Git (not today\'s legacy), and a 
   assert.equal(main.evidence[0].freshness, 'CURRENT')
 })
 
-test('M12: partial migration — an unmigrated legacy record is still served from dk.py and never duplicated; native-only says what it skipped', async () => {
+test('M12: partial migration — an unmigrated legacy record is reported, never read, never duplicated', async () => {
   const extra = rec('DK-LATE-001', { claim: 'A record added after the migration.', scope: ['late'], tags: ['late'], evidence: [ev('code', 'tests/t.gd', null)] })
   write(game, 'docs/design_knowledge/records/late.md', `<!-- dk-record\n${JSON.stringify(extra)}\n-->\n`)
   const mixed = await core.query(P, { q: 'late record added' })
-  assert.equal(mixed.sources.legacy.available, true); assert.equal(mixed.sources.legacy.migrated, false)
-  assert.deepEqual(mixed.decisions.map((d: any) => [d.id, d.source]), [['DK-LATE-001', 'legacy']])
+  assert.deepEqual(mixed.decisions, []); assert.match(mixed.limitations.join(' '), /1 legacy Design Knowledge record.*DK-LATE-001/)
   const dup = await core.query(P, { q: 'first maturation cost' })
   assert.equal(new Set(dup.decisions.map((d: any) => d.id)).size, dup.decisions.length, 'no decision appears twice')
   assert.ok(dup.decisions.every((d: any) => d.source === 'native'))
-  const only = await core.query(P, { q: 'late record added', nativeOnly: true })
-  assert.deepEqual(only.decisions, []); assert.match(only.limitations.join(' '), /1 legacy record\(s\) are not migrated/)
   const p = await mig.plan(P); assert.equal(p.inventory.add, 1)
   unlinkSync(join(game, 'docs/design_knowledge/records/late.md'))
 })

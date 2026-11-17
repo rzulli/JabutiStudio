@@ -12,6 +12,7 @@ const CACHE_FILE = join(DATA_DIR, 'projects.json');
 const IDENTITIES_FILE = join(DATA_DIR, 'project-identities.json');
 
 const PROJECT_MARKERS = ['package.json', '.git', 'CLAUDE.md', 'Cargo.toml', 'go.mod', 'requirements.txt', 'pyproject.toml'];
+import { canonicalPath } from './pathIdentity.js';
 const IGNORE_DIRS = new Set(['node_modules', '.git', '.cache', '.vscode', 'dist', 'build', '.next', '__pycache__']);
 
 let projectsCache: Project[] = [];
@@ -19,10 +20,8 @@ let cachedLastScannedAt: string = new Date().toISOString();
 type ProjectIdentity = { path: string; id: string };
 let identities: ProjectIdentity[] | undefined;
 let identityLoad: Promise<void> | undefined;
-const pathKey = (p: string) => {
-  const full = resolve(p).replace(/\\/g, '/');
-  return process.platform === 'win32' ? full.toLowerCase() : full;
-};
+// Resolved through the filesystem: `C:\Users\JABUTI~1\x` and `C:\Users\Jabuticaba\x` are one project.
+const pathKey = canonicalPath;
 
 async function loadIdentities(): Promise<void> {
   if (identities) return;

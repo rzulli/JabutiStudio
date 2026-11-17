@@ -84,6 +84,18 @@ async function git(root: string, args: string[], buffer = false): Promise<any> {
 }
 
 export const gitHead = async (root: string): Promise<string | null> => (await git(root, ['rev-parse', '--short', 'HEAD']))?.trim() || null;
+/**
+ * Where the decisions file stands in the examined checkout: 'local' (untracked or edited), 'committed' (tracked and
+ * clean), 'integrated' (committed in the project's canonical checkout), 'revision' (read from a commit).
+ * Replaces dk.py's per-record integration, which hard-coded one game's branch name.
+ */
+export async function fileIntegration(root: string, isCanonical: boolean, revision?: string): Promise<'local' | 'committed' | 'integrated' | 'revision' | 'unknown'> {
+  if (revision) return 'revision';
+  if ((await git(root, ['ls-files', '--error-unmatch', '--', DECISIONS_FILE])) === null) return 'local';
+  const status = await git(root, ['status', '--porcelain', '--', DECISIONS_FILE]);
+  if (status === null) return 'unknown';
+  return status.trim() ? 'local' : isCanonical ? 'integrated' : 'committed';
+}
 export const gitBranch = async (root: string): Promise<string | null> => (await git(root, ['branch', '--show-current']))?.trim() || null;
 
 /** First commits of the history: an id that stops a decisions file from one game being read in another. */
@@ -104,6 +116,7 @@ export async function readDecisions(root: string, revision?: string): Promise<Re
   let raw: Buffer | null = null;
   if (revision) {
     if (!/^[\w][\w./~^@{}-]*$/.test(revision)) return { state: 'invalid', reason: 'Invalid revision' };
+    if (!(await git(root, ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`]))?.trim()) return { state: 'invalid', reason: `Unknown revision ${revision}` };
     raw = await git(root, ['show', `${revision}:${DECISIONS_FILE}`], true);
   } else {
     try {
@@ -127,10 +140,11 @@ export async function readDecisions(root: string, revision?: string): Promise<Re
 
 export interface ResolvedEvidence extends NativeEvidence {
   ref: string; freshness: Freshness; detail: string; resolvedPath?: string; excerpt: { line: number; text: string }[];
+  external?: { source: string; key: string; status: string; origin?: string };
 }
 
 /** Reads a checkout file without ever leaving the checkout (symlinks resolved), or a blob of a revision. */
-export function makeReader(root: string, revision?: string) {
+export function makeReader(root: string, revision?: string, external?: (ev: NativeEvidence) => Promise<{ freshness: Freshness; detail: string; external: ResolvedEvidence['external']; excerpt: { line: number; text: string }[] }>) {
   let realRoot: string | undefined;
   const read = async (path: string): Promise<string | null> => {
     if (!safeRel(path)) return null;
@@ -160,7 +174,7 @@ export function makeReader(root: string, revision?: string) {
     }
     return null;
   };
-  return { read, list, baseline };
+  return { read, list, baseline, external };
 }
 export type Reader = ReturnType<typeof makeReader>;
 
@@ -200,7 +214,10 @@ export async function resolveEvidence(reader: Reader, ev: NativeEvidence): Promi
   const ref = ev.path + (ev.startLine ? `#L${ev.startLine}${ev.endLine && ev.endLine !== ev.startLine ? `-L${ev.endLine}` : ''}` : '');
   const base = { ...ev, ref, excerpt: [] as { line: number; text: string }[] };
   // A reference outside the checkout (e.g. `@economy_csv:row`, legacy): the native engine cannot read it, and says so.
-  if (ev.path.startsWith('@')) return { ...base, freshness: 'UNKNOWN', detail: 'external source: not verifiable by the native engine' };
+  if (ev.path.startsWith('@')) {
+    if (!reader.external) return { ...base, freshness: 'UNKNOWN', detail: 'external source: not verifiable here (a revision does not carry external files); nothing was verified', external: { source: ev.path.slice(1).split(':')[0], key: ev.path.split(':').slice(1).join(':'), status: 'unsupported' } };
+    return { ...base, ...(await reader.external(ev)) };
+  }
   let content = await reader.read(ev.path);
   let resolvedPath: string | undefined, moved = false;
   if (content === null) {

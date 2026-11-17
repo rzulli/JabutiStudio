@@ -97,7 +97,7 @@ async function convert(root: string, lr: LegacyRecord, allIds: Set<string>): Pro
     if (!m) { issues.push(`invalid evidence ref ${e.ref}`); continue; }
     const startLine = m[2] ? Number(m[2]) : undefined, endLine = m[3] ? Number(m[3]) : startLine;
     if (startLine !== undefined && (startLine < 1 || (endLine ?? startLine) < startLine)) { issues.push(`invalid line range in ${e.ref}`); continue; }
-    if (m[1].startsWith('@')) notes.push(`evidence ${e.ref} points outside the checkout: the native engine reports it UNKNOWN (dk.py could read it via PNMG_ECO_CSV)`);
+    if (m[1].startsWith('@')) notes.push(`evidence ${e.ref} points outside the checkout: it is verified only when the source is configured on this machine (design-sources.json or SHIPYARD_DK_SOURCE_<NAME>), otherwise UNKNOWN`);
     const note = typeof e.note === 'string' ? e.note : undefined;
     const ev: store.NativeEvidence = { type: e.type, path: m[1], ...(startLine ? { startLine } : {}), ...(endLine && startLine ? { endLine } : {}),
       ...(e.sha256 ? { sha256: e.sha256 } : {}), ...(note !== undefined ? { note } : {}),

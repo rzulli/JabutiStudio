@@ -1,6 +1,5 @@
 /**
- * R1-B1 Design Knowledge Core: native decisions (no Python, no docs/ structure), the legacy dk.py adapter behind
- * the same contract, trust vocabulary, evidence freshness per checkout/revision, conflicts, identity and safety.
+ * R1-B1 Design Knowledge Core: native decisions (no Python, no docs/ structure); legacy records are reported, never read through another engine (R1-B3), trust vocabulary, evidence freshness per checkout/revision, conflicts, identity and safety.
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -39,8 +38,7 @@ before(async () => {
   mk(gameB, { 'project.godot': 'b\n', 'scripts/x.gd': 'const A := 1\n' })
   // legacy registry: the Humus conflict (code says 1000, a historic record says 200, nobody located the approval)
   const params = 'const FIRST := 1000.0\n'
-  mkdirSync(join(legacy, 'docs/design_knowledge/records'), { recursive: true }); mkdirSync(join(legacy, 'tools/design_knowledge'), { recursive: true })
-  copyFileSync(join(here, 'fixtures/dk/dk.py'), join(legacy, 'tools/design_knowledge/dk.py'))
+  mkdirSync(join(legacy, 'docs/design_knowledge/records'), { recursive: true })
   const rec = (id: string, claim: string, other: string) => ({
     id, title: claim, claim, decision_state: 'unknown', approval_state: 'unknown', implementation_state: 'implemented', implementation_sources: [],
     scope: ['first maturation'], evidence: [{ type: 'code', ref: 'scripts/p.gd#L1-L1', sha256: sha(params), note: 'const' }],
@@ -158,20 +156,18 @@ test('T5: documents and files never become approval; only a local attestation do
   assert.equal(d.approval.state, 'unknown'); assert.equal(d.approval.lapsed, true)
 })
 
-test('T7: the legacy Humus conflict is served through the shared contract, untouched and unresolved', async () => {
+test('T7: unmigrated legacy records are reported, never read, never converted by a query', async () => {
   const res = await core.query(P.legacy, { q: 'first maturation' })
-  assert.equal(res.available, true); assert.equal(res.sources.legacy.available, true)
-  const ids = res.decisions.map((d: any) => d.id).sort(); assert.deepEqual(ids, ['DK-HUMUS-001', 'DK-HUMUS-002'])
-  for (const d of res.decisions) { assert.equal(d.source, 'legacy'); assert.equal(d.approval.state, 'unknown'); assert.equal(d.decision_state, 'unknown'); assert.equal(d.evidence_status, 'CURRENT') }
-  assert.deepEqual(res.conflicts, [{ ids: ['DK-HUMUS-001', 'DK-HUMUS-002'] }])
-  assert.equal(existsSync(join(legacy, 'jabutistudio.decisions.json')), false)   // never converted, never rewritten
+  assert.equal(res.available, true); assert.deepEqual(res.decisions, [])
+  assert.match(res.limitations.join(' '), /2 legacy Design Knowledge record\(s\).*DK-HUMUS-001/)
+  assert.equal(existsSync(join(legacy, 'jabutistudio.decisions.json')), false)   // never converted by a read
 })
 
-test('T8: get_design_context serves legacy, native, empty and revision cases', async () => {
+test('T8: get_design_context serves native, unmigrated-legacy, empty and revision cases', async () => {
   const mcp = await import('../src/services/mcpServer.js')
   const call = async (a: Record<string, any>) => JSON.parse((await mcp.handleToolCall('get_design_context', a)).content[0].text)
   const leg = await call({ projectId: P.legacy.id, query: 'first maturation' })
-  assert.equal(leg.decisions.length, 2); assert.equal(leg.decisions[0].origin, 'legacy'); assert.ok(leg.conflicts)
+  assert.equal(leg.decisions.length, 0); assert.match(leg.limitations.join(' '), /not in the native file/)
   const nat = await call({ projectId: P.beats.id, file: 'scripts/rhythm.gd' })
   assert.equal(nat.decisions[0].origin, 'native'); assert.equal(nat.decisions[0].approval.state, 'unknown'); assert.match(nat.rules, /never an approved rule/)
   const none = await call({ projectId: P.gameA.id, query: 'anything' })

@@ -59,8 +59,6 @@ before(async () => {
   const PARAMS = 'extends RefCounted\nconst FIRST := 1000.0\n'
   put(withDk, 'project.godot', 'config_version=5\n')
   put(withDk, 'scripts/params.gd', PARAMS)
-  mkdirSync(join(withDk, 'tools/design_knowledge'), { recursive: true })
-  copyFileSync(join(here, 'fixtures/dk/dk.py'), join(withDk, 'tools/design_knowledge/dk.py'))
   for (const [id, other, n] of [['DK-T-001', 'DK-T-002', 1000], ['DK-T-002', 'DK-T-001', 200]] as const) {
     const rec = {
       id, title: `First maturation cost ${n}`, claim: `Maturation costs ${n}`, decision_state: 'unknown', approval_state: 'unknown',
@@ -70,13 +68,15 @@ before(async () => {
     }
     put(withDk, `docs/design_knowledge/records/${id}.md`, `<!-- dk-record\n${JSON.stringify(rec)}\n-->\n# r\n`)
   }
-  git(withDk, 'init', '-q'); git(withDk, 'add', '-A'); git(withDk, 'commit', '-qm', 'base')
-
+  git(withDk, 'init', '-q'); git(withDk, 'add', '-A'); git(withDk, 'commit', '-qm', 'records')
   writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'nodk', path: nodk }, { id: 'withdk', path: withDk }] }))
   const pd = await import('../src/services/projectDiscovery.js')
   const projects = await pd.addProjects([nodk, withDk])
   nodkP = projects.find(p => p.path === nodk); dkP = projects.find(p => p.path === withDk)
   assert.equal(nodkP.id, 'nodk')
+  // legacy records -> native decisions (the dk.py engine is retired), then commit
+  { const mig = await import('../src/services/designMigration.js'); const pl = await mig.plan(dkP); const ap = await mig.apply(dkP, { expectedPlanSha256: pl.planSha256! }); assert.ok(ap.ok, JSON.stringify([pl.state, pl.inventory, ap]).slice(0, 600))
+    git(withDk, 'add', '-A'); git(withDk, 'commit', '-qm', 'base') }
   svc = await import('../src/services/systemCatalog.js')
   const Fastify = (await import('fastify')).default
   app = Fastify()

@@ -622,7 +622,7 @@ export const api = {
   getDesign: (projectId: string, file: string, worktree?: string) =>
     request<DesignContext>(`/projects/${projectId}/design?file=${encodeURIComponent(file)}${worktree ? `&worktree=${encodeURIComponent(worktree)}` : ''}`),
   getDesignCheckouts: (projectId: string) =>
-    request<{ registry: boolean; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
+    request<{ legacyRecords: number; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
   proposeDecision: (projectId: string, body: ProposeDecisionBody) =>
     request<DesignDecision & { id: string }>(`/projects/${projectId}/design/proposals`, { method: 'POST', body: JSON.stringify(body) }),
   attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>

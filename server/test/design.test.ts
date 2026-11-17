@@ -1,11 +1,11 @@
 /**
- * Design Knowledge bridge: dk.py (a copy lives in fixtures/dk — the real one belongs to the game project)
- * -> designKnowledge service -> HTTP routes -> MCP tool. Covers worktree-scoped freshness, graceful
+ * Design Knowledge over HTTP and MCP, on a project migrated from legacy records (R1-B3: no dk.py anywhere, native
+ * decisions only) -> designCore -> routes -> MCP tool. Covers worktree-scoped freshness, graceful
  * degradation and the rule that only a browser-originated request can create an approval.
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,16 +40,20 @@ let svc: typeof import('../src/services/designKnowledge.js')
 before(async () => {
   mkdirSync(join(project, 'scripts'), { recursive: true })
   mkdirSync(join(project, 'docs/design_knowledge/records'), { recursive: true })
-  mkdirSync(join(project, 'tools/design_knowledge'), { recursive: true })
-  copyFileSync(join(here, 'fixtures/dk/dk.py'), join(project, 'tools/design_knowledge/dk.py'))
   writeFileSync(join(project, 'scripts/params.gd'), PARAMS)
   writeFileSync(join(project, 'project.godot'), 'config_version=5\n')
   writeRecord()
   git(project, 'init', '-q'); git(project, 'add', '-A'); git(project, 'commit', '-qm', 'base')
-  git(project, 'worktree', 'add', '-q', '-b', 'task-1', wt)
   writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'dkproj', path: project }] }))
   const projects = await (await import('../src/services/projectDiscovery.js')).addProjects([project])
   assert.equal(projects.find(p => p.path === project)?.id, 'dkproj')
+  // migrate the legacy record to the native file, commit it, then branch the worktree from that state
+  const mig = await import('../src/services/designMigration.js')
+  const plan = await mig.plan({ id: 'dkproj', path: project })
+  const applied = await mig.apply({ id: 'dkproj', path: project }, { expectedPlanSha256: plan.planSha256! })
+  assert.ok(applied.ok, JSON.stringify(applied))
+  git(project, 'add', '-A'); git(project, 'commit', '-qm', 'native decisions')
+  git(project, 'worktree', 'add', '-q', '-b', 'task-1', wt)
   svc = await import('../src/services/designKnowledge.js')
   const Fastify = (await import('fastify')).default
   app = Fastify()
@@ -75,7 +79,6 @@ test('a file lists the decisions that cite it, with unknown approval and current
 
 test('a worktree is judged on its own code and never contaminates the canonical checkout', async () => {
   writeFileSync(join(wt, 'scripts/params.gd'), '# header\n' + PARAMS)
-  svc.clearCache()
   const inWt = await get(`/api/projects/dkproj/design?file=scripts/params.gd&worktree=${encodeURIComponent(wt)}`)
   assert.equal(inWt.examined.isCanonical, false)
   assert.equal(inWt.decisions[0].evidence[0].freshness, 'MOVED')
@@ -86,10 +89,10 @@ test('a worktree is judged on its own code and never contaminates the canonical 
 
 test('removed or renamed evidence degrades the status instead of failing the query', async () => {
   renameSync(join(wt, 'scripts/params.gd'), join(wt, 'scripts/gone.gd'))
-  svc.clearCache()
   const res = await get(`/api/projects/dkproj/design?q=${encodeURIComponent('first maturation')}&worktree=${encodeURIComponent(wt)}`)
   assert.equal(res.available, true)
-  assert.equal(res.decisions[0].evidence_status, 'MISSING')
+  assert.equal(res.decisions[0].evidence_status, 'GONE')
+  assert.equal(res.decisions[0].evidence_status_legacy, 'MISSING')
 })
 
 test('only git-listed worktrees can be examined', async () => {
@@ -98,10 +101,11 @@ test('only git-listed worktrees can be examined', async () => {
   assert.match(res.reason, /not a git worktree/i)
 })
 
-test('a project without a registry reports it, it does not error', async () => {
+test('a project with no decisions answers empty, it does not error', async () => {
   const empty = mkdtempSync(join(parent, 'bare-'))
-  const res = await svc.contextForQuery({ id: 'bare', path: empty }, 'anything')
-  assert.equal(res.available, false)
+  const core = await import('../src/services/designCore.js')
+  const res = await core.query({ id: 'bare', path: empty }, { q: 'anything' })
+  assert.equal(res.available, true); assert.deepEqual(res.decisions, []); assert.equal(res.sources.native.state, 'absent')
 })
 
 test('approval needs a browser-originated request, and only then becomes attested', async () => {
@@ -125,8 +129,9 @@ test('approval needs a browser-originated request, and only then becomes atteste
 })
 
 test('editing the claim after approval lapses the attestation', async () => {
-  writeRecord('First maturation costs 200 matter')
-  svc.clearCache()
+  const file = join(project, 'jabutistudio.decisions.json')
+  const doc = JSON.parse(readFileSync(file, 'utf8')); doc.decisions[0].claim = 'First maturation costs 200 matter'
+  writeFileSync(file, JSON.stringify(doc, null, 2))
   const a = (await get('/api/projects/dkproj/design?q=first%20maturation')).decisions[0].approval
   assert.deepEqual([a.state, a.source], ['claimed', 'attestation-lapsed'])
 })
@@ -135,7 +140,6 @@ test('the MCP tool exposes decisions but offers no way to approve', async () => 
   const mcp = await import('../src/services/mcpServer.js')
   assert.ok(mcp.MCP_TOOLS.some(t => t.name === 'get_design_context'))
   assert.ok(!mcp.MCP_TOOLS.some(t => /approve|attest/i.test(t.name)))
-  svc.clearCache()
   const out = await mcp.getDesignContext('dkproj', 'scripts/params.gd')
   const text = out.content[0].text
   assert.match(text, /DK-T-001/)

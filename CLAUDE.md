@@ -663,11 +663,12 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   adapter, rotas, `_src/_tgt`, EXTRACTED/INFERRED, busca, defasagem e a logica do client)
 
 ### Design Knowledge (decisoes de design do projeto, lidas pelo Explorer)
-- As decisoes e o CLI moram **no projeto** (`tools/design_knowledge/dk.py`,
-  `docs/design_knowledge/records/*.md`), para o jogo continuar legivel sem o app.
-  `designKnowledge.ts` so chama `python -I dk.py <cmd> --root <checkout> --records
-  <projeto>/docs/... --json [--approvals data/design-approvals/{id}.json]`. Projeto
-  sem registro devolve `available: false` e a UI nao mostra nada
+- **R1-B3: o dk.py foi aposentado.** O JabutiStudio e o unico motor de DK: nao ha Python,
+  CLI por jogo nem ponte. As decisoes moram no projeto em `jabutistudio.decisions.json`
+  (ver "Design Knowledge Core"); `designKnowledge.ts` so guarda o que sobrou de apoio
+  (checkouts examinaveis, relacoes do Graphify, ledger de atestacoes). Registros
+  `docs/design_knowledge/records/*.md` que ainda nao foram migrados sao so **avisados**
+  em `limitations`, nunca lidos por outro motor
 - **Aprovacao** (tres niveis): `claimed` = documento/agente afirma; `attested_local` =
   atestacao no ledger local (`source: "attested_local"`); `verified` = identidade
   verificada de forma independente — **nao existe**. Arquivo do repositorio so produz
@@ -682,8 +683,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   **Nao existe tool MCP de aprovar** — nao criar
 - **Ledger**: `data/design-approvals/{projectId}.json` (fora do repositorio): sobrevive a
   restart, mas nao acompanha clone/nova worktree/outra maquina — leve junto com a data
-  dir (workspace-export a inclui) ou atteste de novo. `dk.py` sem `--approvals` so enxerga
-  `claimed`/`unknown`. Agente com acesso ao filesystem pode editar o arquivo (sem HMAC,
+  dir (workspace-export a inclui) ou atteste de novo. Agente com acesso ao filesystem pode editar o arquivo (sem HMAC,
   de proposito: a chave ficaria ao lado)
 - **Raiz examinada x registro canonico**: o registro vem sempre do checkout do
   projeto; a evidencia e julgada em `--root` (uma worktree listada pelo `git
@@ -694,15 +694,14 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - MCP `get_design_context` (read-only; `taskId` usa a worktree da task). Inspector
   do Explorer: secao "Design decisions" (`DesignDecisions.tsx`) com aprovacao,
   conflito, evidencia por origem e impacto candidato (lista manual, incompleta)
-- Testes: `pnpm --filter server test` (`test/design.test.ts` usa copia de `dk.py`
-  em `test/fixtures/dk` — recopiar se o original mudar)
+- Testes: `pnpm --filter server test` (`test/design.test.ts` migra o registro da fixture e consulta so o nativo)
 
-### Design Knowledge Core (R1-B1: contrato unico, fonte nativa + legado)
+### Design Knowledge Core (R1-B1: contrato unico; R1-B3: so nativo)
 - `designCore.ts` e o **unico contrato** que Inspector, System Explorer, rotas e MCP consomem
-  (`query({file|q|id|system, worktree, revision})`, `forSystem`, `propose`, `attest`). Duas fontes por tras da
-  mesma forma `Decision` (campos snake_case do dk.py, para nao quebrar a UI): **nativa**
-  (`designDecisions.ts`) e **legado** (`designKnowledge.ts` -> dk.py do projeto, ex. PNMG). O legado e
-  temporario: sai em R1-B3. Registros legados nunca sao convertidos nem reescritos; mesmo id nos dois = mostra o nativo e avisa
+  (`query({file|q|id|system, worktree, revision})`, `forSystem`, `propose`, `attest`). Uma fonte (desde o R1-B3):
+  a **nativa** (`designDecisions.ts`), na forma `Decision` (campos snake_case herdados do dk.py, para nao quebrar a UI).
+  O legado (dk.py) foi removido; o que segue abaixo sobre ele e historico.
+  Registros legados nunca sao convertidos nem reescritos; mesmo id nos dois = mostra o nativo e avisa
 - **Persistencia nativa**: `jabutistudio.decisions.json` na raiz do repo do jogo (v1, `gitRoots` como o
   `jabutistudio.systems.json`, schema zod estrito, caminhos relativos sem `..`, sem caminho absoluto). Nao precisa de
   Python nem de `docs/design_knowledge/`. So guarda **alegacoes + evidencias** (`status: proposed|withdrawn`);
@@ -723,7 +722,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - `available` agora e verdadeiro para qualquer repo git (a fonte nativa pode estar vazia): o catalogo de sistemas mostra
   "None recorded" + "Propose decision…" em vez de "Not indexed". Rotas: `GET /design` (`file|q|id|system`, `worktree`,
   `revision`), `POST /design/proposals`, `POST /design/approve` (so UI). Testes: `server/test/designCore.test.ts`
-  (T1-T11 do R1-B1). Pendente (R1-B3): aposentar dk.py
+  (T1-T11 do R1-B1). R1-B3 aposentou o dk.py (ver "Aposentadoria do dk.py")
 
 ### Migracao do DK legado (R1-B2: `designMigration.ts`)
 - `docs/design_knowledge/records/*.md` (cabecalho `<!-- dk-record {json} -->`, lido por `legacyRecords.ts`, **sem Python**) ->
@@ -741,7 +740,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - Rotas: `GET /design/migration` (previa), `POST /design/migration/apply|rollback` (so navegador, `fromAppUi`). CLI:
   `node scripts/design-migrate.mjs <projeto> [--data-dir d] [--apply <hash> | --rollback <id>] [--keep-native|--take-legacy <id>]`
   (use `--data-dir` num ensaio). Sempre ensaie numa copia descartavel
-- **Selecao de fonte sem duplicar**: registro ja presente no arquivo nativo nao e perguntado ao dk.py de novo. Todos migrados =
+- (historico, substituido no R1-B3) **Selecao de fonte sem duplicar**: registro ja presente no arquivo nativo nao e perguntado ao dk.py de novo. Todos migrados =
   dk.py nem e chamado (`sources.legacy.migrated`); parcial = os nao migrados ainda vem do dk.py (`source: legacy`); `nativeOnly`
   (`?nativeOnly=1` ou `SHIPYARD_DK_NATIVE_ONLY=1`) forca so o nativo e diz o que deixou de ler. `SHIPYARD_DK_FORBID_PYTHON=1` faz
   qualquer tentativa de subir Python falhar; `pythonAttempts` conta as tentativas (prova de que o caminho nativo nao usa Python)
@@ -750,6 +749,29 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   caducada, worktree, revisao, rollback e modo so-nativo. Regras que **nao** mudam: legado compara palavra inteira (prefixo so em
   decisao nativa pura); `decision_state` de registro migrado nao sobe por atestacao (so `approval` sobe). Diferencas aceitas e
   medidas: `ref` de uma linha (`#L2-L2` vs `#L2`), trecho (6 vs 12 linhas), CSV externo `UNKNOWN`, `record_integration`
+
+### Aposentadoria do dk.py (R1-B3)
+- **Sem Python, sem fallback**: nenhum codigo de produto sobe Python para DK (`designRetire.test.ts` T14 varre `server/src`).
+  `SHIPYARD_DK_FORBID_PYTHON`, `SHIPYARD_DK_NATIVE_ONLY`, `nativeOnly` e `pythonAttempts` deixaram de existir. A copia de
+  `dk.py` em `test/fixtures/dk` so serve de **oraculo** da paridade (`test/support/parity.ts`); nao e produto
+- **Evidencia externa** (`designSources.ts`): `@nome:chave` num registro cita um arquivo fora do repo. O repo so carrega o
+  **nome**; onde ele aponta nesta maquina e configuracao explicita: `data/design-sources.json`
+  (`{version:1, projects:{id:{nome:"<caminho absoluto>"}}}`) ou `SHIPYARD_DK_SOURCE_<NOME>`. Rotas
+  `GET /design/sources` e `PUT /design/sources/:name` (so UI, `{path|null}`). So caminho absoluto local (UNC/relativo recusados);
+  le-se apenas para fingerprint e para citar a linha da chave. Veredito: nao configurada ou ilegivel = UNKNOWN (nada verificado,
+  nunca GONE); arquivo configurado inexistente = GONE; mesmo sha = CURRENT; sha diferente = CHANGED (linha ainda la) ou STALE.
+  Em `revision` e sempre UNKNOWN/`unsupported`: arquivo de hoje nao julga historia. PNMG: `PNMG_ECO_CSV` do dk.py vira
+  `SHIPYARD_DK_SOURCE_ECONOMY_CSV`
+- **Identidade de caminho** (`pathIdentity.ts`, `canonicalPath`): realpath nativo + barras + minusculas no Windows, cache de 30 s.
+  Nome curto 8.3, separadores e caixa dao **um** projeto/worktree; duas pastas de mesmo nome em pais diferentes continuam
+  duas. `projectDiscovery.pathKey` e `designKnowledge.norm` usam essa funcao; a lista de worktrees do git continua sendo a
+  unica autoridade do que pode ser examinado
+- **Revisao historica**: so lê o arquivo nativo naquela revisao (`git show`); revisao desconhecida = `invalid`
+  ("Unknown revision"); revisao sem manifesto = vazio + limitation, nada inferido da working tree
+- **`record_integration`** (`fileIntegration` em designDecisions): `revision` | `local` (arquivo modificado/nao commitado) |
+  `committed` (worktree de task) | `integrated` (commitado no checkout canonico) | `unknown`. Substitui a regra do dk.py,
+  que fixava o nome de uma branch de um jogo
+- Agentes: use o MCP `get_design_context` e `propose_design_decision`; nunca rode dk.py, nunca trate doc historico como aprovacao
 
 ### System Explorer (Projeto -> Sistemas -> Sistema)
 - Aba **Systems** dentro do Explorer (`SystemsExplorer.tsx`, montada por `ExplorerHost`; "Files & symbols" e o
@@ -795,7 +817,6 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   `node --import tsx --test --test-force-exit test/graphifyIntegration.test.ts` em `server/`. O teste usa uma
   fixture descartavel e verifica reextracao, renomeacao, classificacao e evidencias; sem o interpretador configurado,
   ele e explicitamente pulado na suite normal. Nao executa o projeto Godot.
-- `designKnowledge.dkScript` cai para o `dk.py` mais novo entre os checkouts quando o do projeto nao tem `--root`
 - **Conhecimento por checkout (R1-A2)**: `systemKnowledge.ts`. `reconcile(project, {worktree?, revision?})` (somente leitura; `GET /api/projects/:id/systems/knowledge`) compoe o `jabutistudio.systems.json` publicado na revisao examinada (`git show`) + catalogo local + evidencia relida naquele checkout. Estados: `published` | `local-change` | `diverged` | `unpublished-proposal` | `unavailable`; arquivo: present/modified/untracked/absent/invalid/incompatible. Divergencia nunca e resolvida sozinha: devolve publicado, arquivo de trabalho e local lado a lado. Com `revision` explicita nao le a working tree. `updatePortable` (`POST .../knowledge/update`, so UI) exige `expectedSha256` do arquivo, nunca cria o arquivo, nunca muda status e exige `takeLocal` para sobrescrever valor divergente; escrita tmp+rename. Nao depende de DK nem de Graphify
 - **Publicar e recuperar (R1-A3)**: botao "Knowledge / Publish" no System Explorer (`KnowledgePanel.tsx`). Rotas: `GET .../systems/knowledge/plan` (previas de export, update e import; nada escreve), `POST .../knowledge/export` (so UI; nunca sobrescreve), `POST .../knowledge/update` (so UI; `expectedSha256` + `systemIds` + `takeLocal`), `POST .../knowledge/import` (so UI; exige o `expectedSha256` da previa). Previa e escrita usam o mesmo codigo (`planUpdate` e `classifyPortableImport`), entao o que a tela mostra e o que sera feito. Import e tudo-ou-nada: sistema com mesmo id e conteudo diferente (`changed`) ou mesmo nome/termos com outro id (`duplicate`) bloqueia, e nada e escolhido sozinho. Nada faz `git add/commit/merge/push`: publicar escreve o arquivo na working tree, o commit e do usuario. Escrita so no checkout do projeto; worktree e `revision` explicita sao somente leitura. A tela nao faz poll: o hash mostrado e o hash enviado; "Refresh" e explicito. Worktree mostra `file.integration` (igual/diferente do HEAD do checkout principal). Em dev (Vite 5421) as escritas de UI levam 403 por Origin diferente do Host: teste no app servido pelo server (`SHIPYARD_STATIC_DIR=client/dist`). Export aceita `systemIds` (candidatos de discovery nao revisados comecam desmarcados) e o update aceita `expectedLocal` (updatedAt local visto na previa; mudou = recusa). Teste: `server/test/systemPublish.test.ts` (clone em outra data dir/processo)
 - Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
