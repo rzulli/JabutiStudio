@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { api, type SystemSummary, type SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { relationProblem, relLabel, type ThingKind } from '@/lib/relationRules'
+import { relSig, relationEdits } from '@/lib/relationForm'
 import {
   ComponentEditor, IdentityStep, Label, MembersStep, RelationForm, RelationsStep, ResponsibilitiesStep, areaId, areaRef, blankArea, field, uniq,
   type AreaKind, type DraftArea, type DraftRel, type Focus, type RelCtx,
@@ -51,7 +52,6 @@ const toDraftRel = (r: SystemView['relations'][number]): DraftRel => ({
   isNew: false, removed: false, pick: false, status: r.status,
 })
 const areaSig = (a: DraftArea) => JSON.stringify([a.name.trim(), a.kind, a.summary, a.files, a.terms, a.resp, a.planned, a.ev])
-const relSig = (r: DraftRel) => JSON.stringify([r.kind, r.from, r.to, r.note, r.ev])
 
 export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange, onChanged, initialStep, focus, draft, onOpenFile }: {
   v: SystemView; projectId: string; allSystems: SystemSummary[]; open: boolean; onOpenChange: (b: boolean) => void
@@ -78,11 +78,12 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
   const [saving, setSaving] = useState(false)
   const [openKey, setOpenKey] = useState<string | null>(null)
   const [relEdit, setRelEdit] = useState<string | null>(null)
+  const [alsoConfirm, setAlsoConfirm] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setStep(initialStep ?? 'identity'); setName(orig.name); setKind(orig.kind); setSummary(orig.summary); setPlanned(orig.planned); setResp(orig.responsibilities)
-    setFiles(orig.files); setTerms(orig.terms); setRels(orig.rels); setPickSystem(false); setRelEdit(null); setOpenKey(null)
+    setFiles(orig.files); setTerms(orig.terms); setRels(orig.rels); setPickSystem(false); setAlsoConfirm(false); setRelEdit(null); setOpenKey(null)
     let as = orig.areas
     if (focus?.type === 'component') {
       if (focus.id === 'new') { const a = blankArea(); as = [...as, a]; setOpenKey(a.key) } else setOpenKey(focus.id)
@@ -177,19 +178,15 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
         sid = c.id
       }
       const edit = (body: Parameters<typeof api.editSystem>[2]) => api.editSystem(projectId, sid, body)
-      await edit({ name: name.trim(), kind: kind as SystemView['kind'], summary, responsibilities: resp, anchors: { terms, files }, planned })
+      // Only write the identity when it changed (or the system is new): saving one relation must not rewrite the rest.
+      if (draft || identityChanged) await edit({ name: name.trim(), kind: kind as SystemView['kind'], summary, responsibilities: resp, anchors: { terms, files }, planned })
       for (const a of areas) {
         if (a.removed) { if (!a.isNew) await edit({ remove: { areas: [a.id] } }); continue }
         if (a.isNew || areaChanged(a)) {
           await edit({ setArea: { id: areaId(a), name: a.name.trim(), kind: a.kind, summary: a.summary, files: a.files, terms: a.terms, responsibilities: a.resp, planned: a.planned, evidence: a.ev } })
         }
       }
-      for (const r of rels) {
-        if (r.removed) { if (!r.isNew && r.id) await edit({ remove: { relations: [r.id] } }); continue }
-        const input = { kind: r.kind, from: r.from, to: r.to, note: r.note || undefined, evidence: r.ev.length ? r.ev : undefined }
-        if (r.isNew) await edit({ upsertRelation: input })
-        else if (relChanged(r) && r.id) await edit({ replaceRelation: { id: r.id, relation: input } })
-      }
+      for (const body of relationEdits(orig.rels, rels)) await edit(body)
       let confirmed = 0
       if (mode === 'confirm') {
         const fresh = await api.getSystem(projectId, sid)
@@ -238,8 +235,10 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
       return focusArea ? <ComponentEditor a={focusArea} patch={p => setAreas(areas.map(a => a.key === focusArea.key ? { ...a, ...p } : a))} allResp={resp} projectId={projectId} onOpen={onOpenFile}
         onRemove={() => (focusArea.isNew ? onOpenChange(false) : setAreas(areas.map(a => a.key === focusArea.key ? { ...a, removed: !a.removed } : a)))} /> : null
     }
-    return <RelationForm key={relEdit ?? 'new'} ctx={ctx} initial={focusRel} onCancel={() => onOpenChange(false)}
-      onDone={nr => { setRels(focusRel ? rels.map(x => x.key === focusRel.key ? nr : x) : [...rels, nr]); setRelEdit(nr.key) }} />
+    // One stable form for the whole session of this dialog; every edit goes into the draft, the footer is the only Save.
+    if (!relEdit) return null // the draft is seeded in the open effect; mount the form only once it knows which relation
+    return <RelationForm key={focused.id} ctx={ctx} initial={focusRel} onCancel={() => onOpenChange(false)}
+      live={nr => { setRels(cur => cur.some(x => x.key === nr.key) ? cur.map(x => x.key === nr.key ? nr : x) : [...cur, nr]); setRelEdit(nr.key) }} />
   }
   const focusConfirmTarget = () => {
     if (focused?.type === 'component' && focusArea) return { areas: [areaId(focusArea)] }
@@ -251,21 +250,40 @@ export function EditSystemDialog({ v, projectId, allSystems, open, onOpenChange,
   if (focused) {
     const target = focusConfirmTarget()
     const dirty = changes.length > 0
+    const quickRel = focused.type === 'relation' ? rels.find(x => x.key === relEdit) : undefined
+    const alreadyConfirmed = focused.type === 'relation' ? (!!quickRel && relKeepsConfirmed(quickRel))
+      : focused.type === 'component' ? (!!focusArea && keepsConfirmed(focusArea)) : focused.type === 'identity' ? (sysConfirmed && !identityChanged) : false
+    const canConfirm = !!target && !alreadyConfirmed
+    const confirming = canConfirm && alsoConfirm
+    const wasConfirmed = focused.type === 'relation' ? origRel(quickRel ?? ({} as DraftRel))?.status === 'confirmed' : focused.type === 'identity' ? sysConfirmed : false
+    const state = alreadyConfirmed ? 'Confirmed' : wasConfirmed ? 'Confirmed, but your edit returns it to Proposed' : 'Proposed'
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[88vh] max-w-xl flex-col gap-0 overflow-hidden p-0" data-testid="quick-edit-dialog">
           <DialogHeader className="border-b px-5 py-3">
             <DialogTitle className="text-sm">{focusTitle}</DialogTitle>
-            <DialogDescription className="text-[11px]">Quick edit of one piece of “{v.name}”. Nothing is saved until you press Save. Editing text is not approving a design decision.</DialogDescription>
+            <DialogDescription className="text-[11px]">Editing one piece of “{v.name}”. Nothing is written until you press Save.</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto p-4 scrollbar-dark">{quickBody()}</div>
-          <footer className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5">
-            {problems.length > 0 && <span className="w-full text-[11px] text-destructive" data-testid="quick-problems">{problems[0]}</span>}
-            {sysConfirmed && focused.type === 'identity' && <span className="w-full text-[10px] text-muted-foreground">This system is confirmed. Changing its text returns it to proposal unless you save and confirm.</span>}
-            <button onClick={() => onOpenChange(false)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent">Cancel</button>
-            <span className="ml-auto text-[11px] text-muted-foreground">{dirty ? `${changes.length} change${changes.length > 1 ? 's' : ''}` : 'No changes'}</span>
-            <button disabled={saving || !dirty || problems.length > 0} onClick={() => save('proposal')} data-testid="quick-save" className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40">Save as proposal</button>
-            {target && <button disabled={saving || problems.length > 0} onClick={() => save('confirm', target)} data-testid="quick-save-confirm" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-40">Save &amp; confirm this</button>}
+          <footer className="space-y-2 border-t px-4 py-2.5">
+            {problems.length > 0 && <p className="text-[11px] text-destructive" data-testid="quick-problems">Cannot save yet: {focused.type === 'relation' ? 'fix the problem shown above.' : problems[0]}</p>}
+            {target && (
+              <div className="space-y-1 rounded-md bg-accent/40 p-2 text-[11px]" data-testid="quick-status">
+                <p>Status: <b data-testid="quick-state">{state}</b></p>
+                {canConfirm && (
+                  <label className="flex items-start gap-2"><input type="checkbox" checked={alsoConfirm} onChange={e => setAlsoConfirm(e.target.checked)} className="mt-0.5" data-testid="quick-also-confirm" />
+                    <span>Also confirm it. This records on this installation that <i>you</i> accept it as correct. It is not a design approval and can be undone by editing it again.</span></label>
+                )}
+                {!canConfirm && alreadyConfirmed && <p className="text-muted-foreground">Already confirmed and unchanged.</p>}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button onClick={() => onOpenChange(false)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent" data-testid="quick-cancel">Cancel</button>
+              <span className="ml-auto text-[11px] text-muted-foreground" data-testid="quick-dirty">{dirty ? `${changes.length} unsaved change${changes.length > 1 ? 's' : ''}` : 'No changes'}</span>
+              <button disabled={saving || problems.length > 0 || (!dirty && !confirming)} onClick={() => save(confirming ? 'confirm' : 'proposal', confirming ? target : undefined)} data-testid="quick-save" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-40">
+                {confirming ? 'Save and confirm' : 'Save'}
+              </button>
+            </div>
           </footer>
         </DialogContent>
       </Dialog>

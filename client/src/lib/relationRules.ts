@@ -21,9 +21,9 @@ export const RELATION_RULES: Record<string, { label: string; group: RelationGrou
 }
 
 export const GROUPS: { id: RelationGroup; label: string; help: string }[] = [
-  { id: 'gameplay', label: 'Gameplay', help: 'What the player or the rules do to resources and mechanics: produces, consumes, stores, modifies, controls, unlocks.' },
-  { id: 'structure', label: 'Structure', help: 'How the parts of the design depend on each other.' },
-  { id: 'implementation', label: 'Implementation', help: 'What realises or checks a part. Technical, not gameplay.' },
+  { id: 'gameplay', label: 'Gameplay effects', help: 'What the player or the rules do to resources and mechanics: produces, consumes, stores, modifies, controls, unlocks.' },
+  { id: 'structure', label: 'Dependencies', help: 'How the parts of the design depend on each other.' },
+  { id: 'implementation', label: 'Technical links', help: 'What realises or checks a part. Technical, not gameplay.' },
 ]
 
 export const kindsOf = (g: RelationGroup) => Object.entries(RELATION_RULES).filter(([, r]) => r.group === g).map(([k]) => k)

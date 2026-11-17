@@ -1,23 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, ExternalLink, FileCode2, Plus, Trash2, X } from 'lucide-react'
 import { api, type SystemEvidence, type SystemSummary, type SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { GROUPS, RELATION_RULES, kindsOf, relationProblem, relLabel, slug, type RelationGroup, type ThingKind } from '@/lib/relationRules'
+import { GROUPS, RELATION_RULES, relLabel, slug, type ThingKind } from '@/lib/relationRules'
+import { buildTarget, formReducer, formToDraft, initForm, operatorChoices, problemOf, relSig, type DraftRel, type Ev, type TargetType } from '@/lib/relationForm'
 import { EvidenceLine } from './parts'
 
 /** Pieces of the system editor. The dialog owns the draft; these only render and patch it. */
 
 export type AreaKind = 'subsystem' | 'mechanic' | 'entity'
-export interface Ev { path: string; needle?: string; note?: string }
+export type { Ev, DraftRel }
 export interface DraftArea {
   key: string; id: string; name: string; kind: AreaKind; summary: string; files: string[]; terms: string[]
   resp: string[]; planned: boolean; ev: Ev[]; evView: SystemEvidence[]
   isNew: boolean; removed: boolean; pick: boolean
-}
-export interface DraftRel {
-  key: string; id?: string; kind: string; from: string; to: string; note: string; ev: Ev[]
-  isNew: boolean; removed: boolean; pick: boolean; status: 'proposed' | 'confirmed' | 'new'
 }
 /** What a quick edit targets, so the same editor can open on one piece instead of the five steps. */
 export type Focus =
@@ -386,65 +383,69 @@ export interface RelCtx {
   label: (ref: string) => string; kindOf: (ref: string) => ThingKind | undefined; onOpen?: (f: string) => void
 }
 
-/** One relation, new or existing, edited in place. The reason a combination is refused is shown before saving. */
-export function RelationForm({ ctx, initial, onDone, onCancel }: { ctx: RelCtx; initial: DraftRel | null; onDone: (r: DraftRel) => void; onCancel: () => void }) {
+/**
+ * One relation, new or existing. The operator is one picker (grouped by meaning) and is changed only by the person.
+ * Two ways to host it: with `onDone/onCancel` it has its own Done/Cancel (the multi-step editor, which saves from Review);
+ * with `live` it has no buttons at all and every edit goes straight into the draft, so the dialog footer is the only Save.
+ */
+export function RelationForm({ ctx, initial, onDone, onCancel, live }: {
+  ctx: RelCtx; initial: DraftRel | null; onDone?: (r: DraftRel) => void; onCancel?: () => void; live?: (r: DraftRel) => void
+}) {
   const { v, areas, allSystems, projectId } = ctx
-  const startGroup: RelationGroup = initial ? (RELATION_RULES[initial.kind]?.group ?? 'gameplay') : 'gameplay'
-  const [group, setGroup] = useState<RelationGroup>(startGroup)
-  const [from, setFrom] = useState(initial?.from ?? 'self')
-  const [kind, setKind] = useState(initial?.kind ?? kindsOf(startGroup)[0])
-  const initTo = initial?.to ?? ''
-  const [toType, setToType] = useState<'sys' | 'area' | 'ent'>(initTo.startsWith('area:') ? 'area' : initTo.startsWith('ent:') ? 'ent' : 'sys')
-  const [toSys, setToSys] = useState(initTo.startsWith('sys:') ? initTo.slice(4).split('/')[0] : '')
-  const [toSysArea, setToSysArea] = useState(initTo.startsWith('sys:') ? (initTo.slice(4).split('/')[1] ?? '') : '')
-  const [toArea, setToArea] = useState(initTo.startsWith('area:') ? initTo.slice(5) : '')
-  const [toEnt, setToEnt] = useState(initTo.startsWith('ent:') ? initTo.slice(4) : '')
-  const [note, setNote] = useState(initial?.note ?? '')
-  const [ev, setEv] = useState<Ev[]>(initial?.ev ?? [])
+  const base = useRef(initial); const newId = useRef(newKey())
+  const [s, dispatch] = useReducer(formReducer, initial, r => initForm(r))
   const [evFile, setEvFile] = useState<string[]>([]); const [evNeedle, setEvNeedle] = useState('')
-  const others = allSystems.filter(s => s.id !== v.id && s.status !== 'dismissed' && s.status !== 'merged')
-  const targetQ = useQuery({ queryKey: ['system', projectId, toSys, ''], queryFn: () => api.getSystem(projectId, toSys), enabled: toType === 'sys' && !!toSys, staleTime: 30_000 })
-  const to = toType === 'sys' ? (toSys ? `sys:${toSys}${toSysArea ? `/${toSysArea}` : ''}` : '') : toType === 'area' ? (toArea ? `area:${toArea}` : '') : toEnt.trim() ? `ent:${toEnt.trim()}` : ''
+  const { target: t, kind, from, note, ev } = s
+  const others = allSystems.filter(x => x.id !== v.id && x.status !== 'dismissed' && x.status !== 'merged')
+  const targetQ = useQuery({ queryKey: ['system', projectId, t.sys, ''], queryFn: () => api.getSystem(projectId, t.sys), enabled: t.type === 'sys' && !!t.sys, staleTime: 30_000 })
+  const to = buildTarget(t)
   const mine = areas.filter(a => !a.removed && areaId(a))
-  const toKind: ThingKind | undefined = toType === 'ent' ? 'entity'
-    : toType === 'area' ? mine.find(a => areaId(a) === toArea)?.kind
-      : toSysArea ? targetQ.data?.areas.find(a => a.id === toSysArea && !a.inferred)?.kind as ThingKind | undefined
-        : (others.find(s => s.id === toSys)?.kind)
+  const toKind: ThingKind | undefined = t.type === 'ent' ? 'entity'
+    : t.type === 'area' ? mine.find(a => areaId(a) === t.area)?.kind
+      : t.sysArea ? targetQ.data?.areas.find(a => a.id === t.sysArea && !a.inferred)?.kind as ThingKind | undefined
+        : (others.find(x => x.id === t.sys)?.kind)
   const fromKind = from === 'self' ? ctx.systemKind : mine.find(a => areaRef(a) === from)?.kind
-  const problem = !to ? null : from === to ? 'A relation cannot connect something to itself.' : relationProblem(kind, fromKind, toKind)
-  const pickGroup = (g: RelationGroup) => { setGroup(g); if (RELATION_RULES[kind]?.group !== g) setKind(kindsOf(g)[0]) }
-  const submit = () => {
-    if (!to || problem) return
-    onDone({ key: initial?.key ?? newKey(), id: initial?.id, kind, from, to, note, ev, isNew: initial?.isNew ?? true, removed: false, pick: initial?.pick ?? false, status: initial?.status ?? 'new' })
-  }
+  const problem = problemOf(kind, from, to, fromKind, toKind)
+  const current = formToDraft(s, base.current, newId.current)
+  const persisted = base.current && !base.current.isNew ? base.current : null
+  const changedOperator = persisted && persisted.kind !== kind
+
+  // Live mode: push each real edit into the draft (an unfinished new relation without a target is withdrawn, not half-saved).
+  const pushed = useRef(relSig(initial ?? { kind: '', from: '', to: '', note: '', ev: [] }) + (initial ? '' : '|none'))
+  useEffect(() => {
+    if (!live) return
+    const sig = relSig(current) + (to ? '' : '|none')
+    if (sig === pushed.current) return
+    pushed.current = sig
+    if (to || base.current) live({ ...current, removed: !to })
+  }) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const submit = () => { if (to && !problem && onDone) onDone(current) }
   return (
-    <div className="space-y-2 rounded-md border p-3" data-testid="relation-builder">
-      <div className="flex gap-1" role="tablist" aria-label="relation group">
-        {GROUPS.map(g => (
-          <button key={g.id} role="tab" aria-selected={group === g.id} onClick={() => pickGroup(g.id)} data-testid={`rel-group-${g.id}`} title={g.help}
-            className={cn('rounded-md border px-2 py-1 text-[11px] hover:bg-accent', group === g.id && 'border-foreground bg-accent font-medium')}>{g.label}</button>
-        ))}
-      </div>
-      <p className="text-[10px] text-muted-foreground">{GROUPS.find(g => g.id === group)?.help}</p>
-      <div className="grid grid-cols-[1fr_auto_1.4fr] items-start gap-2">
-        <select className={field} value={from} onChange={e => setFrom(e.target.value)} aria-label="relation from" data-testid="rel-from">
-          <option value="self">{v.name || 'This system'} (whole system)</option>
-          {mine.map(a => <option key={a.key} value={areaRef(a)}>{a.name || '(unnamed)'} · {a.kind}</option>)}
-        </select>
-        <select className={field} value={kind} onChange={e => setKind(e.target.value)} aria-label="relation kind" data-testid="rel-kind">
-          {kindsOf(group).map(k => <option key={k} value={k}>{relLabel(k)}</option>)}
-        </select>
-        <div className="space-y-1">
+    <div className={cn('space-y-2', !live && 'rounded-md border p-3')} data-testid="relation-builder">
+      <div className="grid grid-cols-[1fr_1fr] items-start gap-2">
+        <label className="space-y-0.5"><span className="text-[10px] text-muted-foreground">From</span>
+          <select className={field} value={from} onChange={e => dispatch({ type: 'setFrom', from: e.target.value })} aria-label="relation from" data-testid="rel-from">
+            <option value="self">{v.name || 'This system'} (whole system)</option>
+            {mine.map(a => <option key={a.key} value={areaRef(a)}>{a.name || '(unnamed)'} · {a.kind}</option>)}
+          </select></label>
+        <label className="space-y-0.5"><span className="text-[10px] text-muted-foreground">Relation</span>
+          <select className={field} value={kind} onChange={e => dispatch({ type: 'setOperator', kind: e.target.value })} aria-label="relation kind" data-testid="rel-kind">
+            {operatorChoices(GROUPS).map(g => (
+              <optgroup key={g.id} label={g.label}>{g.kinds.map(k => <option key={k} value={k}>{relLabel(k)}</option>)}</optgroup>
+            ))}
+          </select></label>
+        <div className="col-span-2 space-y-0.5"><span className="text-[10px] text-muted-foreground">To</span>
           <div className="flex gap-1">
-            <select className={cn(field, 'w-32 shrink-0')} value={toType} onChange={e => setToType(e.target.value as 'sys' | 'area' | 'ent')} aria-label="target type" data-testid="rel-to-type">
+            <select className={cn(field, 'w-32 shrink-0')} value={t.type} onChange={e => dispatch({ type: 'setTarget', target: { type: e.target.value as TargetType } })} aria-label="target type" data-testid="rel-to-type">
               <option value="sys">another system</option><option value="area">a component here</option><option value="ent">a named entity</option>
             </select>
-            {toType === 'sys' && <select className={field} value={toSys} onChange={e => { setToSys(e.target.value); setToSysArea('') }} aria-label="relation target system" data-testid="rel-to-system"><option value="">choose a system…</option>{others.map(s => <option key={s.id} value={s.id}>{s.name} · {s.kind}</option>)}</select>}
-            {toType === 'area' && <select className={field} value={toArea} onChange={e => setToArea(e.target.value)} aria-label="relation target component" data-testid="rel-to-component"><option value="">choose…</option>{mine.map(a => <option key={a.key} value={areaId(a)}>{a.name} · {a.kind}</option>)}</select>}
-            {toType === 'ent' && <input className={field} value={toEnt} onChange={e => setToEnt(e.target.value)} placeholder="e.g. Currency" aria-label="relation target name" data-testid="rel-to-entity" />}
+            {t.type === 'sys' && <select className={field} value={t.sys} onChange={e => dispatch({ type: 'setTarget', target: { sys: e.target.value } })} aria-label="relation target system" data-testid="rel-to-system"><option value="">choose a system…</option>{others.map(x => <option key={x.id} value={x.id}>{x.name} · {x.kind}</option>)}</select>}
+            {t.type === 'area' && <select className={field} value={t.area} onChange={e => dispatch({ type: 'setTarget', target: { area: e.target.value } })} aria-label="relation target component" data-testid="rel-to-component"><option value="">choose…</option>{mine.map(a => <option key={a.key} value={areaId(a)}>{a.name} · {a.kind}</option>)}</select>}
+            {t.type === 'ent' && <input className={field} value={t.ent} onChange={e => dispatch({ type: 'setTarget', target: { ent: e.target.value } })} placeholder="e.g. Currency" aria-label="relation target name" data-testid="rel-to-entity" />}
           </div>
-          {toType === 'sys' && toSys && (
-            <select className={field} value={toSysArea} onChange={e => setToSysArea(e.target.value)} aria-label="component of the other system" data-testid="rel-to-sys-area">
+          {t.type === 'sys' && t.sys && (
+            <select className={field} value={t.sysArea} onChange={e => dispatch({ type: 'setTarget', target: { sysArea: e.target.value } })} aria-label="component of the other system" data-testid="rel-to-sys-area">
               <option value="">the whole system</option>
               {(targetQ.data?.areas ?? []).filter(a => !a.inferred).map(a => <option key={a.id} value={a.id}>{a.name} · {a.kind}</option>)}
             </select>
@@ -452,22 +453,25 @@ export function RelationForm({ ctx, initial, onDone, onCancel }: { ctx: RelCtx; 
         </div>
       </div>
       <p className="text-[11px]" data-testid="rel-sentence">{to ? <><b>{ctx.label(from)}</b> {relLabel(kind)} <b>{ctx.label(to)}</b></> : <span className="text-muted-foreground">Example: {RELATION_RULES[kind]?.hint}</span>}</p>
-      {problem && <p className="rounded-md border border-destructive/40 bg-destructive/10 p-1.5 text-[11px] text-destructive" data-testid="rel-problem">{problem}</p>}
-      <input className={field} value={note} onChange={e => setNote(e.target.value)} placeholder="Why / how (optional)" aria-label="relation note" />
+      {changedOperator && <p className="text-[10px] text-warning" data-testid="rel-operator-changed">You changed the relation from “{relLabel(persisted!.kind)}” to “{relLabel(kind)}”. That is a different statement, not a rewording.</p>}
+      {problem && <p className="rounded-md border border-destructive/40 bg-destructive/10 p-1.5 text-[11px] text-destructive" data-testid="rel-problem">{problem} Pick another relation or another target; nothing was changed for you.</p>}
+      <input className={field} value={note} onChange={e => dispatch({ type: 'setNote', note: e.target.value })} placeholder="Why / how (optional)" aria-label="relation note" />
       <details className="text-[11px]">
         <summary className="cursor-pointer text-muted-foreground">Evidence in the code ({ev.length}) — optional, makes the relation checkable</summary>
         <div className="mt-2 space-y-1.5">
-          {ev.map((e, i) => <div key={i} className="flex items-center gap-1.5 font-mono"><span className="truncate">{e.path}{e.needle ? ` — “${e.needle}”` : ''}</span><button onClick={() => setEv(ev.filter((_, j) => j !== i))} aria-label="remove evidence" className="ml-auto rounded p-0.5 hover:bg-accent"><X className="h-3 w-3" /></button></div>)}
+          {ev.map((e, i) => <div key={i} className="flex items-center gap-1.5 font-mono"><span className="truncate">{e.path}{e.needle ? ` — “${e.needle}”` : ''}</span><button onClick={() => dispatch({ type: 'setEvidence', ev: ev.filter((_, j) => j !== i) })} aria-label="remove evidence" className="ml-auto rounded p-0.5 hover:bg-accent"><X className="h-3 w-3" /></button></div>)}
           <FilePicker projectId={projectId} value={evFile} onChange={p => setEvFile(p.slice(-1))} single onOpen={ctx.onOpen} />
           <input className={field} value={evNeedle} onChange={e => setEvNeedle(e.target.value)} placeholder="Text that must stay in that file, e.g. add_currency(" aria-label="evidence text" />
-          <button disabled={!evFile[0]} onClick={() => { setEv([...ev, { path: evFile[0], ...(evNeedle.trim() ? { needle: evNeedle.trim() } : {}) }]); setEvFile([]); setEvNeedle('') }} className="rounded-md border px-2 py-1 hover:bg-accent disabled:opacity-40">Add evidence</button>
+          <button disabled={!evFile[0]} onClick={() => { dispatch({ type: 'setEvidence', ev: [...ev, { path: evFile[0], ...(evNeedle.trim() ? { needle: evNeedle.trim() } : {}) }] }); setEvFile([]); setEvNeedle('') }} className="rounded-md border px-2 py-1 hover:bg-accent disabled:opacity-40">Add evidence</button>
         </div>
       </details>
-      <div className="flex items-center gap-2">
-        <button onClick={submit} disabled={!to || !!problem} data-testid="add-relation" className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground disabled:opacity-40">{initial ? 'Update relation' : 'Add relation'}</button>
-        <button onClick={onCancel} className="rounded-md border px-3 py-1 text-xs hover:bg-accent">Cancel</button>
-        <span className="text-[10px] text-muted-foreground">{initial && !initial.isNew ? 'Changing what it says returns it to proposal.' : 'A new relation starts as a proposal. Without evidence it is a candidate, never demonstrated.'}</span>
-      </div>
+      {!live && (
+        <div className="flex items-center gap-2">
+          <button onClick={submit} disabled={!to || !!problem} data-testid="add-relation" className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground disabled:opacity-40">Done</button>
+          <button onClick={onCancel} className="rounded-md border px-3 py-1 text-xs hover:bg-accent">Cancel</button>
+          <span className="text-[10px] text-muted-foreground">Keeps this in the draft. Nothing is saved until Review.</span>
+        </div>
+      )}
     </div>
   )
 }

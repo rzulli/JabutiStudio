@@ -144,20 +144,16 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none" />
           </div>
           <button onClick={() => openNew()} data-testid="systems-new" className="flex w-full items-center justify-center gap-1 rounded-md bg-primary px-2 py-1.5 text-xs text-primary-foreground"><Plus className="h-3.5 w-3.5" /> New system</button>
-          <div className="flex items-center gap-1.5">
-            <button onClick={discover} disabled={busy} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50" data-testid="systems-discover">
-              <Wand2 className="h-3 w-3" /> Find systems
+          <div className="flex flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground" data-testid="systems-proposals">
+            <span className="w-full text-[10px] uppercase tracking-wide opacity-70">Get proposals</span>
+            <button onClick={discover} disabled={busy} title="Group the project's files by shared words in their names. The result is a set of proposals you correct." className="flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-1 hover:bg-accent hover:text-foreground disabled:opacity-50" data-testid="systems-discover">
+              <Wand2 className="h-3 w-3" /> From the code
             </button>
-            <button onClick={askAgentToDescribe} disabled={!systems.some(s => s.status === 'proposed')} title="Ask Claude to describe and refine the candidates (it can only propose)"
-              className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40">
-              <Sparkles className="h-3 w-3" /> Ask agent
+            <button onClick={askAgentToDescribe} disabled={!systems.some(s => s.status === 'proposed')} title="Ask Claude to describe and refine the proposed systems (it can only propose)"
+              className="flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-1 hover:bg-accent hover:text-foreground disabled:opacity-40" data-testid="systems-ask-agent">
+              <Sparkles className="h-3 w-3" /> Ask an agent
             </button>
           </div>
-          <button onClick={() => setView(view === 'knowledge' ? 'systems' : 'knowledge')} data-testid="systems-knowledge"
-            title="Publish the knowledge to the repository, or recover it from there"
-            className={cn('flex w-full items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent', view === 'knowledge' && 'bg-accent')}>
-            <BookUp className="h-3 w-3" /> Knowledge / Publish
-          </button>
           {checkouts.length > 1 && (
             <select value={worktree} onChange={e => setWorktree(e.target.value)} data-testid="systems-checkout"
               className="h-7 w-full rounded-md border bg-background px-1.5 text-[11px]">
@@ -191,6 +187,13 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
               </div>
             </button>
           ))}
+        </div>
+        <div className="border-t p-1.5">
+          <button onClick={() => setView(view === 'knowledge' ? 'systems' : 'knowledge')} data-testid="systems-knowledge"
+            title="Publish the knowledge to the repository, or recover it from there"
+            className={cn('flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground', view === 'knowledge' && 'bg-accent text-foreground')}>
+            <BookUp className="h-3 w-3" /> Publish &amp; recover knowledge
+          </button>
         </div>
       </aside>
 
