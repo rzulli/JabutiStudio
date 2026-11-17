@@ -12,6 +12,7 @@ import { OverviewTab, ImplementationTab, EvidenceTab } from './system/Tabs'
 import { SystemMap } from './system/SystemMap'
 import { RulesTab } from './system/RulesTab'
 import { KnowledgePanel } from './system/KnowledgePanel'
+import { CatalogSourceBanner, useCatalogSource } from './system/CatalogSourcePanel'
 import { EditSystemDialog, type EditStep, type Focus } from './system/EditSystemDialog'
 import { NewSystemDialog, type Mode } from './system/NewSystemDialog'
 import { openAgentSession } from '@/lib/terminalDispatch'
@@ -85,7 +86,9 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
   })
   const v = detailQ.data && detailQ.data.id === current ? detailQ.data : undefined
 
-  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['systems', projectId] }), qc.invalidateQueries({ queryKey: ['system', projectId] })])
+  const sourceQ = useCatalogSource(projectId)
+  const siblingHasSystems = !!sourceQ.data?.others.some(o => o.systems > 0 && o.relation !== 'identical')
+  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['systems', projectId] }), qc.invalidateQueries({ queryKey: ['system', projectId] }), qc.invalidateQueries({ queryKey: ['catalog-source', projectId] })])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -186,7 +189,8 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
               {catalogQ.data.loadErrors.map(e => <p key={e.id} className="break-words text-muted-foreground"><b>{e.name}</b>: {e.error}</p>)}
             </div>
           )}
-          {!catalogQ.isLoading && !catalogQ.isError && !systems.length && !catalogQ.data?.loadErrors?.length && <p className="p-3 text-xs text-muted-foreground">No systems yet.</p>}
+          <CatalogSourceBanner projectId={projectId} onChanged={refresh} />
+          {!catalogQ.isLoading && !catalogQ.isError && !systems.length && !catalogQ.data?.loadErrors?.length && <p className="p-3 text-xs text-muted-foreground">No systems in this catalog yet.</p>}
           {filtered.map((s: SystemSummary) => (
             <button key={s.id} onClick={() => pick(s.id)} data-testid="system-row"
               className={cn('w-full border-b border-border/40 px-2.5 py-2 text-left hover:bg-accent/60', current === s.id && 'bg-accent')}>
@@ -216,7 +220,9 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
         ) : !v && !current && !catalogQ.isLoading && catalogQ.isError ? (
           <p className="p-6 text-xs text-muted-foreground">The systems could not be loaded, so nothing is shown here. See the message in the list.</p>
         ) : !v && !current && !catalogQ.isLoading && !catalogQ.data?.loadErrors?.length ? (
-          <EmptyDesign onManual={() => openNew('manual')} onAgent={() => openNew('agent')} onDiscover={discover} busy={busy} />
+          siblingHasSystems ? (
+          <p className="p-6 text-xs text-muted-foreground" data-testid="systems-empty-sibling">This catalog is empty, but another catalog for this project exists on this machine. Review it in the banner on the left before starting over.</p>
+        ) : <EmptyDesign onManual={() => openNew('manual')} onAgent={() => openNew('agent')} onDiscover={discover} busy={busy} />
         ) : !v ? (
           <p className="p-6 text-xs text-muted-foreground">{detailQ.error ? (detailQ.error as Error).message : 'Loading…'}</p>
         ) : (

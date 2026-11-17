@@ -571,6 +571,14 @@ export interface SystemSummary {
   kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean; createdAt: string
   files: number; decisions: number; conflicts: number; flags: string[]
 }
+export interface CatalogProbe { dir: string; file: string; exists: boolean; sha256: string | null; systems: number; ids: string[]; modifiedAt: string | null; error?: string }
+export interface SiblingCatalog extends CatalogProbe { relation: 'identical' | 'addable' | 'conflicting' | 'unreadable'; addableIds: string[]; conflictIds: string[] }
+export interface CatalogSourceReport {
+  identity: { projectId: string; path: string }
+  source: { dataDir: string; selectedBy: string; mode: string; port: string | null; pid: number }
+  active: CatalogProbe & { loaded: number | null; lastRead: { at: string; ok: boolean; systems: number; error?: string } | null }
+  others: SiblingCatalog[]
+}
 export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; unborn?: boolean; uncommitted: number; integration: string }
 export type SystemTier = 'core' | 'participant' | 'candidate' | 'test' | 'historical' | 'related'
 export type SystemFacet = 'logic' | 'data' | 'ui' | 'telemetry' | 'purchase' | 'requirement' | 'effect' | 'test' | 'other'
@@ -754,6 +762,9 @@ export const api = {
     request<{ updated: string[]; unchanged: string[]; sha256: string }>(`/projects/${projectId}/systems/knowledge/update`, { method: 'POST', body: JSON.stringify(body) }),
   importKnowledge: (projectId: string, expectedSha256: string) =>
     request<{ added: number }>(`/projects/${projectId}/systems/knowledge/import`, { method: 'POST', body: JSON.stringify({ expectedSha256 }) }),
+  getCatalogSource: (projectId: string) => request<CatalogSourceReport>(`/projects/${projectId}/systems/catalog-source`),
+  importCatalogSource: (projectId: string, body: { fromDir: string; expectedSourceSha256: string; expectedTargetSha256: string | null }) =>
+    request<{ added: string[]; backup: string | null; manifest: string | null }>(`/projects/${projectId}/systems/catalog-source/import`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

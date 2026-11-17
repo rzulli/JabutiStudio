@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { RefreshCw, Upload, Download, GitBranch, Info } from 'lucide-react'
 import { api, type KnowledgeReconciliation, type KnowledgeState, type KnowledgeSystem, type PortableSystem, type KnowledgePlan } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { CatalogSourceDetails } from './CatalogSourcePanel'
 
 /**
  * Knowledge / Publish: what the examined revision publishes, what the working-tree file says, what only this
@@ -319,6 +320,8 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
         <div className="space-y-1 rounded bg-muted/40 p-2 font-mono text-[10px]" data-testid="knowledge-tech">
           <p>revision {k.revision.commit ?? 'none (no commits yet)'}</p><p>committed sha256 {f.revisionSha256 ?? '—'}</p><p>working sha256 {f.workingSha256 ?? '—'}</p>
           <p>expected sha256 {upd?.sha256 ?? f.expectedSha256 ?? '—'}</p>
+          <p>git branch {k.checkout.branch ?? '—'} · head {k.checkout.head ?? 'none'}{k.checkout.unborn ? ' (unborn)' : ''}</p>
+          <CatalogSourceDetails projectId={projectId} />
           {k.limitations.map(l => <p key={l} className="font-sans">· {l}</p>)}
         </div>
       )}

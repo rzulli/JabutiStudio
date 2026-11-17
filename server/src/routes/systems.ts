@@ -21,6 +21,28 @@ export async function systemRoutes(app: FastifyInstance) {
     catch (e: any) { return reply.status(500).send({ error: String(e?.message ?? e) }); }
   });
 
+  // Read-only: where this catalog lives (data dir, identity, last read) and any other catalog for the same project.
+  app.get<Q>('/api/projects/:id/systems/catalog-source', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    try { return await systems.catalogSourceReport(project); }
+    catch (e: any) { return reply.status(500).send({ error: String(e?.message ?? e) }); }
+  });
+
+  // Explicit, add-only import from another data dir on this machine (backup + manifest; conflicts block everything).
+  app.post<{ Params: { id: string }; Body: { fromDir?: string; expectedSourceSha256?: string; expectedTargetSha256?: string | null } }>('/api/projects/:id/systems/catalog-source/import', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const b = request.body ?? {};
+    if (!b.fromDir || !/^[a-f0-9]{64}$/.test(b.expectedSourceSha256 ?? '')) return reply.status(400).send({ error: 'fromDir and expectedSourceSha256 are required' });
+    try {
+      const r = await systems.importFromCatalog(project, { fromDir: b.fromDir, expectedSourceSha256: b.expectedSourceSha256!, expectedTargetSha256: b.expectedTargetSha256 ?? null });
+      if (r.conflicts.length) return reply.status(409).send({ error: `Nothing was imported: ${r.conflicts.length} system(s) conflict with the active catalog`, conflicts: r.conflicts });
+      return r;
+    } catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
+  });
+
   // Candidates from file names only; idempotent, adds nothing that an existing system already owns.
   app.post<Q>('/api/projects/:id/systems/discover', async (request, reply) => {
     const project = await resolve(request.params.id);

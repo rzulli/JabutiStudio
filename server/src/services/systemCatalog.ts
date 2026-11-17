@@ -12,6 +12,7 @@ import * as designDecisions from './designDecisions.js';
 import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
+import * as catalogSources from './catalogSources.js';
 
 const run = promisify(execFile);
 
@@ -912,7 +913,11 @@ export interface SystemSummary {
 
 /** Catalog rows. Resolves each system (cached) so counts are real, not stored. */
 export async function catalog(project: Project, worktree?: string) {
-  const stored = await listStored(project.id);
+  const stored = await listStored(project.id).catch(e => {
+    lastRead.set(project.id, { at: new Date().toISOString(), ok: false, error: String(e?.message ?? e), systems: 0 });
+    throw e;
+  });
+  lastRead.set(project.id, { at: new Date().toISOString(), ok: true, systems: stored.length });
   const rows: SystemSummary[] = [];
   const views: (SystemView | { error: string })[] = new Array(stored.length);
   let next = 0;
@@ -1355,4 +1360,86 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
   L.push('', `Go deeper with: MCP get_system {projectId, systemId: "${v.id}"}, get_design_context {file|query}, the Graphify Explorer. Tests were not run.`);
   if (goal) L.push('', '## Request', goal);
   return L.join('\n');
+}
+
+// ---- where the catalog lives, and other catalogs for the same project --------------------------------
+
+const lastRead = new Map<string, { at: string; ok: boolean; systems: number; error?: string }>();
+
+export type SiblingRelation = 'identical' | 'addable' | 'conflicting' | 'unreadable';
+export interface SiblingCatalog extends catalogSources.CatalogProbe {
+  relation: SiblingRelation;
+  /** ids present only there / present in both with different content or an equivalent name or term under another id. */
+  addableIds: string[];
+  conflictIds: string[];
+}
+
+/** Read-only report: active catalog (path, count, last read) + any other catalog on this machine for the same project. */
+export async function catalogSourceReport(project: Project) {
+  const active = await catalogSources.probe(DATA_DIR, project.id);
+  let store: Store | null = null;
+  try { store = await readStore(project.id); } catch { /* reported through active.error / lastRead */ }
+  const others: SiblingCatalog[] = [];
+  for (const o of await catalogSources.otherCatalogs(project.id)) {
+    const sib: SiblingCatalog = { ...o, relation: 'unreadable', addableIds: [], conflictIds: [] };
+    if (!o.error && store) {
+      try {
+        const theirs: StoredSystem[] = JSON.parse(await fs.readFile(o.file, 'utf8')).systems;
+        for (const s of theirs) {
+          const k = classifyPortableImport(store.systems, portableSystem(s)).kind;
+          if (k === 'new') sib.addableIds.push(s.id);
+          else if (k !== 'identical') sib.conflictIds.push(s.id);
+        }
+        sib.relation = sib.conflictIds.length ? 'conflicting' : sib.addableIds.length ? 'addable' : 'identical';
+      } catch (e: any) { sib.error = String(e?.message ?? e); }
+    }
+    others.push(sib);
+  }
+  return {
+    identity: { projectId: project.id, path: project.path },
+    source: catalogSources.activeSource(),
+    active: { ...active, loaded: store?.systems.length ?? null, lastRead: lastRead.get(project.id) ?? null },
+    others,
+  };
+}
+
+/**
+ * Explicit, add-only import from another JabutiStudio data dir on this machine. Never overwrites or merges:
+ * any id whose content differs, or whose name/terms duplicate a local system, blocks everything. The previous
+ * local file is backed up and the operation is recorded in a manifest next to it.
+ */
+export async function importFromCatalog(project: Project, opts: { fromDir: string; expectedSourceSha256: string; expectedTargetSha256: string | null }) {
+  const sibling = catalogSources.isKnownSibling(opts.fromDir);
+  if (!sibling) throw new Error('That data directory is not a known JabutiStudio data directory on this machine');
+  const src = await catalogSources.probe(sibling, project.id);
+  if (!src.exists || src.error) throw new Error(`The source catalog cannot be read${src.error ? `: ${src.error}` : ''}`);
+  if (src.sha256 !== opts.expectedSourceSha256) throw new Error('The source catalog changed since the preview; review it again');
+  return locked(async () => {
+    await checkLocalStore(project.id);
+    const target = await catalogSources.probe(DATA_DIR, project.id);
+    if ((target.sha256 ?? null) !== (opts.expectedTargetSha256 ?? null)) throw new Error('The active catalog changed since the preview; review it again');
+    const theirs: StoredSystem[] = JSON.parse(await fs.readFile(src.file, 'utf8')).systems;
+    const store = await readStore(project.id);
+    const conflicts = theirs.filter(s => { const k = classifyPortableImport(store.systems, portableSystem(s)).kind; return k === 'changed' || k === 'duplicate'; }).map(s => s.id);
+    if (conflicts.length) return { added: [] as string[], conflicts, backup: null as string | null, manifest: null as string | null };
+    const added = theirs.filter(s => !store.systems.some(x => x.id === s.id));
+    if (!added.length) return { added: [] as string[], conflicts: [] as string[], backup: null, manifest: null };
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dir = join(DATA_DIR, 'catalog-backups', safe(project.id));
+    await fs.mkdir(dir, { recursive: true });
+    let backup: string | null = null;
+    if (target.exists) { backup = join(dir, `${stamp}-before-import.json`); await fs.copyFile(target.file, backup); }
+    const manifest = join(dir, `${stamp}-import.json`);
+    await writeJsonAtomic(manifest, {
+      version: 1, at: new Date().toISOString(), projectId: project.id,
+      source: { dir: src.dir, file: src.file, sha256: src.sha256 }, target: { dir: DATA_DIR, file: target.file, sha256Before: target.sha256 },
+      backup, addedIds: added.map(s => s.id),
+    });
+    const next: Store = { version: 1, systems: [...store.systems, ...added] };
+    await fs.mkdir(join(DATA_DIR, 'systems'), { recursive: true });
+    await writeJsonAtomic(storePath(project.id), next);
+    storeCache.set(project.id, { store: next, mtime: (await fs.stat(storePath(project.id))).mtimeMs });
+    viewCache.clear();
+    return { added: added.map(s => s.id), conflicts: [] as string[], backup, manifest };
+  });
 }

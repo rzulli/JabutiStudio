@@ -215,3 +215,20 @@
 - **Agente**: todo envio da aba Systems usa `openAgentSession` (`terminalDispatch.ts`). "Sessao aberta" nao e proposta: `NewSystemDialog` chama `onSent`, a sidebar mostra "Waiting for its proposal…" (poll 3 s) e so a chegada de um sistema `origin: agent` novo vira "proposed", com selecao automatica. O gate de MCP pronto e do KNOWLEDGE-MCP-SESSION-01.
 - **Editor**: componente sem nome tem erro inline e foco automatico; "Add component" reabre o sem nome em vez de criar outro; Review lista "Fix" por problema; sistema `planned` sem arquivos pula Members ("optional"). `save` espera o refetch antes de fechar/avisar.
 - **Termo**: "project checkout" (pasta registrada, qualquer branch) vs "worktree". Nunca "main" como nome de branch. A proposta de UI canonica esta em `docs/proposals/knowledge-canonical-ui.md` (nao implementada).
+
+## Catalogos distintos para o mesmo projeto (CATALOG-SOURCE)
+
+- **Causa do "No systems yet" no Electron real**: o ID do projeto vem do caminho (`project-identities.json`), entao o app instalado
+  (`%APPDATA%/JabutiStudio/data`, porta 5430, e o que o `.mcp.json` dos jogos aponta) e o `pnpm dev:electron` (`<repo>/data`,
+  porta 5420, `isDev = !app.isPackaged`) usam o **mesmo id e o mesmo nome de arquivo** em pastas diferentes. Sistemas propostos
+  por MCP na 5430 nao aparecem na 5420. O primeiro commit nao altera a identidade (testado, C2).
+- Nada e escolhido, copiado ou mesclado sozinho. `catalogSources.ts` so le: `GET /projects/:id/systems/catalog-source` devolve
+  identidade, data dir ativo (e como foi escolhido), arquivo, sha256, contagem, ultima leitura e os catalogos **irmaos** conhecidos
+  (`<repo>/data`, data dir do Electron instalado, `SHIPYARD_SIBLING_DATA_DIRS`; nunca caminho arbitrario) com relacao
+  identical | addable | conflicting | unreadable.
+- A UI mostra um aviso na aba Systems quando existe irmao com sistemas que o ativo nao tem; o estado vazio deixa de dizer que nao ha
+  nada. **Versions -> Technical details** lista identidade, contexto Git, data dir, catalogo, sistemas carregados, ultima leitura e irmaos.
+- Migracao: `POST .../catalog-source/import` (so UI). Add-only, exige o sha256 visto na previa da origem e do destino, recusa tudo
+  se qualquer id diverge ou duplica nome/termo, faz backup do arquivo ativo e grava manifesto em
+  `<data>/catalog-backups/<projectId>/`. A origem nunca e alterada. Teste: `server/test/catalogSources.test.ts` (nao esta no script
+  `test` de package.json por la haver edicao alheia pendente; rode com `node --import tsx --test test/catalogSources.test.ts`).
