@@ -555,6 +555,24 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   (10 s, so com o board montado) e `LifecycleMapContext` no `TaskBoard`
 - Testes: `server/test/taskLifecycle.test.ts` (repos Git reais, worktree pelo mecanismo oficial, rotas com os headers do renderer)
 
+### Worktrees: inventario, vinculo manual e encerramento seguro (R2-A2)
+- **Inventario** (`worktreeInventory.ts`, `GET /api/projects/:id/worktrees/inventory`): le `git worktree list` (inclui as criadas a mao),
+  cruza com tasks/lifecycle e devolve **flags que coexistem** (`taskLinked`, `unlinked`, `integrated`, `unmerged`, `dirty`, `busy`, `unknown`)
+  mais `cleanup.blockers` (por que nao pode remover). `unlinked` nao e "orfa"; limpa nao e "segura". Cache 8 s, derrubado por escritas de lifecycle/link
+- **Vinculo manual** (`worktreeLinks.ts`, `data/worktree-links/{projectId}.json`; `POST/DELETE .../worktrees/link`, so UI): grava SO o vinculo —
+  nunca toca worktree, task, aceite ou branch. Nunca por nome. Recusa colisao (pasta ou branch ja reivindicada, task ja com outra worktree), checkout principal e HEAD solto.
+  `withLink(task)` faz o lifecycle enxergar a task como dona; o arquivo de tasks nao e escrito
+- **Alteracoes** (`worktreeChanges.ts`, `GET .../worktrees/changes|diff`): rastreadas/staged/untracked/deleted/renamed/ignoradas e analise de `.tres`
+  (`apparent-reserialization` | `material` | `unknown`; `ext_resource` perdido = sempre material). So informativo: **nunca autoriza descarte**; nao ha limpeza especial de `.tres`
+- **Encerramento** (`worktreeClose.ts`; `GET .../lifecycle/close-preview`, `POST .../lifecycle/close`, so UI): exige INTEGRATED provado por ancestralidade no alvo aceito,
+  aceite = sha integrado, worktree da task, sem mudanca/untracked, sem sessao, sem operacao git, sem lock, caminho dentro do registro do git, nunca o checkout principal.
+  Ignorados exigem `acknowledgeIgnored`. A previa devolve um `token` do estado revisado; o POST reler tudo e recusa (`state-changed`) se algo mudou.
+  Sem `--force`, sem `branch -D`: pasta via `git worktree remove` simples; branch so se `refs/heads/x` ainda e o sha provado e esse sha e ancestral do alvo.
+  Cada metade e registrada (`closure` no ledger): falha parcial mantem INTEGRATED com blocker (`closure-incomplete`); so pasta+branch sumidos = CLOSED
+- UI: `LifecycleBar` (botao "Close worktree…" + `CloseWorktreePanel`) e `WorktreeManager` (dialogo aberto pelo badge "N worktrees" do Source Control)
+- Em dev (Vite 5421) as escritas de UI levam 403 por Origin diferente do Host; o encerramento so e testavel pelo app servido pelo server
+- Testes: `server/test/worktreeClose.test.ts` (T1-T16 do R2-A2, repos descartaveis)
+
 ### Feed de atividade no Dashboard (o que os agentes fizeram)
 - `lib/activityFeed.ts` deriva a linha do tempo das ultimas 24h a partir da
   lista de tasks que o Dashboard ja busca: `inProgressAt` vira **started**,

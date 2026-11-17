@@ -3,6 +3,7 @@ import * as git from './gitService.js';
 import * as taskStore from './taskStore.js';
 import * as store from './taskLifecycleStore.js';
 import { canonicalPath } from './pathIdentity.js';
+import { withLink } from './worktreeLinks.js';
 import type { Project, Task } from '../types/index.js';
 
 /**
@@ -26,7 +27,7 @@ export type Stage = 'READY' | 'RUNNING' | 'REVIEW' | 'ACCEPTED' | 'INTEGRATED' |
 
 export interface Blocker { code: string; message: string }
 
-export interface SessionLite { id: string; agent?: string; type?: string; state?: string | null; cwd?: string; claudeSessionId?: string }
+export interface SessionLite { id: string; taskId?: string; agent?: string; type?: string; state?: string | null; cwd?: string; claudeSessionId?: string }
 
 export interface LifecycleView {
   taskId: string;
@@ -55,6 +56,8 @@ export interface LifecycleView {
     mergeCommit?: string;
     equivalentCommits?: number;
   };
+  /** Outcome of the last close attempt, when there was one. */
+  closure?: store.LifecycleEntry['closure'];
   blockers: Blocker[];
   canAccept: boolean;
   canIntegrate: boolean;
@@ -64,11 +67,12 @@ export interface LifecycleView {
 /** The one place the stage is decided, shared by the full view and the board summary. */
 function deriveStage(
   integration: LifecycleView['integration']['state'],
-  worktreeExists: boolean,
+  closed: boolean,
   status: Task['status'],
   acceptance: LifecycleView['acceptance']['state'],
 ): Stage {
-  if (integration === 'integrated') return worktreeExists ? 'INTEGRATED' : 'CLOSED';
+  // CLOSED needs Git to show BOTH halves gone: the folder (disk and registration) and the branch.
+  if (integration === 'integrated') return closed ? 'CLOSED' : 'INTEGRATED';
   if (status === 'todo' || status === 'backlog') return 'READY';
   if (status === 'in_progress') return 'RUNNING';
   return acceptance === 'accepted' ? 'ACCEPTED' : 'REVIEW';
@@ -108,7 +112,7 @@ export function invalidateSummary(projectId: string): void { summaryCache.delete
 
 async function computeSummary(project: Project): Promise<LifecycleSummary[]> {
   if (!project.isGitRepo) return [];
-  const tasks = (await taskStore.getTasks(project.id)).filter(t => t.worktreeBranch);
+  const tasks = (await Promise.all((await taskStore.getTasks(project.id)).map(withLink))).filter(t => t.worktreeBranch);
   if (!tasks.length) return [];
   const cwd = project.path;
   const checkoutBranch = await git.currentBranch(cwd);
@@ -147,7 +151,7 @@ async function computeSummary(project: Project): Promise<LifecycleSummary[]> {
         }
       }
       if (!head && integration !== 'integrated') flag = 'branch-missing';
-      return { taskId: task.id, stage: deriveStage(integration, worktreeExists, task.status, acceptance), acceptance, integration, commits, ...(flag ? { flag } : {}) };
+      return { taskId: task.id, stage: deriveStage(integration, !worktreeExists && !head, task.status, acceptance), acceptance, integration, commits, ...(flag ? { flag } : {}) };
     })));
   }
   return out;
@@ -221,7 +225,7 @@ export async function resolveLifecycle(
   }
 
   // -- stage ----------------------------------------------------------------
-  const stage = deriveStage(integrationState, worktreeExists, task.status, acceptance.state);
+  const stage = deriveStage(integrationState, !worktreeExists && !registered && !head, task.status, acceptance.state);
 
   const sessions = (opts.sessions ?? []).filter(s => s);
   const sessionActive = sessions.some(s => s.state === 'busy' || s.state === 'awaiting-input');
@@ -250,6 +254,11 @@ export async function resolveLifecycle(
     if (operation) add('operation-in-progress', `A ${operation} is in progress in the project checkout`);
   }
 
+  if (integrationState === 'integrated' && stage !== 'CLOSED') {
+    if (entry?.closure && (entry.closure.worktree === 'failed' || entry.closure.branchResult !== 'deleted')) add('closure-incomplete', `Closing is incomplete: worktree ${entry.closure.worktree}, branch ${entry.closure.branchResult}${entry.closure.note ? ` (${entry.closure.note})` : ''}`);
+    else if (worktreeExists || head) add('cleanup-pending', 'Integrated, but its worktree/branch have not been closed yet');
+  }
+
   const hard = (codes: string[]) => blockers.some(b => codes.includes(b.code));
   const baseBlock = ['not-git', 'no-branch', 'branch-missing', 'not-finished', 'session-active', 'worktree-missing', 'worktree-mismatch', 'worktree-dirty', 'no-target', 'target-missing', 'nothing-to-integrate', 'patch-equivalent'];
   const canAccept = integrationState === 'not-integrated' && commits.length > 0 && !hard(baseBlock) && acceptance.state !== 'accepted';
@@ -270,6 +279,7 @@ export async function resolveLifecycle(
     target: { branch: targetName ?? null, exists: targetExists, head: targetHead, baseline, checkoutBranch, checkoutDirty, operation },
     acceptance,
     integration: { state: integrationState, mergeable, ...(entry?.integrated ? { mergeCommit: entry.integrated.mergeCommit } : {}), ...(equivalentCommits ? { equivalentCommits } : {}) },
+    ...(entry?.closure ? { closure: entry.closure } : {}),
     blockers,
     canAccept,
     canIntegrate,

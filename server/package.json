@@ -6,7 +6,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test --test-concurrency=1 --test-force-exit test/explorer.test.ts test/design.test.ts test/designCore.test.ts test/designMigration.test.ts test/designRetire.test.ts test/systems.test.ts test/systemsV2.test.ts test/systemPortable.test.ts test/systemKnowledge.test.ts test/systemPublish.test.ts test/projectIdentity.test.ts test/taskLifecycle.test.ts test/graphifyIntegration.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 --test-force-exit test/explorer.test.ts test/design.test.ts test/designCore.test.ts test/designMigration.test.ts test/designRetire.test.ts test/systems.test.ts test/systemsV2.test.ts test/systemPortable.test.ts test/systemKnowledge.test.ts test/systemPublish.test.ts test/projectIdentity.test.ts test/taskLifecycle.test.ts test/worktreeClose.test.ts test/graphifyIntegration.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

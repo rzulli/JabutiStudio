@@ -36,13 +36,15 @@ export interface AcceptanceRecord {
 
 export interface LifecycleEvent {
   at: string;
-  event: 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused';
+  event: 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused' | 'closure-refused' | 'worktree-removed' | 'branch-deleted' | 'branch-preserved' | 'closure-failed';
   detail?: Record<string, unknown>;
 }
 
 export interface LifecycleEntry {
   accepted?: AcceptanceRecord;
   integrated?: { at: string; targetBranch: string; mergeCommit: string; headSha: string; targetBefore: string };
+  /** Outcome of the last close attempt. Each half is recorded on its own: removing the folder is not deleting the branch. */
+  closure?: { at: string; worktreePath: string; branch: string; headSha: string; worktree: 'removed' | 'failed' | 'absent'; branchResult: 'deleted' | 'preserved' | 'failed'; note?: string };
   history: LifecycleEvent[];
 }
 

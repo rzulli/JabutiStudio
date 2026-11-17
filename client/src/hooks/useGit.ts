@@ -264,3 +264,59 @@ export function useTaskLifecycleActions(projectId: string, taskId: string) {
     integrate: useMutation({ mutationFn: (b: { targetBranch: string; expectedHeadSha: string; branch: string }) => api.integrateTask(projectId, taskId, b), onSettled: done }),
   }
 }
+
+/** Closing a task's worktree: what it would do (and why not), then doing it. The token ties the click to the state shown. */
+export function useClosePreview(projectId: string, taskId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['close-preview', projectId, taskId],
+    queryFn: () => api.getClosePreview(projectId, taskId),
+    enabled,
+    refetchInterval: false,
+    staleTime: 0,
+    gcTime: 0,
+  })
+}
+
+export function useCloseTask(projectId: string, taskId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (b: { expectedToken: string; acknowledgeIgnored?: boolean }) => api.closeTask(projectId, taskId, b),
+    onSettled: () => {
+      for (const key of [['task-lifecycle', projectId, taskId], ['task-lifecycle-summary', projectId], ['worktree-inventory', projectId], ['close-preview', projectId, taskId], ['tasks', projectId], ['tasks', 'all'], ['git-status', projectId], ['git-pending', projectId], ['git-worktrees', projectId]]) {
+        qc.invalidateQueries({ queryKey: key })
+      }
+    },
+  })
+}
+
+/** Every worktree Git registers for the project, with its task, flags and why-not-removable. Refreshed only while the view is open. */
+export function useWorktreeInventory(projectId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['worktree-inventory', projectId],
+    queryFn: () => api.getWorktreeInventory(projectId!),
+    enabled: enabled && !!projectId,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useWorktreeChanges(projectId: string, path: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['worktree-changes', projectId, path],
+    queryFn: () => api.getWorktreeChanges(projectId, path),
+    enabled,
+    staleTime: 10_000,
+  })
+}
+
+export function useWorktreeLinkActions(projectId: string) {
+  const qc = useQueryClient()
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ['worktree-inventory', projectId] })
+    qc.invalidateQueries({ queryKey: ['task-lifecycle', projectId] })
+    qc.invalidateQueries({ queryKey: ['task-lifecycle-summary', projectId] })
+  }
+  return {
+    link: useMutation({ mutationFn: (b: { taskId: string; path: string }) => api.linkWorktree(projectId, b), onSettled: done }),
+    unlink: useMutation({ mutationFn: (taskId: string) => api.unlinkWorktree(projectId, taskId), onSettled: done }),
+  }
+}

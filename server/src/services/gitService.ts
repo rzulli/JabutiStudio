@@ -404,6 +404,11 @@ export interface WorktreeEntry {
   branch?: string;
   bare?: boolean;
   detached?: boolean;
+  /** `git worktree lock` (or a lock git set itself): git refuses to remove it. */
+  locked?: boolean;
+  lockReason?: string;
+  /** git says the folder is gone and the record can be pruned. */
+  prunable?: boolean;
 }
 
 /** Every worktree of a repo, main one included, from `git worktree list`. */
@@ -433,6 +438,11 @@ export async function listWorktrees(projectPath: string): Promise<WorktreeEntry[
       current.bare = true;
     } else if (text === 'detached') {
       current.detached = true;
+    } else if (text === 'locked' || text.startsWith('locked ')) {
+      current.locked = true;
+      if (text.length > 7) current.lockReason = text.slice(7);
+    } else if (text === 'prunable' || text.startsWith('prunable ')) {
+      current.prunable = true;
     }
   }
   if (current) entries.push(current);
@@ -604,4 +614,122 @@ export async function mergeCommitNoFf(cwd: string, sha: string, message: string)
 export async function worktreeOfBranch(cwd: string, branch: string): Promise<string | null> {
   const all = await listWorktrees(cwd);
   return all.find(w => w.branch === branch)?.path ?? null;
+}
+
+// ── Worktree safety primitives (R2-A2) ───────────────────
+// Read-only except the two removal functions, which never force.
+
+export type ChangeKind = 'staged' | 'modified' | 'deleted' | 'renamed' | 'untracked' | 'conflicted';
+export interface ChangeEntry {
+  path: string;
+  /** Previous path for a rename/copy. */
+  from?: string;
+  kinds: ChangeKind[];
+  /** Raw porcelain XY code, kept so nothing is lost in the classification. */
+  xy: string;
+}
+
+/** `git status --porcelain=v1 -z --untracked-files=all` parsed, fresh (no cache). Ignored files are not here. */
+export async function statusEntries(cwd: string): Promise<{ ok: boolean; entries: ChangeEntry[] }> {
+  const r = await runGit(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (r.code !== 0) return { ok: false, entries: [] };
+  const parts = r.stdout.split('\0');
+  const entries: ChangeEntry[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const rec = parts[i];
+    if (rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    const file = rec.slice(3);
+    const x = xy[0], y = xy[1];
+    let from: string | undefined;
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') from = parts[++i];
+    const kinds: ChangeKind[] = [];
+    if (xy === '??') kinds.push('untracked');
+    else {
+      if (x === 'U' || y === 'U' || xy === 'AA' || xy === 'DD') kinds.push('conflicted');
+      if (x !== ' ' && x !== '?' && x !== 'U') kinds.push('staged');
+      if (x === 'R' || x === 'C' || y === 'R' || y === 'C') kinds.push('renamed');
+      if (x === 'D' || y === 'D') kinds.push('deleted');
+      if (y === 'M' || y === 'T' || y === 'A') kinds.push('modified');
+    }
+    entries.push({ path: file, ...(from ? { from } : {}), kinds, xy });
+  }
+  return { ok: true, entries };
+}
+
+/** Ignored files and directories that deleting the worktree folder would take with it (`--directory` collapses trees). */
+export async function ignoredEntries(cwd: string): Promise<{ ok: boolean; entries: string[]; fingerprint: string }> {
+  const r = await runGit(cwd, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']);
+  if (r.code !== 0) return { ok: false, entries: [], fingerprint: '' };
+  const entries = r.stdout.split(' ').filter(Boolean).sort();
+  return { ok: true, entries, fingerprint: await fingerprintEntries(cwd, entries) };
+}
+
+/** Count, size and newest mtime under each ignored entry (bounded): a directory name alone hides what is inside. */
+async function fingerprintEntries(cwd: string, entries: string[]): Promise<string> {
+  let budget = 50_000;
+  const walk = async (abs: string): Promise<[number, number, number]> => {
+    let st;
+    try { st = await fsp.lstat(abs); } catch { return [0, 0, 0]; }
+    if (!st.isDirectory()) return [1, st.size, st.mtimeMs];
+    let names: string[] = [];
+    try { names = await fsp.readdir(abs); } catch { return [0, 0, 0]; }
+    let n = 0, size = 0, mt = 0;
+    for (const nm of names) {
+      if (budget-- <= 0) { n = -1; break; }
+      const [a, b, c] = await walk(path.join(abs, nm));
+      n += a; size += b; mt = Math.max(mt, c);
+    }
+    return [n, size, mt];
+  };
+  const parts: string[] = [];
+  for (const e of entries) parts.push(e + ':' + (await walk(path.join(cwd, e))).join(','));
+  return parts.join('|');
+}
+
+/** The repository's shared git dir, as an absolute path: equal for every worktree of one repo. */
+export async function commonDir(cwd: string): Promise<string | null> {
+  const r = await runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+export async function isIndexLocked(cwd: string): Promise<boolean> {
+  const p = await runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-path', 'index.lock']);
+  if (p.code !== 0) return false;
+  try { await fsp.access(p.stdout.trim()); return true; } catch { return false; }
+}
+
+/** Diff of one path against HEAD (staged and unstaged together), capped. */
+export async function diffAgainstHead(cwd: string, file: string, maxBytes = 200_000): Promise<{ ok: boolean; diff: string; truncated: boolean; binary: boolean }> {
+  const r = await runGit(cwd, ['diff', '--no-color', '-U3', 'HEAD', '--', file]);
+  if (r.code !== 0) return { ok: false, diff: '', truncated: false, binary: false };
+  const binary = /^Binary files /m.test(r.stdout);
+  return { ok: true, diff: r.stdout.slice(0, maxBytes), truncated: r.stdout.length > maxBytes, binary };
+}
+
+/**
+ * `git worktree remove` WITHOUT --force: git itself refuses a worktree with
+ * tracked changes, untracked files, or that is locked. Returns what git said.
+ */
+export async function removeWorktreeSafe(cwd: string, dest: string): Promise<{ ok: boolean; output: string }> {
+  const r = await runGit(cwd, ['worktree', 'remove', dest]);
+  invalidateStatus(cwd);
+  return { ok: r.code === 0, output: (r.stdout + r.stderr).trim() };
+}
+
+/**
+ * Delete a branch ref only if it still points at `expectedSha` (compare-and-delete).
+ * The caller has already proven integration against the task's target; this is not
+ * `branch -D`: a branch that moved since the proof is left alone.
+ */
+export async function deleteBranchAt(cwd: string, branch: string, expectedSha: string): Promise<{ ok: boolean; output: string }> {
+  const r = await runGit(cwd, ['update-ref', '-d', `refs/heads/${branch}`, expectedSha]);
+  invalidateStatus(cwd);
+  return { ok: r.code === 0, output: (r.stdout + r.stderr).trim() };
+}
+
+/** Commits in `head` not reachable from `base`. */
+export async function countAhead(cwd: string, base: string, head: string): Promise<number | null> {
+  const r = await runGit(cwd, ['rev-list', '--count', `${base}..${head}`]);
+  return r.code === 0 ? parseInt(r.stdout.trim(), 10) || 0 : null;
 }

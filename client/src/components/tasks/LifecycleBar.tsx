@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { GitBranch, Loader2, AlertTriangle, Check, FolderGit2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTaskLifecycleActions } from '@/hooks/useGit'
+import { CloseWorktreePanel } from '@/components/tasks/CloseWorktreePanel'
 import type { Task } from '@/hooks/useTasks'
 import type { TaskLifecycle } from '@/lib/api'
 
@@ -39,6 +40,8 @@ function Step({ ok, label, detail }: { ok: boolean | 'warn'; label: string; deta
 export function LifecycleBar({ lc, task }: { lc: TaskLifecycle; task: Task }) {
   const actions = useTaskLifecycleActions(task.projectId, task.id)
   const [confirm, setConfirm] = useState<'accept' | 'integrate' | null>(null)
+  const [closing, setClosing] = useState(false)
+  const closable = lc.stage === 'INTEGRATED'
   const target = lc.target.branch || ''
   const head = lc.delivery.head || ''
   const session = lc.execution.sessions[0]
@@ -113,7 +116,9 @@ export function LifecycleBar({ lc, task }: { lc: TaskLifecycle; task: Task }) {
         </p>
       )}
 
-      {confirm ? (
+      {closing && closable ? (
+        <CloseWorktreePanel task={task} onCancel={() => setClosing(false)} />
+      ) : confirm ? (
         <div className="flex items-center gap-2 flex-wrap rounded bg-accent/50 px-2 py-1.5">
           <p className="text-[11px] flex-1 min-w-[200px]">
             {confirm === 'accept'
@@ -136,6 +141,11 @@ export function LifecycleBar({ lc, task }: { lc: TaskLifecycle; task: Task }) {
           {lc.canIntegrate && (
             <Button size="sm" className="gap-1.5 text-xs" onClick={() => setConfirm('integrate')}>
               <GitBranch className="h-3.5 w-3.5" />Integrate into {target}
+            </Button>
+          )}
+          {closable && (
+            <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => setClosing(true)}>
+              <FolderGit2 className="h-3.5 w-3.5" />Close worktree…
             </Button>
           )}
           {lc.acceptance.record && integ !== 'integrated' && (

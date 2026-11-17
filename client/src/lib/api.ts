@@ -296,6 +296,64 @@ export interface TaskLifecycle {
   canAccept: boolean;
   canIntegrate: boolean;
   history: { at: string; event: string; detail?: Record<string, unknown> }[];
+  closure?: { at: string; worktreePath: string; branch: string; headSha: string; worktree: 'removed' | 'failed' | 'absent'; branchResult: 'deleted' | 'preserved' | 'failed'; note?: string };
+}
+
+export interface CloseCheck { code: string; ok: boolean; message: string; acknowledgeable?: boolean }
+
+/** What closing a task's worktree would do (server worktreeClose.ts). `token` names the exact state shown. */
+export interface ClosePreview {
+  taskId: string; taskNumber?: number; title: string; stage: LifecycleStage;
+  mode: 'worktree' | 'branch-only' | 'none';
+  allowed: boolean; needsAcknowledgement: boolean;
+  checks: CloseCheck[];
+  blockers: { code: string; message: string }[];
+  worktree: { path: string | null; branch: string | null; head: string | null; exists: boolean; registered: boolean; locked: boolean };
+  integration: { targetBranch: string | null; acceptedSha: string | null; mergeCommit: string | null; targetHead: string | null };
+  changes: { total: number; counts: Record<string, number>; ignored: { total: number; sample: string[]; truncated: boolean }; digest: string } | null;
+  sessions: { id: string; agent?: string; type?: string; state?: string | null }[];
+  branch: { name: string | null; action: 'delete' | 'preserve'; reason: string };
+  willRemove: string[]; willPreserve: string[];
+  token: string;
+}
+
+export interface CloseOutcome {
+  ok: boolean; complete?: boolean; code?: string; message?: string;
+  result?: { worktree: 'removed' | 'failed' | 'absent'; branch: 'deleted' | 'preserved' | 'failed'; note?: string };
+}
+
+export interface WorktreeInventoryEntry {
+  path: string; isMain: boolean; exists: boolean; branch: string | null; head: string | null;
+  detached: boolean; locked: boolean; prunable: boolean;
+  task: null | { id: string; number?: number; title: string; status: string; origin: 'shipyard' | 'manual'; stage: LifecycleStage; integration: TaskLifecycle['integration']['state']; acceptance: TaskLifecycle['acceptance']['state'] };
+  collisions: { id: string; number?: number; title: string; origin: 'shipyard' | 'manual' }[];
+  comparedTo: { branch: string | null; reason: 'accepted-target' | 'main-checkout-branch' };
+  unmergedCommits: number | null;
+  changes: null | { total: number; staged: number; modified: number; untracked: number; deleted: number; renamed: number; conflicted: number };
+  sessions: { id: string; agent?: string; type?: string; state?: string | null }[];
+  flags: { taskLinked: boolean; unlinked: boolean; integrated: boolean; unmerged: boolean; dirty: boolean; busy: boolean; unknown: boolean };
+  cleanup: { allowed: boolean; needsAcknowledgement: boolean; blockers: { code: string; message: string }[] };
+}
+
+export interface WorktreeInventory {
+  projectId: string;
+  checkout: { path: string; branch: string | null; head: string | null };
+  worktrees: WorktreeInventoryEntry[];
+  summary: { total: number; taskLinked: number; unlinked: number; integrated: number; unmerged: number; dirty: number; busy: number; unknown: number; closable: number };
+  generatedAt: string;
+}
+
+export interface WorktreeChangeReport {
+  total: number;
+  counts: Record<string, number>;
+  entries: { path: string; kinds: string[]; assessment: 'apparent-reserialization' | 'material' | 'unknown'; generated?: boolean }[];
+  entriesTruncated: boolean;
+  ignored: { total: number; sample: string[]; truncated: boolean };
+  resources: {
+    total: number; apparentReserialization: number; material: number; unknown: number; withReferenceRemovals: number; pattern: string | null;
+    files: { path: string; classification: string; assessment: 'apparent-reserialization' | 'material' | 'unknown'; addedLines: number; removedLines: number; extResourcesRemoved: string[]; extResourcesAdded: number }[];
+  };
+  unknownCount: number;
 }
 
 export type UsageSeverity = 'normal' | 'warning' | 'critical';
@@ -857,6 +915,18 @@ export const api = {
     ),
   getLifecycleSummary: (projectId: string) => request<{ tasks: TaskLifecycleSummary[] }>(`/projects/${projectId}/lifecycle/summary`),
   getTaskLifecycle: (projectId: string, taskId: string) => request<TaskLifecycle>(`/projects/${projectId}/tasks/${taskId}/lifecycle`),
+  getClosePreview: (projectId: string, taskId: string) => request<ClosePreview>(`/projects/${projectId}/tasks/${taskId}/lifecycle/close-preview`),
+  closeTask: (projectId: string, taskId: string, body: { expectedToken: string; acknowledgeIgnored?: boolean }) =>
+    request<CloseOutcome>(`/projects/${projectId}/tasks/${taskId}/lifecycle/close`, { method: 'POST', body: JSON.stringify(body) }),
+  getWorktreeInventory: (projectId: string) => request<WorktreeInventory>(`/projects/${projectId}/worktrees/inventory`),
+  getWorktreeChanges: (projectId: string, path: string) =>
+    request<{ ok: true; path: string; report: WorktreeChangeReport }>(`/projects/${projectId}/worktrees/changes?path=${encodeURIComponent(path)}`),
+  getWorktreeDiff: (projectId: string, path: string, file: string) =>
+    request<{ ok: true; file: string; untracked: boolean; diff: string; truncated: boolean; binary: boolean }>(`/projects/${projectId}/worktrees/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
+  linkWorktree: (projectId: string, body: { taskId: string; path: string }) =>
+    request<{ ok: true; already: boolean }>(`/projects/${projectId}/worktrees/link`, { method: 'POST', body: JSON.stringify(body) }),
+  unlinkWorktree: (projectId: string, taskId: string) =>
+    request<{ ok: true; removed: boolean }>(`/projects/${projectId}/worktrees/link/${taskId}`, { method: 'DELETE' }),
   acceptTaskDelivery: (projectId: string, taskId: string, body: { targetBranch: string; expectedHeadSha: string; note?: string }) =>
     request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/accept`, { method: 'POST', body: JSON.stringify(body) }),
   revokeTaskAcceptance: (projectId: string, taskId: string) =>
