@@ -26,6 +26,7 @@ import { designRoutes } from './routes/design.js';
 import { systemRoutes } from './routes/systems.js';
 import { taskLifecycleRoutes } from './routes/taskLifecycle.js';
 import { worktreeInventoryRoutes } from './routes/worktreeInventory.js';
+import { identityRoutes } from './routes/identity.js';
 import { initProjectDiscovery } from './services/projectDiscovery.js';
 import { loadSettings } from './services/settingsStore.js';
 import { startWorktreeCleanup } from './services/worktreeService.js';
@@ -76,6 +77,7 @@ app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string
 });
 
 // In production (Electron), serve the built client as static files
+let serveClient = false;
 if (STATIC_DIR) {
   const staticRoot = resolve(STATIC_DIR);
   console.log(`Registering static files from: ${staticRoot}`);
@@ -85,6 +87,7 @@ if (STATIC_DIR) {
       prefix: '/',
       wildcard: false,
     });
+    serveClient = true;
     console.log('Static file serving registered successfully');
   } catch (err) {
     console.error('Failed to register static files:', err);
@@ -92,6 +95,8 @@ if (STATIC_DIR) {
 } else {
   console.log('No STATIC_DIR set, skipping static file serving');
 }
+
+await app.register(identityRoutes, { serveClient });
 
 await app.register(projectRoutes);
 await app.register(taskRoutes);

@@ -92,7 +92,18 @@
   dados; escrita nao atomica corrompe arquivo)
 
 ### Electron
-- Server roda como child process via spawn (`ELECTRON_RUN_AS_NODE=1`)
+- Bootstrap do backend em `electron/serverBootstrap.ts` (puro, testado em `server/test/electronBootstrap.test.ts`):
+  antes de subir qualquer coisa, `GET /api/identity` na porta do backend (5420 dev / 5430 prod).
+  - Porta livre (ECONNREFUSED) → Electron spawna o server (`own`) e o encerra no quit.
+  - Resposta `app: "jabutistudio"` com `protocol` igual a `SERVER_PROTOCOL` → reusa (`external`);
+    nunca e encerrado pelo Electron. Se o server nao serve o client (`serveClient: false`, dev),
+    a janela carrega o Vite em 5421, que faz proxy de `/api` para o mesmo backend.
+  - Qualquer outra coisa na porta (404, HTML, protocolo diferente, sem resposta) → erro claro,
+    nada e iniciado nem parado. Um backend JabutiStudio antigo, sem `/api/identity`, cai aqui:
+    reinicie o `pnpm dev` uma vez.
+  - `SERVER_PROTOCOL` e duplicado em `server/src/routes/identity.ts` e `electron/serverBootstrap.ts`;
+    o teste compara os dois. Mude os dois juntos.
+- Server roda como child process via spawn (`ELECTRON_RUN_AS_NODE=1`) quando a porta esta livre
 - Menu de aplicacao em `createApplicationMenu()` (main.ts) envia acoes via IPC
   `menu-action` → preload expoe `electronAPI.onMenuAction` → hook `useElectronMenu`
   roteia (`navigate:<path>`) ou redispara CustomEvents (`shipyard:toggle-search`,
