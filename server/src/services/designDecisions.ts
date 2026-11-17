@@ -85,16 +85,33 @@ async function git(root: string, args: string[], buffer = false): Promise<any> {
 
 export const gitHead = async (root: string): Promise<string | null> => (await git(root, ['rev-parse', '--short', 'HEAD']))?.trim() || null;
 /**
- * Where the decisions file stands in the examined checkout: 'local' (untracked or edited), 'committed' (tracked and
- * clean), 'integrated' (committed in the project's canonical checkout), 'revision' (read from a commit).
- * Replaces dk.py's per-record integration, which hard-coded one game's branch name.
+ * The repository's MAIN worktree (first entry of `git worktree list`): the integration reference. A worktree that was
+ * registered as a project is NOT the integration checkout, so project.path cannot stand for it.
  */
-export async function fileIntegration(root: string, isCanonical: boolean, revision?: string): Promise<'local' | 'committed' | 'integrated' | 'revision' | 'unknown'> {
+export async function mainCheckout(root: string): Promise<{ root: string; head: string } | null> {
+  const out = await git(root, ['worktree', 'list', '--porcelain']);
+  const m = typeof out === 'string' ? /^worktree (.+)$/m.exec(out) : null;
+  if (!m) return null;
+  const main = m[1].trim();
+  const head = (await git(main, ['rev-parse', 'HEAD']))?.trim();
+  return head ? { root: main, head } : null;
+}
+
+/**
+ * Where the decisions file stands in the examined checkout: 'local' (untracked or edited), 'committed' (tracked and
+ * clean, but its last commit is not in the main checkout's branch), 'integrated' (that commit IS an ancestor of the main
+ * checkout's HEAD), 'revision' (read from a commit). Replaces dk.py's per-record integration, which hard-coded one game's branch.
+ */
+export async function fileIntegration(root: string, _isCanonical: boolean, revision?: string): Promise<'local' | 'committed' | 'integrated' | 'revision' | 'unknown'> {
   if (revision) return 'revision';
   if ((await git(root, ['ls-files', '--error-unmatch', '--', DECISIONS_FILE])) === null) return 'local';
   const status = await git(root, ['status', '--porcelain', '--', DECISIONS_FILE]);
   if (status === null) return 'unknown';
-  return status.trim() ? 'local' : isCanonical ? 'integrated' : 'committed';
+  if (status.trim()) return 'local';
+  const last = (await git(root, ['log', '-1', '--format=%H', '--', DECISIONS_FILE]))?.trim();
+  const main = await mainCheckout(root);
+  if (!last || !main) return 'unknown';
+  return (await git(root, ['merge-base', '--is-ancestor', last, main.head])) !== null ? 'integrated' : 'committed';
 }
 export const gitBranch = async (root: string): Promise<string | null> => (await git(root, ['branch', '--show-current']))?.trim() || null;
 

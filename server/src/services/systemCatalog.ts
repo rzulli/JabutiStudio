@@ -8,6 +8,7 @@ import { writeJsonAtomic } from './atomicJson.js';
 import * as graphify from './graphifyAdapter.js';
 import * as designKnowledge from './designKnowledge.js';
 import * as designCore from './designCore.js';
+import * as designDecisions from './designDecisions.js';
 import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
@@ -212,10 +213,12 @@ async function checkoutInfo(project: { path: string }, root: string): Promise<{ 
   }
   let integration = 'unknown';
   if (head === null) integration = 'not a git checkout';
-  else if (isCanonical) integration = 'integrated checkout';
   else {
-    const canon = (await git(project.path, ['rev-parse', 'HEAD']))?.trim();
-    if (canon) {
+    // The reference is the repository's MAIN worktree, not project.path: a worktree registered as a project is not integrated.
+    const main = await designDecisions.mainCheckout(root);
+    const canon = main?.head;
+    if (main && designKnowledge.norm(main.root) === designKnowledge.norm(root)) integration = 'integrated checkout';
+    else if (canon) {
       const ancestor = (await git(root, ['merge-base', '--is-ancestor', 'HEAD', canon])) !== null;
       if (ancestor) integration = 'HEAD is contained in the integrated checkout';
       else {

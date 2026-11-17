@@ -189,3 +189,18 @@ test('T14: no product code starts Python or dk.py', () => {
   walk(src)
   assert.deepEqual(hits, [])
 })
+
+test('A5: a worktree registered as the project is NOT "integrated" until its commit is in the main checkout', async () => {
+  const dd = await import('../src/services/designDecisions.js')
+  const main = join(root, 'a5-main'), wt = join(root, 'a5-wt'), f = 'jabutistudio.decisions.json'
+  write(main, 'README.md', 'x\n'); git(main, 'init', '-q'); git(main, 'add', '-A'); git(main, 'commit', '-qm', 'base')
+  git(main, 'worktree', 'add', '-q', '-b', 'migration/x', wt)
+  write(wt, f, '{}\n'); git(wt, 'add', f); git(wt, 'commit', '-qm', 'decisions on the branch only')
+  // The worktree may be the registered project path, yet main does not contain the commit yet.
+  assert.equal(await dd.fileIntegration(wt, true), 'committed')
+  const slash = (p?: string) => (p ?? '').split('\').join('/').toLowerCase()
+  assert.equal(slash((await dd.mainCheckout(wt))?.root), slash(main))
+  git(main, 'merge', '-q', '--ff-only', 'migration/x')
+  assert.equal(await dd.fileIntegration(wt, true), 'integrated')
+  assert.equal(await dd.fileIntegration(main, true), 'integrated')
+})
