@@ -633,9 +633,9 @@ export const api = {
   getKnowledge: (projectId: string, worktree?: string, revision?: string) =>
     request<KnowledgeReconciliation>(`/projects/${projectId}/systems/knowledge?${wt(worktree)}${revision ? `&revision=${encodeURIComponent(revision)}` : ''}`),
   getKnowledgePlan: (projectId: string) => request<KnowledgePlan>(`/projects/${projectId}/systems/knowledge/plan`),
-  exportKnowledge: (projectId: string) =>
-    request<{ sha256: string | null }>(`/projects/${projectId}/systems/knowledge/export`, { method: 'POST' }),
-  updateKnowledge: (projectId: string, body: { expectedSha256: string; systemIds: string[]; takeLocal: string[] }) =>
+  exportKnowledge: (projectId: string, systemIds: string[]) =>
+    request<{ sha256: string | null }>(`/projects/${projectId}/systems/knowledge/export`, { method: 'POST', body: JSON.stringify({ systemIds }) }),
+  updateKnowledge: (projectId: string, body: { expectedSha256: string; systemIds: string[]; takeLocal: string[]; expectedLocal: Record<string, string> }) =>
     request<{ updated: string[]; unchanged: string[]; sha256: string }>(`/projects/${projectId}/systems/knowledge/update`, { method: 'POST', body: JSON.stringify(body) }),
   importKnowledge: (projectId: string, expectedSha256: string) =>
     request<{ added: number }>(`/projects/${projectId}/systems/knowledge/import`, { method: 'POST', body: JSON.stringify({ expectedSha256 }) }),

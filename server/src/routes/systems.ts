@@ -56,11 +56,11 @@ export async function systemRoutes(app: FastifyInstance) {
   });
 
   // Initial export: refuses to overwrite (exportPortable). Never stages or commits.
-  app.post<{ Params: { id: string } }>('/api/projects/:id/systems/knowledge/export', async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { systemIds?: string[] } }>('/api/projects/:id/systems/knowledge/export', async (request, reply) => {
     if (!uiOnly(request, reply)) return;
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
-    try { await systems.exportPortable(project); return { sha256: await knowledge.portableSha256(project) }; }
+    try { await systems.exportPortable(project, { systemIds: request.body?.systemIds }); return { sha256: await knowledge.portableSha256(project) }; }
     catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
   });
 

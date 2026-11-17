@@ -246,6 +246,8 @@ export interface UpdateOptions {
   systemIds?: string[];
   /** Systems whose file value is newer or different and may be replaced by the local value. */
   takeLocal?: string[];
+  /** updatedAt of each local system as the preview showed it; a different value means it changed since. */
+  expectedLocal?: Record<string, string>;
 }
 
 /**
@@ -268,6 +270,10 @@ export async function updatePortable(project: { id: string; path: string }, opts
     if (JSON.stringify(doc.gitRoots) !== JSON.stringify(await catalog.portableGitRoot(project.path))) throw new Error('Portable catalog belongs to a different Git history');
 
     const stored = (await catalog.listStored(project.id, true)).filter(s => !opts.systemIds || new Set(opts.systemIds).has(s.id));
+    for (const x of stored) {
+      const seen = opts.expectedLocal?.[x.id];
+      if (seen !== undefined && seen !== x.updatedAt) throw new Error(`Local system changed since the preview: ${x.id}; reconcile again before updating`);
+    }
     const plan = planUpdate(doc.systems, stored, new Set(opts.takeLocal ?? []));
     const systems = [...doc.systems];
     const updated: string[] = [], unchanged: string[] = [], conflicts: string[] = [];

@@ -104,6 +104,7 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
   const [tech, setTech] = useState(false)
   const [included, setIncluded] = useState<Record<string, boolean>>({})
   const [take, setTake] = useState<Record<string, boolean>>({})
+  const [exportSel, setExportSel] = useState<Record<string, boolean>>({})
 
   // No polling and no refetch on focus: the hash shown is the hash that is sent. "Refresh" is explicit.
   const once = { staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false } as const
@@ -126,6 +127,8 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
   }
   const fail = async (e: any) => { toast.error(e.message || 'Failed'); setNote(`${e.message}. The file or catalog changed; the differences below were read again.`); await refresh() }
 
+  const exportOn = (s: { id: string; origin: string; status: string }) => exportSel[s.id] ?? !(s.origin === 'discovery' && s.status === 'proposed')
+  const exportIds = (plan?.export.systems ?? []).filter(exportOn).map(s => s.id)
   const rows = upd?.rows ?? []
   const picked = rows.filter(r => (r.action === 'add' || r.action === 'update') ? included[r.id] !== false : !!take[r.id])
   const takeIds = rows.filter(r => r.action === 'needs-choice' && take[r.id]).map(r => r.id)
@@ -198,10 +201,13 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
         <div className="space-y-2 rounded-md border p-3" data-testid="knowledge-export">
           <p className="flex items-center gap-1.5 font-medium"><Upload className="h-3 w-3" /> Publish for the first time</p>
           {plan.export.canExport ? <>
-            <p className="text-muted-foreground">Creates <code className="font-mono">{plan.export.target}</code> at the root of this repository with {plan.export.systems.length} system(s). Proposals stay proposals; local attestations, caches and absolute paths are not written. You commit it yourself.</p>
-            <ul className="space-y-0.5">{plan.export.systems.map(s => <li key={s.id}>{s.name} <span className="text-muted-foreground">· {s.status} · {s.areas} areas · {s.relations} relations{s.proposedItems ? ` · ${s.proposedItems} proposed item(s)` : ''}</span></li>)}</ul>
-            <Confirm testId="knowledge-export-btn" label="Create the file…" ask={`Write ${plan.export.target} now? Nothing is staged or committed.`}
-              onConfirm={async () => { try { await api.exportKnowledge(projectId); toast.success('File created in the working tree (not committed)'); setNote(null); await refresh() } catch (e) { await fail(e) } }} />
+            <p className="text-muted-foreground">Creates <code className="font-mono">{plan.export.target}</code> at the root of this repository with the {exportIds.length} ticked system(s). Proposals stay proposals; local attestations, caches and absolute paths are not written. You commit it yourself.</p>
+            <ul className="space-y-0.5">{plan.export.systems.map(s => (
+              <li key={s.id}><label className="flex items-center gap-2"><input type="checkbox" data-testid="knowledge-export-pick" checked={exportOn(s)} onChange={e => setExportSel({ ...exportSel, [s.id]: e.target.checked })} />
+                {s.name} <span className="text-muted-foreground">· {s.status} · {s.areas} areas · {s.relations} relations{s.proposedItems ? ` · ${s.proposedItems} proposed item(s)` : ''}</span></label></li>))}</ul>
+            {plan.export.systems.some(s => s.origin === 'discovery' && s.status === 'proposed') && <p className="text-[11px] text-muted-foreground">Unreviewed discovery candidates start unticked; tick the ones worth publishing.</p>}
+            <Confirm testId="knowledge-export-btn" disabled={!exportIds.length} label={`Create the file (${exportIds.length})…`} ask={`Write ${plan.export.target} with ${exportIds.length} system(s) now? Nothing is staged or committed.`}
+              onConfirm={async () => { try { await api.exportKnowledge(projectId, exportIds); toast.success('File created in the working tree (not committed)'); setNote(null); await refresh() } catch (e) { await fail(e) } }} />
           </> : <p className="text-muted-foreground">{plan.export.reason}</p>}
         </div>
       )}
@@ -234,7 +240,7 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
               ask={`Write ${picked.length} system(s) into the file${takeIds.length ? `, replacing the file's value for ${takeIds.length}` : ''}? Nothing is staged or committed.`}
               onConfirm={async () => {
                 try {
-                  const r = await api.updateKnowledge(projectId, { expectedSha256: upd.sha256, systemIds: picked.map(p => p.id), takeLocal: takeIds })
+                  const r = await api.updateKnowledge(projectId, { expectedSha256: upd.sha256, systemIds: picked.map(p => p.id), takeLocal: takeIds, expectedLocal: Object.fromEntries(picked.map(p => [p.id, p.local.updatedAt])) })
                   toast.success(`File updated: ${r.updated.length} system(s). Not committed.`); setNote(null); await refresh()
                 } catch (e) { await fail(e) }
               }} />

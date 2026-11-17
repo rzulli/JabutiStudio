@@ -165,3 +165,30 @@ test('R1-A3: preview refuses unusable files and exports require complete history
     assert.ok(((await know.previewExport(project)) as any).canExport === false);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
+
+test('R1-A3: selective export and local-drift guard on update', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'systems-publish-sel-'));
+  const data = join(base, 'data'), repo = join(base, 'repo');
+  mkdirSync(data); mkdirSync(repo);
+  process.env.SHIPYARD_DATA_DIR = data;
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=T', '-c', 'user.email=t@example.com', ...a], { stdio: 'pipe', encoding: 'utf8' });
+  try {
+    writeFileSync(join(repo, 'a.gd'), 'x'); git('init', '-q'); git('add', '.'); git('commit', '-qm', 'c');
+    const svc = await import('../src/services/systemCatalog.js');
+    const know = await import('../src/services/systemKnowledge.js');
+    const project = { id: 'sel', path: repo };
+    const keep = await svc.propose(project.id, { name: 'Keep', terms: ['keep'] }, 'user');
+    const skip = await svc.propose(project.id, { name: 'Skip', terms: ['skip'] }, 'discovery' as any);
+    await assert.rejects(() => svc.exportPortable(project, { systemIds: [] }), /at least one/);
+    await svc.exportPortable(project, { systemIds: [keep.id] });
+    const doc = JSON.parse(readFileSync(join(repo, 'jabutistudio.systems.json'), 'utf8'));
+    assert.deepEqual(doc.systems.map((s: any) => s.id), [keep.id]);
+    const upd: any = await know.previewUpdate(project);
+    assert.equal(upd.rows.find((r: any) => r.id === skip.id).action, 'add');
+    const seen = Object.fromEntries(upd.rows.map((r: any) => [r.id, r.local.updatedAt]));
+    await sleep(5);
+    await svc.review(project.id, skip.id, { summary: 'changed after preview' });
+    await assert.rejects(() => know.updatePortable(project, { expectedSha256: upd.sha256, systemIds: [skip.id], expectedLocal: seen }), /Local system changed since the preview/);
+    assert.equal(JSON.parse(readFileSync(join(repo, 'jabutistudio.systems.json'), 'utf8')).systems.length, 1);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});

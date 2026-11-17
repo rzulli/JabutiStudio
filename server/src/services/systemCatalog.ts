@@ -387,9 +387,13 @@ export async function checkPortablePaths(root: string, systems: StoredSystem[]):
   }
 }
 
-export async function exportPortable(project: Project): Promise<void> {
+export async function exportPortable(project: Project, opts: { systemIds?: string[] } = {}): Promise<void> {
   await checkLocalStore(project.id);
-  const systems = (await listStored(project.id, true)).map(portableSystem);
+  const want = opts.systemIds ? new Set(opts.systemIds) : null;
+  if (want && !want.size) throw new Error('Choose at least one system to publish');
+  const systems = (await listStored(project.id, true)).filter(s => !want || want.has(s.id)).map(portableSystem)
+    // a partial export must not point at systems that are not in the file
+    .map(s => want ? { ...s, related: s.related.filter(r => want.has(r)), mergedFrom: s.mergedFrom?.filter(r => want.has(r)) } : s);
   const document = portableSchema.parse({ version: 1, gitRoots: await portableGitRoot(project.path), systems });
   await checkPortablePaths(project.path, document.systems);
   const file = portablePath(project.path);
