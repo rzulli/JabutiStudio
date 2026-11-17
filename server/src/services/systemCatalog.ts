@@ -1,13 +1,15 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { promises as fs } from 'fs';
-import { join, basename, extname } from 'path';
+import { join, basename, extname, dirname, relative, isAbsolute } from 'path';
+import { randomUUID } from 'crypto';
 import { DATA_DIR } from './dataDir.js';
 import { writeJsonAtomic } from './atomicJson.js';
 import * as graphify from './graphifyAdapter.js';
 import * as designKnowledge from './designKnowledge.js';
 import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
+import { portableSchema, portableSystem } from './systemPortable.js';
 
 const run = promisify(execFile);
 
@@ -334,6 +336,104 @@ export async function listStored(projectId: string, includeClosed = false) {
 export async function getStored(projectId: string, id: string) {
   const s = await readStore(projectId);
   return s.systems.find(x => x.id === id) ?? null;
+}
+
+/** Explicit service operations; opening a project never reads or writes this file. */
+async function portableGitRoot(root: string): Promise<string[]> {
+  const roots = await git(root, ['rev-list', '--max-parents=0', 'HEAD']);
+  const shallow = await git(root, ['rev-parse', '--is-shallow-repository']);
+  if (!roots?.trim() || shallow?.trim() !== 'false') throw new Error('Portable catalog requires a complete Git history');
+  return roots.trim().split(/\r?\n/).sort();
+}
+
+const portablePath = (root: string) => join(root, 'jabutistudio.systems.json');
+
+async function checkLocalStore(projectId: string): Promise<void> {
+  try {
+    const local = JSON.parse(await fs.readFile(storePath(projectId), 'utf8'));
+    if (local.version !== 1 || !Array.isArray(local.systems) || local.systems.some((s: any) => !s || typeof s.id !== 'string') ||
+        new Set(local.systems.map((s: any) => s.id)).size !== local.systems.length) throw new Error('Invalid local system catalog');
+  } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+}
+
+async function checkPortablePaths(root: string, systems: StoredSystem[]): Promise<void> {
+  const realRoot = await fs.realpath(root);
+  const paths: string[] = [];
+  const collect = (v: unknown): void => {
+    if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === 'object') {
+      for (const [key, value] of Object.entries(v)) {
+        if (key === 'files' && Array.isArray(value)) paths.push(...value);
+        else if (key === 'path' && typeof value === 'string') paths.push(value);
+        else collect(value);
+      }
+    }
+  };
+  collect(systems);
+  for (const ref of paths) {
+    let candidate = join(realRoot, ref.split('#')[0]);
+    while (true) {
+      try {
+        const resolved = await fs.realpath(candidate);
+        const rel = relative(realRoot, resolved);
+        if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel))
+          throw new Error(`Reference escapes checkout: ${ref}`);
+        break;
+      } catch (e: any) {
+        if (e.code !== 'ENOENT') throw e;
+        candidate = dirname(candidate);
+      }
+    }
+  }
+}
+
+export async function exportPortable(project: Project): Promise<void> {
+  await checkLocalStore(project.id);
+  const systems = (await listStored(project.id, true)).map(portableSystem);
+  const document = portableSchema.parse({ version: 1, gitRoots: await portableGitRoot(project.path), systems });
+  await checkPortablePaths(project.path, document.systems);
+  const file = portablePath(project.path);
+  try {
+    await fs.lstat(file);
+    throw new Error('Portable catalog already exists; refusing to overwrite it');
+  } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+  const temp = join(project.path, `.jabutistudio-${randomUUID()}.tmp`);
+  try {
+    await writeJsonAtomic(temp, document);
+    await fs.link(temp, file);
+  } finally {
+    await fs.rm(temp, { force: true });
+    await fs.rm(`${temp}.tmp`, { force: true });
+  }
+}
+
+export async function importPortable(project: Project): Promise<{ added: number; conflicts: string[] }> {
+  const file = portablePath(project.path);
+  if ((await fs.lstat(file)).isSymbolicLink()) throw new Error('Portable catalog cannot be a symlink');
+  const document = portableSchema.parse(JSON.parse(await fs.readFile(file, 'utf8')));
+  if (JSON.stringify(document.gitRoots) !== JSON.stringify(await portableGitRoot(project.path))) throw new Error('Portable catalog belongs to a different Git history');
+  await checkPortablePaths(project.path, document.systems);
+  return locked(async () => {
+    // Unlike normal first-use reads, an invalid existing catalog must never be replaced.
+    await checkLocalStore(project.id);
+    const store = await readStore(project.id);
+    const conflicts = document.systems.filter(s => {
+      const current = store.systems.find(x => x.id === s.id);
+      if (current) return JSON.stringify(portableSystem(current)) !== JSON.stringify(s);
+      return store.systems.some(x => x.status !== 'dismissed' && x.status !== 'merged' &&
+        (x.name.toLowerCase() === s.name.toLowerCase() || x.anchors.terms.some(t => s.anchors.terms.some(u => t.toLowerCase() === u.toLowerCase()))));
+    }).map(s => s.id);
+    if (conflicts.length) return { added: 0, conflicts };
+    const added = document.systems.filter(s => !store.systems.some(x => x.id === s.id));
+    if (added.length) {
+      const next: Store = { version: 1, systems: [...store.systems, ...added] };
+      await fs.mkdir(join(DATA_DIR, 'systems'), { recursive: true });
+      await writeJsonAtomic(storePath(project.id), next);
+      storeCache.set(project.id, { store: next, mtime: (await fs.stat(storePath(project.id))).mtimeMs });
+      viewCache.clear();
+    }
+    return { added: added.length, conflicts: [] };
+  });
 }
 
 /** Everything about one system, derived from the examined checkout. */
