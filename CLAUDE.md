@@ -1387,10 +1387,13 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   loga e devolve `project.path` com o motivo
 - **Nao ha remocao fora do encerramento seguro (R2-A3).** O unico caminho que apaga
   pasta ou branch de worktree e `worktreeClose.closeTask` (previa + token + `git
-  worktree remove` sem `--force` + `update-ref -d` com sha esperado). `removeTaskWorktree`
-  (usado ao deletar task, HTTP e MCP) so delega a ele: se a previa nao permite, a worktree
-  fica onde esta e a task e apagada mesmo assim (a worktree vira "unlinked" no inventario).
-  `cleanupWorktrees` e a varredura de 6h (`startWorktreeCleanup`) so rodam `git worktree
+  worktree remove` sem `--force` + `update-ref -d` com sha esperado). **Excluir task** (HTTP single/bulk e MCP `delete_task`/`bulk_delete_tasks`)
+  passa antes por `worktreeService.canDeleteTask`: task sem worktree/branch (ou com nada mais
+  no disco/Git) apaga normal; com worktree que a previa permite fechar, roda o encerramento
+  seguro e so entao apaga; com worktree que nao pode fechar (nao integrada, mudancas locais,
+  sessao viva...) **a task fica** (409 `worktree-pending` com o motivo; no bulk, `blocked[]`).
+  A task e o unico registro de por que a worktree existe: nunca se apaga uma sem a outra, e
+  nada e forcado nem removido para permitir a exclusao. `cleanupWorktrees` e a varredura de 6h (`startWorktreeCleanup`) so rodam `git worktree
   prune` (esquece registro de pasta que ja sumiu); a varredura por idade, a limpeza
   `all: true` e o `rm -rf` de pastas orfas foram removidos, e `gitService.removeWorktree`
   / `deleteBranch` (force, `-D`) deixaram de existir. O cartao "Task worktrees" em Settings
