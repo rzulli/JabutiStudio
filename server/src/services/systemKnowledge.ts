@@ -53,8 +53,9 @@ export interface ReconciledSystem {
 }
 export interface Reconciliation {
   project: string;
-  checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null };
-  revision: { requested: string; commit: string; examinedWorkingTree: boolean };
+  checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null; unborn: boolean };
+  /** `commit` is null only for a repository with no commits yet (`unborn`): nothing can be read from Git there. */
+  revision: { requested: string; commit: string | null; unborn: boolean; examinedWorkingTree: boolean };
   file: { state: FileState; reason?: string; revisionSha256?: string; workingSha256?: string; expectedSha256?: string;
     /** Worktrees only: how this checkout's committed file compares with the main checkout's HEAD. */
     integration?: 'same' | 'differs' | 'absent-in-main' };
@@ -84,7 +85,11 @@ async function parseDoc(root: string, raw: Buffer): Promise<{ doc?: Portable[]; 
       return { state: 'incompatible', reason: 'Portable catalog belongs to a different Git history' };
     await catalog.checkPortablePaths(root, doc.systems as any);
     return { doc: doc.systems };
-  } catch (e: any) { return { state: 'invalid', reason: String(e?.message ?? e).slice(0, 300) }; }
+  } catch (e: any) {
+    // No history to compare with yet: the file cannot be judged, but it is not broken either.
+    if (e?.code === 'UNBORN') return { state: 'untracked', reason: catalog.UNBORN_MESSAGE };
+    return { state: 'invalid', reason: String(e?.message ?? e).slice(0, 300) };
+  }
 }
 
 async function readWorking(root: string): Promise<{ raw?: Buffer; symlink?: boolean }> {
@@ -127,19 +132,23 @@ export async function reconcile(project: { id: string; path: string }, opts: { w
   if (typeof root !== 'string') return { error: root.error };
   const requested = opts.revision ?? 'HEAD';
   if (!/^[\w][\w./~^@{}-]*$/.test(requested)) return { error: 'Invalid revision' };
-  const commit = (await git(root, ['rev-parse', '--verify', '--quiet', `${requested}^{commit}`]))?.trim();
-  if (!commit) return { error: `Revision not found: ${requested}` };
+  // A repository with no commits has no HEAD: that is a state to describe, not an error. Only the default
+  // revision gets this; an explicit revision that does not exist is still "not found".
+  const unborn = opts.revision === undefined && await catalog.isUnborn(root);
+  const commit = unborn ? null : (await git(root, ['rev-parse', '--verify', '--quiet', `${requested}^{commit}`]))?.trim();
+  if (commit === undefined || commit === '') return { error: `Revision not found: ${requested}` };
   const explicitRevision = opts.revision !== undefined;
   const limitations: string[] = [];
 
   const isCanonical = designKnowledge.norm(root) === designKnowledge.norm(project.path);
   const [branch, head, status] = await Promise.all([
-    git(root, ['rev-parse', '--abbrev-ref', 'HEAD']), git(root, ['rev-parse', '--short', 'HEAD']), git(root, ['status', '--porcelain']),
+    unborn ? git(root, ['symbolic-ref', '--short', 'HEAD']) : git(root, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    unborn ? Promise.resolve(null) : git(root, ['rev-parse', '--short', 'HEAD']), git(root, ['status', '--porcelain']),
   ]);
   const dirty = status === null ? null : status.trim().length > 0;
 
   // published knowledge in the examined revision
-  const committed = await showBlob(root, commit, FILE);
+  const committed = commit ? await showBlob(root, commit, FILE) : null;
   let published: Portable[] | null = null;
   let fileState: FileState = 'absent'; let reason: string | undefined;
   if (committed) {
@@ -160,6 +169,7 @@ export async function reconcile(project: { id: string; path: string }, opts: { w
       }
     }
   }
+  if (unborn) limitations.push(`${catalog.UNBORN_MESSAGE} The local catalog is intact and fully readable; a working-tree file, if any, counts as not committed.`);
   if (explicitRevision) limitations.push('Explicit revision: uncommitted edits and the working tree file were not consulted; evidence is read from that revision.');
   if (!isCanonical) limitations.push('Graphify describes the canonical checkout only; it is not used as evidence for this worktree.');
   limitations.push('The local catalog is not versioned: it is shown as local work, never as published knowledge.');
@@ -170,7 +180,7 @@ export async function reconcile(project: { id: string; path: string }, opts: { w
     try { locals.push({ id: s.id, sys: portableSystem(s) }); } catch { locals.push({ id: s.id, sys: null }); }
   }
   const read = async (p: string): Promise<string | null> => {
-    if (explicitRevision) { const b = await showBlob(root, commit, p); return b ? b.toString('utf8') : null; }
+    if (explicitRevision && commit) { const b = await showBlob(root, commit, p); return b ? b.toString('utf8') : null; }
     try { return await fs.readFile(join(root, p), 'utf8'); } catch { return null; }
   };
 
@@ -211,8 +221,8 @@ export async function reconcile(project: { id: string; path: string }, opts: { w
   }
   return {
     project: project.id,
-    checkout: { root, isCanonical, branch: branch?.trim(), head: head?.trim(), dirty },
-    revision: { requested, commit, examinedWorkingTree: !explicitRevision },
+    checkout: { root, isCanonical, branch: branch?.trim(), head: head?.trim(), dirty, unborn },
+    revision: { requested, commit, unborn, examinedWorkingTree: !explicitRevision },
     file: { state: fileState, reason, revisionSha256: committed ? sha(committed) : undefined, workingSha256: workingSha,
       expectedSha256: workingSha ?? (committed ? sha(committed) : undefined), integration },
     systems, limitations,
@@ -325,8 +335,29 @@ export async function previewExport(project: { id: string; path: string }) {
     await catalog.checkPortablePaths(project.path, systems as any);
     return { target, canExport: systems.length > 0, reason: systems.length ? undefined : 'There are no systems to publish yet.', systems: systems.map(digest) };
   } catch (e: any) {
-    return { target, canExport: false as const, reason: String(e?.message ?? e).slice(0, 300), systems: [] as SystemDigest[] };
+    return { target, canExport: false as const, reason: String(e?.message ?? e).slice(0, 300), systems: [] as SystemDigest[], needsFirstCommit: e?.code === 'UNBORN' };
   }
+}
+
+/**
+ * Bootstrap of a repository with no commits: creates ONE empty commit (no files, no staging, no hooks bypassed) so the
+ * history has a root. Existing files stay exactly as they are, untracked; the person commits them later, on their terms.
+ * Refuses when the repository already has commits or when something is already staged (it would be swept into the commit).
+ */
+export async function createFirstCommit(project: { path: string }): Promise<{ commit: string; branch: string | null }> {
+  return serialized(async () => {
+    if (!(await catalog.isUnborn(project.path))) throw new Error('This repository already has commits; nothing was done');
+    const staged = (await git(project.path, ['diff', '--cached', '--name-only']))?.trim();
+    if (staged) throw new Error('Files are already staged. Commit them yourself (that will be the first commit) instead of creating an empty one');
+    try {
+      await run('git', ['-C', project.path, 'commit', '--allow-empty', '-m', 'Initial commit (empty): root of the project history'], { timeout: 30_000, encoding: 'utf8' });
+    } catch (e: any) {
+      throw new Error(`Git refused the commit: ${String(e?.stderr || e?.message || e).trim().split(/\r?\n/).slice(0, 3).join(' ')}`);
+    }
+    const commit = (await git(project.path, ['rev-parse', '--short', 'HEAD']))?.trim();
+    if (!commit) throw new Error('The commit was not created');
+    return { commit, branch: (await git(project.path, ['symbolic-ref', '--short', '-q', 'HEAD']))?.trim() || null };
+  });
 }
 
 /** Update of the existing file: per-system action with field changes (`published` = value in the file). */

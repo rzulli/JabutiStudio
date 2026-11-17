@@ -108,10 +108,17 @@ async function readStore(projectId: string): Promise<Store> {
   const hit = storeCache.get(projectId);
   if (hit && hit.mtime === mtime) return hit.store;
   let store: Store = { version: 1, systems: [] };
-  try {
-    const data = JSON.parse(await fs.readFile(storePath(projectId), 'utf-8'));
-    if (Array.isArray(data.systems)) store = { version: 1, systems: data.systems };
-  } catch { /* first use */ }
+  let raw: string | null = null;
+  try { raw = await fs.readFile(storePath(projectId), 'utf-8'); }
+  catch (e: any) { if (e.code !== 'ENOENT') throw new Error(`The local system catalog could not be read (${e.code ?? e.message}). Nothing was changed.`); }
+  // Only a missing file means "no systems yet". A file that exists but cannot be understood is an error: answering
+  // "empty" would hide the systems and the next write would overwrite them.
+  if (raw !== null) {
+    let data: any;
+    try { data = JSON.parse(raw); } catch { throw new Error(`The local system catalog is not valid JSON (${storePath(projectId)}). Nothing was changed; restore or repair the file.`); }
+    if (!data || !Array.isArray(data.systems)) throw new Error(`The local system catalog has an unexpected shape (${storePath(projectId)}). Nothing was changed.`);
+    store = { version: 1, systems: data.systems };
+  }
   storeCache.set(projectId, { store, mtime });
   return store;
 }
@@ -203,21 +210,27 @@ async function mentions(root: string, files: string[], terms: string[]): Promise
 
 export interface CheckoutInfo {
   root: string; isCanonical: boolean; branch?: string; head?: string;
+  /** The branch exists but has no commit yet; `head` is undefined and Git revisions cannot be read. */
+  unborn?: boolean;
   uncommitted: number; integration: string;
 }
 
 async function checkoutInfo(project: { path: string }, root: string): Promise<{ info: CheckoutInfo; dirtyFiles: Set<string> }> {
   const isCanonical = designKnowledge.norm(root) === designKnowledge.norm(project.path);
-  const [branch, head, status] = await Promise.all([
-    git(root, ['rev-parse', '--abbrev-ref', 'HEAD']), git(root, ['rev-parse', '--short', 'HEAD']), git(root, ['status', '--porcelain']),
+  const unborn = await isUnborn(root);
+  const [branchRaw, head, status] = await Promise.all([
+    unborn ? git(root, ['symbolic-ref', '--short', 'HEAD']) : git(root, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    git(root, ['rev-parse', '--short', 'HEAD']), git(root, ['status', '--porcelain']),
   ]);
+  const branch = branchRaw;
   const dirtyFiles = new Set<string>();
   for (const l of (status ?? '').split(/\r?\n/).filter(Boolean)) {
     const p = l.slice(3).split(' -> ').pop()!.replace(/^"|"$/g, '');
     dirtyFiles.add(posix(p));
   }
   let integration = 'unknown';
-  if (head === null) integration = 'not a git checkout';
+  if (unborn) integration = 'no commits yet';
+  else if (head === null) integration = 'not a git checkout';
   else {
     // The reference is the repository's MAIN worktree, not project.path: a worktree registered as a project is not integrated.
     const main = await designDecisions.mainCheckout(root);
@@ -232,7 +245,7 @@ async function checkoutInfo(project: { path: string }, root: string): Promise<{ 
       }
     }
   }
-  return { info: { root, isCanonical, branch: branch?.trim(), head: head?.trim(), uncommitted: dirtyFiles.size, integration }, dirtyFiles };
+  return { info: { root, isCanonical, branch: branch?.trim(), head: head?.trim(), unborn, uncommitted: dirtyFiles.size, integration }, dirtyFiles };
 }
 
 // ---- derived view -------------------------------------------------------------------------------
@@ -352,7 +365,17 @@ export async function getStored(projectId: string, id: string) {
 }
 
 /** Explicit service operations; opening a project never reads or writes this file. */
+/** A repository whose current branch has no commit yet (`git init` and nothing else). Not the same as "not a repo". */
+export async function isUnborn(root: string): Promise<boolean> {
+  if ((await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']))?.trim()) return false;
+  return (await git(root, ['symbolic-ref', '-q', 'HEAD'])) !== null;
+}
+
+export const UNBORN_MESSAGE = 'This repository has no commits yet. The portable file is tied to the repository history, so it can be published or recovered only after the first commit.';
+export class UnbornRepoError extends Error { code = 'UNBORN'; constructor() { super(UNBORN_MESSAGE); } }
+
 export async function portableGitRoot(root: string): Promise<string[]> {
+  if (await isUnborn(root)) throw new UnbornRepoError();
   const roots = await git(root, ['rev-list', '--max-parents=0', 'HEAD']);
   const shallow = await git(root, ['rev-parse', '--is-shallow-repository']);
   if (!roots?.trim() || shallow?.trim() !== 'false') throw new Error('Portable catalog requires a complete Git history');
@@ -896,9 +919,11 @@ export async function catalog(project: Project, worktree?: string) {
   await Promise.all(Array.from({ length: 4 }, async () => {
     while (next < stored.length) { const i = next++; views[i] = await resolveSystem(project, stored[i].id, worktree); }
   }));
+  // A system that cannot be resolved is reported, never dropped: a failed load must not look like "no systems".
+  const loadErrors: { id: string; name: string; error: string }[] = [];
   for (let i = 0; i < stored.length; i++) {
     const s = stored[i]; const v = views[i];
-    if ('error' in v) continue;
+    if ('error' in v) { loadErrors.push({ id: s.id, name: s.name, error: v.error }); continue; }
     const flags: string[] = [];
     if (v.maintenance.needsReanalysis) flags.push('stale graph');
     if (v.maintenance.vanished.length) flags.push(`${v.maintenance.vanished.length} vanished`);
@@ -913,7 +938,7 @@ export async function catalog(project: Project, worktree?: string) {
   const checkout = typeof root === "string" ? (await memo(`info|${root}`, VIEW_TTL, () => checkoutInfo(project, root))).info : null;
   const order = { confirmed: 0, proposed: 1, dismissed: 2, merged: 3 } as const;
   rows.sort((a, b) => order[a.status] - order[b.status] || b.files - a.files);
-  return { systems: rows, checkout, dismissed: (await listStored(project.id, true)).filter(s => s.status === 'dismissed').length };
+  return { systems: rows, loadErrors, checkout, dismissed: (await listStored(project.id, true)).filter(s => s.status === 'dismissed').length };
 }
 
 // ---- discovery ----------------------------------------------------------------------------------

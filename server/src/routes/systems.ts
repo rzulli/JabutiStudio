@@ -16,7 +16,9 @@ export async function systemRoutes(app: FastifyInstance) {
   app.get<Q>('/api/projects/:id/systems', async (request, reply) => {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
-    return systems.catalog(project, request.query.worktree);
+    // A catalog that cannot be read is reported as such (with its reason), never as an empty list.
+    try { return await systems.catalog(project, request.query.worktree); }
+    catch (e: any) { return reply.status(500).send({ error: String(e?.message ?? e) }); }
   });
 
   // Candidates from file names only; idempotent, adds nothing that an existing system already owns.
@@ -53,6 +55,15 @@ export async function systemRoutes(app: FastifyInstance) {
     if (!project) return reply.status(404).send({ error: 'Project not found' });
     const [exportPlan, update, imp] = await Promise.all([knowledge.previewExport(project), knowledge.previewUpdate(project), knowledge.previewImport(project)]);
     return { export: exportPlan, update, import: imp };
+  });
+
+  // Bootstrap of a repository with no commits: one empty commit, no files staged. UI only; refuses otherwise.
+  app.post<{ Params: { id: string } }>('/api/projects/:id/systems/knowledge/first-commit', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    try { return await knowledge.createFirstCommit(project); }
+    catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
   });
 
   // Initial export: refuses to overwrite (exportPortable). Never stages or commits.
