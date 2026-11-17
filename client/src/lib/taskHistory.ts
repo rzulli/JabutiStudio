@@ -1,6 +1,7 @@
 import type { Task } from '@/hooks/useTasks'
 
 export type HistoryKind = 'created' | 'inbox' | 'started' | 'done' | 'note' | 'follow-up' | 'attachment' | 'comment' | 'edited'
+  | 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused'
 
 export interface HistoryEntry {
   id: string
@@ -62,7 +63,14 @@ function noteEntries(prompt: string | undefined): HistoryEntry[] {
  * attachments and board comments. A status moved twice keeps only its last
  * time — the task stores one timestamp per stage.
  */
-export function buildTaskHistory(task: Task): HistoryEntry[] {
+/** One event of the server-kept lifecycle ledger (acceptance and integration). */
+export interface LifecycleHistoryEvent { at: string; event: string; detail?: Record<string, unknown> }
+
+const LIFECYCLE_KINDS = new Set<HistoryKind>(['accepted', 'acceptance-revoked', 'integrated', 'integration-refused'])
+
+const sha = (v: unknown) => (typeof v === 'string' ? v.substring(0, 7) : undefined)
+
+export function buildTaskHistory(task: Task, lifecycle: LifecycleHistoryEvent[] = []): HistoryEntry[] {
   const out: HistoryEntry[] = []
   const push = (kind: HistoryKind, iso: string | undefined, title?: string, body?: string) => {
     const at = time(iso)
@@ -76,6 +84,19 @@ export function buildTaskHistory(task: Task): HistoryEntry[] {
   push('started', task.inProgressAt)
   push('done', task.doneAt, task.resolution?.split('\n')[0])
   out.push(...noteEntries(task.prompt))
+
+  // Lifecycle events are real records of the ledger; unknown event names are skipped, never guessed.
+  for (const ev of lifecycle) {
+    if (!LIFECYCLE_KINDS.has(ev.event as HistoryKind)) continue
+    const d = ev.detail || {}
+    const target = typeof d.targetBranch === 'string' ? d.targetBranch : undefined
+    const title =
+      ev.event === 'accepted' ? [sha(d.headSha), target && `for ${target}`].filter(Boolean).join(' ') || undefined
+      : ev.event === 'integrated' ? [sha(d.mergeCommit) && `merge ${sha(d.mergeCommit)}`, sha(d.headSha) && `of ${sha(d.headSha)}`].filter(Boolean).join(' ') || undefined
+      : ev.event === 'integration-refused' ? (typeof d.message === 'string' ? d.message : undefined)
+      : sha(d.headSha)
+    push(ev.event as HistoryKind, ev.at, title)
+  }
 
   for (const a of task.attachments || []) {
     if (a.source === 'inbox') push('attachment', a.date, a.name)
@@ -96,5 +117,7 @@ export function buildTaskHistory(task: Task): HistoryEntry[] {
     seen.set(e.id, n + 1)
     if (n) e.id = `${e.id}-${n}`
   }
-  return out.sort((a, b) => b.at - a.at)
+  // Events inside the same two seconds keep their causal order (created, started, done) instead of an arbitrary one.
+  const RANK: Partial<Record<HistoryKind, number>> = { created: 0, inbox: 1, started: 2, done: 3, accepted: 4, integrated: 5 }
+  return out.sort((a, b) => (Math.abs(a.at - b.at) < 2000 ? (RANK[b.kind] ?? 9) - (RANK[a.kind] ?? 9) : b.at - a.at))
 }
