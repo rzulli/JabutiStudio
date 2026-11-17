@@ -18,6 +18,7 @@ const anchors = z.object({ terms: strings, files: z.array(path), decisions: stri
 const area = z.object({
   id, name: text, kind: z.enum(['subsystem', 'mechanic', 'entity']), summary: text, status, origin,
   anchors: z.object({ files: z.array(path), terms: strings }).strict(), evidence: z.array(evidence),
+  responsibilities: strings.optional(), planned: z.boolean().optional(),
 }).strict();
 const relation = z.object({
   id, kind: z.enum(RELATION_KINDS), from: id, to: id, note: text.optional(), status, origin, evidence: z.array(evidence),
@@ -30,7 +31,7 @@ const system = z.object({
   id, name: text, summary: text, responsibilities: strings, status: z.enum(['proposed', 'confirmed', 'dismissed', 'merged']),
   origin, createdAt: text, updatedAt: text, confirmedAt: text.optional(), confirmedVia: z.literal('ui-request').optional(),
   mergedInto: id.optional(), mergedFrom: z.array(id).optional(), anchors,
-  kind: z.enum(['system', 'subsystem', 'mechanic', 'entity']).optional(),
+  kind: z.enum(['system', 'subsystem', 'mechanic', 'entity']).optional(), planned: z.boolean().optional(),
   areas: z.array(area).optional(), relations: z.array(relation).optional(), related: z.array(id), suggestions: z.array(suggestion).optional(),
 }).strict();
 

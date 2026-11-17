@@ -121,6 +121,36 @@ export const RELATION_LABEL: Record<RelationKind, string> = {
   depends_on: 'depends on', controls: 'controls', implemented_by: 'is implemented by', validated_by: 'is validated by',
 };
 
+/**
+ * What can be connected by what. A relation is a statement about GAMEPLAY (who produces/consumes/stores which thing),
+ * STRUCTURE (what depends on what) or IMPLEMENTATION (what realises or checks it). `ent:` endpoints are named game
+ * entities that have no system of their own yet. Client mirrors this table (client/src/lib/relationRules.ts).
+ */
+export type ThingKind = 'system' | 'subsystem' | 'mechanic' | 'entity';
+export type RelationGroup = 'gameplay' | 'structure' | 'implementation';
+const ACTORS: ThingKind[] = ['system', 'subsystem', 'mechanic'];
+const ANY: ThingKind[] = ['system', 'subsystem', 'mechanic', 'entity'];
+export const RELATION_RULES: Record<RelationKind, { group: RelationGroup; from: ThingKind[]; to: ThingKind[]; why: string }> = {
+  produces: { group: 'gameplay', from: ACTORS, to: ['entity'], why: 'Only a resource or item (an entity) is produced, not a mechanic or an activity.' },
+  consumes: { group: 'gameplay', from: ACTORS, to: ['entity'], why: 'Only a resource or item (an entity) is consumed, not a mechanic or an activity.' },
+  stores: { group: 'gameplay', from: ['system', 'subsystem', 'entity'], to: ['entity'], why: 'Something stores a resource or item (an entity).' },
+  modifies: { group: 'gameplay', from: ACTORS, to: ANY, why: 'A rule, system or mechanic changes something. An entity cannot act on its own.' },
+  unlocks: { group: 'gameplay', from: ANY, to: ANY, why: '' },
+  controls: { group: 'gameplay', from: ACTORS, to: ANY, why: 'A system or mechanic manages something. An entity cannot manage things.' },
+  depends_on: { group: 'structure', from: ANY, to: ANY, why: '' },
+  implemented_by: { group: 'implementation', from: ANY, to: ANY, why: '' },
+  validated_by: { group: 'implementation', from: ANY, to: ANY, why: '' },
+};
+
+/** null when valid; otherwise a sentence a person can act on. Unknown endpoint kinds are not blocked. */
+export function relationProblem(kind: RelationKind, from: ThingKind | undefined, to: ThingKind | undefined): string | null {
+  const r = RELATION_RULES[kind];
+  if (!r) return `Unknown relation “${kind}”.`;
+  if (from && !r.from.includes(from)) return `A ${from} cannot ${RELATION_LABEL[kind]} anything. ${r.why}`.trim();
+  if (to && !r.to.includes(to)) return `“${RELATION_LABEL[kind]}” does not apply to a ${to}. ${r.why}`.trim();
+  return null;
+}
+
 // ---- design rule comparison ----------------------------------------------------------------------------
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;

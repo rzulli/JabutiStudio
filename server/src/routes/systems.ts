@@ -102,8 +102,10 @@ export async function systemRoutes(app: FastifyInstance) {
 
   app.patch<{ Params: { id: string; sid: string }; Body: systems.Edit }>('/api/projects/:id/systems/:sid', async (request, reply) => {
     if (!uiOnly(request, reply)) return;
-    const s = await systems.review(request.params.id, request.params.sid, request.body ?? {});
-    return s ?? reply.status(404).send({ error: 'System not found' });
+    try {
+      const s = await systems.review(request.params.id, request.params.sid, request.body ?? {});
+      return s ?? reply.status(404).send({ error: 'System not found' });
+    } catch (e: any) { return reply.status(400).send({ error: String(e?.message ?? e) }); }
   });
 
   app.post<{ Params: { id: string; sid: string }; Body: { from?: string[] } }>('/api/projects/:id/systems/:sid/merge', async (request, reply) => {

@@ -126,7 +126,7 @@ test('T1/T5: an agent proposal with areas and relations is stored as PROPOSED, n
     relations: [
       { kind: 'produces', from: 'area:acquisition', to: 'ent:Humus', evidence: [ev('scripts/HumusCollector.gd', 'carried += m')] },
       { kind: 'stores', from: 'area:reserve', to: 'ent:Humus', evidence: [ev('scripts/HumusReserve.gd', 'var reserve_humus := 0')] },
-      { kind: 'consumes', from: 'sys:sys-fertility', to: 'area:reserve' },
+      { kind: 'depends_on', from: 'sys:sys-fertility', to: 'area:reserve' },
     ],
   }, 'agent')
   assert.ok(res.id)
@@ -138,7 +138,7 @@ test('T1/T5: an agent proposal with areas and relations is stored as PROPOSED, n
   const produced = v.relations.find((r: any) => r.kind === 'produces')
   assert.equal(produced.basis, 'demonstrated')
   assert.equal(produced.evidence[0].state, 'verified'); assert.equal(produced.evidence[0].line, 3)
-  const unproven = v.relations.find((r: any) => r.kind === 'consumes')
+  const unproven = v.relations.find((r: any) => r.kind === 'depends_on')
   assert.equal(unproven.basis, 'candidate', 'no evidence → candidate, never presented as demonstrated')
 })
 

@@ -49,6 +49,10 @@ export interface StoredArea {
   status: 'proposed' | 'confirmed'; origin: Origin;
   anchors: { files: string[]; terms: string[] };
   evidence: sem.EvidenceRef[];
+  /** texts of the system's responsibilities this component carries out */
+  responsibilities?: string[];
+  /** designed but not built yet: no files or evidence are expected, and their absence is not a gap */
+  planned?: boolean;
 }
 /**
  * A gameplay relation. Endpoints: `self` | `area:<id>` | `sys:<systemId>[/<areaId>]` | `ent:<label>`.
@@ -75,6 +79,7 @@ export interface StoredSystem {
   mergedFrom?: string[];
   anchors: Anchors;
   kind?: 'system' | 'subsystem' | 'mechanic' | 'entity';
+  planned?: boolean;
   areas?: StoredArea[];
   relations?: StoredRelation[];
   related: string[];                 // declared related system ids
@@ -282,6 +287,9 @@ export interface AreaView {
   inferred: boolean; basis: sem.Basis; evidence: sem.ResolvedEvidence[];
   files: { path: string; tier: sem.Tier; facet: sem.Facet; line?: number; uncommitted: boolean }[];
   fileCount: number; testCount: number; families: sem.Family[];
+  /** what the person stored (editable); absent for inferred groups */
+  anchors?: { files: string[]; terms: string[] };
+  responsibilities?: string[]; planned?: boolean;
 }
 export interface EndpointView { ref: string; label: string; type: 'self' | 'area' | 'system' | 'entity'; systemId?: string; areaId?: string; known: boolean }
 export interface RelationView {
@@ -293,7 +301,7 @@ export interface TechnicalLink { toSystem?: string; toName: string; files: strin
 
 export interface SystemView {
   id: string; name: string; summary: string; responsibilities: string[];
-  kind: 'system' | 'subsystem' | 'mechanic' | 'entity';
+  kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean;
   areas: AreaView[]; relations: RelationView[]; technical: TechnicalLink[];
   comparisons: sem.Comparison[];
   families: sem.Family[]; testGroups: { dir: string; count: number; paths: string[] }[];
@@ -686,7 +694,8 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
       basis: sem.basisOf(ev), evidence: ev, files: fl.filter(f => !sem.isTestPath(f.path)).slice(0, 14),
       fileCount: pinned.length + byTerm.length,
       testCount: a.anchors.terms.length ? files.filter(f => roleOf(f) === 'test' && !!nameMatches(f, a.anchors.terms)).length : 0,
-      families: [],
+      families: [], anchors: { files: [...a.anchors.files], terms: [...a.anchors.terms] },
+      responsibilities: [...(a.responsibilities ?? [])], planned: !!a.planned,
     });
   }
   if (!areasStored.length) {
@@ -832,7 +841,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
 
   const value: SystemView = {
     id: sys.id, name: sys.name, summary: sys.summary, responsibilities: sys.responsibilities,
-    kind: sys.kind ?? 'system', areas: areaViews, relations: relViews, technical, comparisons,
+    kind: sys.kind ?? 'system', planned: !!sys.planned, areas: areaViews, relations: relViews, technical, comparisons,
     families, testGroups: tGroups, overlaps, tierCounts,
     status: sys.status, origin: sys.origin, confirmedAt: sys.confirmedAt, confirmedVia: sys.confirmedVia,
     anchors: sys.anchors, mergedInto: sys.mergedInto, mergedFrom: sys.mergedFrom, suggestions: sys.suggestions ?? [],
@@ -874,6 +883,7 @@ function lexicalSet(root: string, files: string[], s: StoredSystem): Promise<Set
 
 export interface SystemSummary {
   id: string; name: string; summary: string; status: Status; origin: Origin;
+  kind: sem.ThingKind; planned: boolean; createdAt: string;
   files: number; decisions: number; conflicts: number; flags: string[];
 }
 
@@ -895,7 +905,7 @@ export async function catalog(project: Project, worktree?: string) {
     if (v.design.conflicts.length) flags.push('conflict');
     if (v.maintenance.unresolvedAnchors.length) flags.push('missing files');
     rows.push({
-      id: s.id, name: s.name, summary: s.summary, status: s.status, origin: s.origin,
+      id: s.id, name: s.name, summary: s.summary, status: s.status, origin: s.origin, kind: s.kind ?? 'system', planned: !!s.planned, createdAt: s.createdAt,
       files: v.members.length + v.weakerMembers, decisions: v.design.decisions.length, conflicts: v.design.conflicts.length, flags,
     });
   }
@@ -972,12 +982,14 @@ export async function discover(project: Project, worktree?: string) {
 
 // ---- proposals and review -----------------------------------------------------------------------
 
-export interface AreaInput { id?: string; name: string; kind?: AreaKind; summary?: string; files?: string[]; terms?: string[]; evidence?: sem.EvidenceRef[] }
+export interface AreaInput { id?: string; name: string; kind?: AreaKind; summary?: string; files?: string[]; terms?: string[]; evidence?: sem.EvidenceRef[]; responsibilities?: string[]; planned?: boolean }
 export interface RelationInput { id?: string; kind: string; from: string; to: string; note?: string; evidence?: sem.EvidenceRef[] }
 export interface ProposalInput {
   name: string; summary?: string; responsibilities?: string[];
   terms?: string[]; files?: string[]; decisions?: string[]; related?: string[];
-  kind?: StoredSystem['kind']; areas?: AreaInput[]; relations?: RelationInput[];
+  kind?: StoredSystem['kind']; areas?: AreaInput[]; relations?: RelationInput[]; planned?: boolean;
+  /** a person starting a new system: never fold it into an existing one that shares a term */
+  createOnly?: boolean;
 }
 
 const cleanEv = (xs?: sem.EvidenceRef[]) => (xs ?? []).filter(e => e && typeof e.path === 'string' && e.path.trim())
@@ -988,6 +1000,7 @@ const unionEv = (a: sem.EvidenceRef[], b: sem.EvidenceRef[]) => { const m = new 
 const toAreas = (xs: AreaInput[] | undefined, origin: Origin): StoredArea[] => (xs ?? []).filter(a => a?.name?.trim()).map(a => ({
   id: a.id?.trim() || slug(a.name), name: a.name.trim(), kind: a.kind ?? 'subsystem', summary: a.summary ?? '', status: 'proposed' as const, origin,
   anchors: { files: uniq((a.files ?? []).map(posix)), terms: uniq(a.terms ?? []) }, evidence: cleanEv(a.evidence),
+  ...(a.responsibilities?.length ? { responsibilities: uniq(a.responsibilities.map(x => x.trim()).filter(Boolean)) } : {}), ...(a.planned ? { planned: true } : {}),
 }));
 const relId = (r: { kind: string; from: string; to: string }) => slug(`${r.from}-${r.kind}-${r.to}`);
 const toRelations = (xs: RelationInput[] | undefined, origin: Origin): StoredRelation[] =>
@@ -1016,6 +1029,23 @@ function mergeAreas(target: StoredSystem, areas: StoredArea[], relations: Stored
   return skipped;
 }
 
+/** The kind of thing a relation endpoint points at, from the stored catalog. Undefined when unknown (not blocked). */
+function thingKindOf(owner: StoredSystem, ref: string, all: StoredSystem[]): sem.ThingKind | undefined {
+  if (ref === 'self') return owner.kind ?? 'system';
+  if (ref.startsWith('area:')) return owner.areas?.find(a => a.id === ref.slice(5))?.kind;
+  if (ref.startsWith('ent:')) return 'entity';
+  if (ref.startsWith('sys:')) {
+    const [sid, aid] = ref.slice(4).split('/'); const o = all.find(x => x.id === sid);
+    if (!o) return undefined;
+    return aid ? o.areas?.find(a => a.id === aid)?.kind : (o.kind ?? 'system');
+  }
+  return undefined;
+}
+function problemOf(owner: StoredSystem, r: { kind: string; from: string; to: string }, all: StoredSystem[]) {
+  if (r.from === r.to) return 'A relation cannot connect something to itself.';
+  return sem.relationProblem(r.kind as sem.RelationKind, thingKindOf(owner, r.from, all), thingKindOf(owner, r.to, all));
+}
+
 /**
  * Agents and discovery land here. A confirmed system is never rewritten by a proposal: the proposal is kept
  * as a suggestion for a person to look at. A system that already owns one of the terms is extended instead
@@ -1026,7 +1056,7 @@ export function propose(projectId: string, input: ProposalInput, origin: Origin)
     const terms = uniq(input.terms ?? []), files = uniq((input.files ?? []).map(posix)), decisions = uniq(input.decisions ?? []);
     const areas = toAreas(input.areas, origin), relations = toRelations(input.relations, origin);
     const wanted = slug(input.name);
-    const existing = store.systems.find(s => s.status !== 'dismissed' && s.status !== 'merged' &&
+    const existing = input.createOnly ? undefined : store.systems.find(s => s.status !== 'dismissed' && s.status !== 'merged' &&
       (s.id === `sys-${wanted}` || s.anchors.terms.some(t => terms.some(x => x.toLowerCase() === t.toLowerCase()))));
     if (existing) {
       if (existing.status === 'confirmed' && origin !== 'user') {
@@ -1042,7 +1072,8 @@ export function propose(projectId: string, input: ProposalInput, origin: Origin)
       if (input.responsibilities?.length) existing.responsibilities = input.responsibilities;
       existing.related = uniq([...existing.related, ...(input.related ?? [])]);
       if (input.kind) existing.kind = input.kind;
-      mergeAreas(existing, areas, relations, origin);
+      const ok = relations.filter(r => !problemOf({ ...existing, areas: [...(existing.areas ?? []), ...areas] }, r, store.systems));
+      mergeAreas(existing, areas, ok, origin);
       if (existing.origin === 'discovery' && origin !== 'discovery') existing.origin = origin;
       existing.updatedAt = now();
       return { id: existing.id, outcome: 'extended' as const };
@@ -1053,8 +1084,9 @@ export function propose(projectId: string, input: ProposalInput, origin: Origin)
       name: input.name.trim(), summary: input.summary ?? '', responsibilities: input.responsibilities ?? [],
       status: 'proposed', origin, createdAt: now(), updatedAt: now(),
       anchors: { terms, files, decisions }, related: uniq(input.related ?? []),
-      ...(input.kind ? { kind: input.kind } : {}), areas, relations,
+      ...(input.kind ? { kind: input.kind } : {}), ...(input.planned ? { planned: true } : {}), areas, relations: [],
     };
+    created.relations = relations.filter(r => !problemOf(created, r, store.systems));
     store.systems.push(created);
     return { id: created.id, outcome: 'created' as const };
   });
@@ -1066,6 +1098,13 @@ export type Edit = Partial<Pick<StoredSystem, 'name' | 'summary' | 'responsibili
   confirm?: { areas?: string[]; relations?: string[] };
   remove?: { areas?: string[]; relations?: string[] };
   upsertArea?: AreaInput; upsertRelation?: RelationInput;
+  planned?: boolean;
+  /** a person's edit of one relation: the old one is replaced (it may change meaning, so it goes back to proposal); the id follows the new content */
+  replaceRelation?: { id: string; relation: RelationInput };
+  /** a person's edit of one responsibility: replaces name, kind, summary and anchors (status is kept); creates it when new */
+  setArea?: AreaInput;
+  /** index into `suggestions`: discard that agent proposal without applying it */
+  dropSuggestion?: number;
   /** index into `suggestions`: apply that agent proposal (as proposed, not confirmed) and drop it */
   adoptSuggestion?: number;
 };
@@ -1075,6 +1114,20 @@ export function review(projectId: string, id: string, edit: Edit) {
   return mutate(projectId, store => {
     const s = store.systems.find(x => x.id === id);
     if (!s) return null;
+    // the view prefixes relation ids with their owner (`owner:id`); accept both forms
+    const rid = (x: string) => (x.startsWith(`${s.id}:`) ? x.slice(s.id.length + 1) : x);
+    // validate BEFORE touching anything: the cached store object must never be left half-edited by a refused change
+    {
+      const extra = edit.setArea?.name?.trim() ? toAreas([edit.setArea], 'user') : [];
+      const probe: StoredSystem = { ...s, kind: edit.kind ?? s.kind, areas: [...(s.areas ?? []).filter(a => !extra.some(e => e.id === a.id)), ...extra] };
+      for (const input of [edit.upsertRelation, edit.replaceRelation?.relation]) {
+        if (!input) continue;
+        const [r] = toRelations([{ ...input, id: undefined }], 'user');
+        if (!r) throw new Error('This relation is incomplete or its kind is unknown.');
+        const p = problemOf(probe, r, store.systems); if (p) throw new Error(p);
+      }
+      if (edit.replaceRelation && !(s.relations ?? []).some(x => x.id === rid(edit.replaceRelation!.id))) throw new Error('The relation to edit no longer exists.');
+    }
     if (edit.name !== undefined) s.name = edit.name.trim() || s.name;
     if (edit.summary !== undefined) s.summary = edit.summary;
     if (edit.kind) s.kind = edit.kind;
@@ -1084,16 +1137,45 @@ export function review(projectId: string, id: string, edit: Edit) {
       decisions: uniq(edit.anchors.decisions ?? s.anchors.decisions),
     };
     if (edit.related) s.related = uniq(edit.related);
+    if (edit.planned !== undefined) { if (edit.planned) s.planned = true; else delete s.planned; }
     if (edit.status) {
       s.status = edit.status;
       if (edit.status === 'confirmed') { s.confirmedAt = now(); s.confirmedVia = 'ui-request'; } else delete s.confirmedAt;
     }
+    if (edit.setArea?.name?.trim()) {
+      const [next] = toAreas([edit.setArea], 'user');
+      const cur = (s.areas ??= []).find(x => x.id === next.id);
+      if (cur) {
+        // a confirmed classification that someone then rewrote is no longer what was accepted
+        if (cur.status === 'confirmed' && JSON.stringify([cur.name, cur.kind, cur.summary, cur.anchors, cur.evidence]) !== JSON.stringify([next.name, next.kind, next.summary, next.anchors, next.evidence])) cur.status = 'proposed';
+        cur.name = next.name; cur.kind = next.kind; cur.summary = next.summary; cur.anchors = next.anchors; cur.evidence = next.evidence;
+        if (next.responsibilities) cur.responsibilities = next.responsibilities; else delete cur.responsibilities;
+        if (next.planned) cur.planned = true; else delete cur.planned;
+      }
+      else s.areas.push(next);
+    }
+    if (edit.dropSuggestion !== undefined && s.suggestions) s.suggestions = s.suggestions.filter((_, i) => i !== edit.dropSuggestion);
     if (edit.upsertArea) mergeAreas(s, toAreas([edit.upsertArea], 'user'), [], 'user');
-    if (edit.upsertRelation) mergeAreas(s, [], toRelations([edit.upsertRelation], 'user'), 'user');
+    if (edit.upsertRelation) {
+      const [r] = toRelations([edit.upsertRelation], 'user');
+      if (!r) throw new Error('This relation is incomplete or its kind is unknown.');
+      const p = problemOf(s, r, store.systems); if (p) throw new Error(p);
+      mergeAreas(s, [], [r], 'user');
+    }
+    if (edit.replaceRelation) {
+      const [r] = toRelations([{ ...edit.replaceRelation.relation, id: undefined }], 'user');
+      if (!r) throw new Error('This relation is incomplete or its kind is unknown.');
+      const p = problemOf(s, r, store.systems); if (p) throw new Error(p);
+      const i = (s.relations ?? []).findIndex(x => x.id === rid(edit.replaceRelation!.id));
+      if (i < 0) throw new Error('The relation to edit no longer exists.');
+      const old = s.relations![i];
+      const same = old.kind === r.kind && old.from === r.from && old.to === r.to;
+      s.relations![i] = { ...r, status: same ? old.status : 'proposed', evidence: r.evidence };
+    }
     for (const aid of edit.confirm?.areas ?? []) { const a = s.areas?.find(x => x.id === aid); if (a) a.status = 'confirmed'; }
-    for (const rid of edit.confirm?.relations ?? []) { const r = s.relations?.find(x => x.id === rid); if (r) r.status = 'confirmed'; }
+    for (const id of edit.confirm?.relations ?? []) { const r = s.relations?.find(x => x.id === rid(id)); if (r) r.status = 'confirmed'; }
     if (edit.remove?.areas?.length) s.areas = (s.areas ?? []).filter(a => !edit.remove!.areas!.includes(a.id));
-    if (edit.remove?.relations?.length) s.relations = (s.relations ?? []).filter(r => !edit.remove!.relations!.includes(r.id));
+    if (edit.remove?.relations?.length) s.relations = (s.relations ?? []).filter(r => !edit.remove!.relations!.map(rid).includes(r.id));
     if (edit.adoptSuggestion !== undefined) {
       const sg = s.suggestions?.[edit.adoptSuggestion];
       if (sg) {
