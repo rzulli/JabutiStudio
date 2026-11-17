@@ -35,8 +35,7 @@ import type { TerminalState } from './IntegratedTerminal'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
-/** Outcome of opening a session from `shipyard:open-terminal`: a session with the prompt, or why not. */
-export type TabResult = { ok: true; sessionId: string } | { ok: false; error: string }
+import type { TabResult } from '@/lib/terminalDispatch'
 
 interface GlobalTab {
   sessionId: string
