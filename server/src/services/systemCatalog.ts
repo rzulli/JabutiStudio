@@ -339,14 +339,14 @@ export async function getStored(projectId: string, id: string) {
 }
 
 /** Explicit service operations; opening a project never reads or writes this file. */
-async function portableGitRoot(root: string): Promise<string[]> {
+export async function portableGitRoot(root: string): Promise<string[]> {
   const roots = await git(root, ['rev-list', '--max-parents=0', 'HEAD']);
   const shallow = await git(root, ['rev-parse', '--is-shallow-repository']);
   if (!roots?.trim() || shallow?.trim() !== 'false') throw new Error('Portable catalog requires a complete Git history');
   return roots.trim().split(/\r?\n/).sort();
 }
 
-const portablePath = (root: string) => join(root, 'jabutistudio.systems.json');
+export const portablePath = (root: string) => join(root, 'jabutistudio.systems.json');
 
 async function checkLocalStore(projectId: string): Promise<void> {
   try {
@@ -356,7 +356,7 @@ async function checkLocalStore(projectId: string): Promise<void> {
   } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
 }
 
-async function checkPortablePaths(root: string, systems: StoredSystem[]): Promise<void> {
+export async function checkPortablePaths(root: string, systems: StoredSystem[]): Promise<void> {
   const realRoot = await fs.realpath(root);
   const paths: string[] = [];
   const collect = (v: unknown): void => {

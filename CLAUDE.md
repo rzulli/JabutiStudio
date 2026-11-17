@@ -742,6 +742,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   fixture descartavel e verifica reextracao, renomeacao, classificacao e evidencias; sem o interpretador configurado,
   ele e explicitamente pulado na suite normal. Nao executa o projeto Godot.
 - `designKnowledge.dkScript` cai para o `dk.py` mais novo entre os checkouts quando o do projeto nao tem `--root`
+- **Conhecimento por checkout (R1-A2)**: `systemKnowledge.ts`. `reconcile(project, {worktree?, revision?})` (somente leitura; `GET /api/projects/:id/systems/knowledge`) compoe o `jabutistudio.systems.json` publicado na revisao examinada (`git show`) + catalogo local + evidencia relida naquele checkout. Estados: `published` | `local-change` | `diverged` | `unpublished-proposal` | `unavailable`; arquivo: present/modified/untracked/absent/invalid/incompatible. Divergencia nunca e resolvida sozinha: devolve publicado, arquivo de trabalho e local lado a lado. Com `revision` explicita nao le a working tree. `updatePortable` (`POST .../knowledge/update`, so UI) exige `expectedSha256` do arquivo, nunca cria o arquivo, nunca muda status e exige `takeLocal` para sobrescrever valor divergente; escrita tmp+rename. Nao depende de DK nem de Graphify
 - Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
   **Nao hardcodar nomes/ids/caminhos de um jogo na logica geral** — so em fixtures
 

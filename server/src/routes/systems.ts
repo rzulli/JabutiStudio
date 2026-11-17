@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import * as projectDiscovery from '../services/projectDiscovery.js';
 import * as systems from '../services/systemCatalog.js';
+import * as knowledge from '../services/systemKnowledge.js';
 import { fromAppUi } from './design.js';
 
 export async function systemRoutes(app: FastifyInstance) {
@@ -25,6 +26,24 @@ export async function systemRoutes(app: FastifyInstance) {
     const res = await systems.discover(project, request.query.worktree);
     if ('error' in res) return reply.status(400).send(res);
     return res;
+  });
+
+  // Read-only: published (git revision) + local catalog + evidence of the examined checkout.
+  app.get<{ Params: { id: string }; Querystring: { worktree?: string; revision?: string } }>('/api/projects/:id/systems/knowledge', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const r = await knowledge.reconcile(project, { worktree: request.query.worktree, revision: request.query.revision });
+    if ('error' in r) return reply.status(400).send(r);
+    return r;
+  });
+
+  // Explicit update of the existing portable file; refuses when the file changed since `expectedSha256`.
+  app.post<{ Params: { id: string }; Body: knowledge.UpdateOptions }>('/api/projects/:id/systems/knowledge/update', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    try { return await knowledge.updatePortable(project, request.body ?? ({} as knowledge.UpdateOptions)); }
+    catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
   });
 
   app.get<{ Params: { id: string; sid: string }; Querystring: { worktree?: string } }>('/api/projects/:id/systems/:sid', async (request, reply) => {
