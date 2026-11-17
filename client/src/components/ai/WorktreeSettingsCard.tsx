@@ -3,8 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { FolderBrowser } from '@/components/ui/folder-browser'
-import { GitBranch, FolderOpen, Loader2, Trash2, RotateCcw } from 'lucide-react'
-import { useWorktrees, useSaveWorktreeConfig, useCleanWorktrees } from '@/hooks/useWorktrees'
+import { GitBranch, FolderOpen, RotateCcw } from 'lucide-react'
+import { useWorktrees, useSaveWorktreeConfig } from '@/hooks/useWorktrees'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -15,7 +15,6 @@ import { cn } from '@/lib/utils'
 export function WorktreeSettingsCard() {
   const { data } = useWorktrees()
   const saveConfig = useSaveWorktreeConfig()
-  const clean = useCleanWorktrees()
   const [browserOpen, setBrowserOpen] = useState(false)
 
   const enabled = !!data?.enabled
@@ -37,19 +36,6 @@ export function WorktreeSettingsCard() {
       toast.success(path ? 'Worktree folder updated' : 'Back to the default folder')
     } catch (err: any) {
       toast.error(err.message || 'Could not save the folder')
-    }
-  }
-
-  const handleClean = async () => {
-    try {
-      const result = await clean.mutateAsync(true)
-      const parts: string[] = []
-      if (result.removed) parts.push(`${result.removed} worktrees`)
-      if (result.orphans) parts.push(`${result.orphans} leftover folders`)
-      toast.success(parts.length ? `Removed ${parts.join(' and ')}` : 'Nothing to clean')
-      if (result.errors) toast.warning(`${result.errors} could not be removed`)
-    } catch (err: any) {
-      toast.error(err.message || 'Cleanup failed')
     }
   }
 
@@ -117,16 +103,6 @@ export function WorktreeSettingsCard() {
               <p className="text-xs font-medium text-muted-foreground">
                 Active worktrees {worktrees.length > 0 && <span className="text-muted-foreground/60">({worktrees.length})</span>}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                onClick={handleClean}
-                disabled={clean.isPending}
-              >
-                {clean.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                Clean worktrees
-              </Button>
             </div>
 
             {worktrees.length === 0 ? (
@@ -152,9 +128,9 @@ export function WorktreeSettingsCard() {
             )}
 
             <p className="text-[11px] text-muted-foreground/70">
-              Worktrees of tasks finished more than {data?.ttlDays ?? 7} days ago are removed on their own
-              {stale > 0 ? ` (${stale} waiting)` : ''}, unless they still hold uncommitted work.
-              "Clean worktrees" removes every finished task's worktree now, committed or not — unfinished tasks keep theirs.
+              Worktrees are never removed automatically or in bulk{stale > 0 ? ` (${stale} finished more than ${data?.ttlDays ?? 7} days ago)` : ''}.
+              To close one, open its task's Review tab or the "worktrees" badge in Source Control: closing checks that the work is integrated
+              and that no file or session would be lost.
             </p>
           </div>
         </CardContent>

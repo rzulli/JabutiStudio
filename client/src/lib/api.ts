@@ -1080,11 +1080,6 @@ export const api = {
   getWorktrees: () => request<WorktreeSettings>('/worktrees'),
   saveWorktreeConfig: (body: { enabled?: boolean; basePath?: string | null }) =>
     request<Omit<WorktreeSettings, 'worktrees'>>('/worktrees', { method: 'PUT', body: JSON.stringify(body) }),
-  cleanWorktrees: (all?: boolean) =>
-    request<{ removed: number; orphans: number; errors: number; kept: number }>('/worktrees/clean', {
-      method: 'POST',
-      body: JSON.stringify({ all: !!all }),
-    }),
 
   // Browse filesystem
   browse: (path: string) => request<{ directories: { name: string; path: string }[] }>('/browse', { method: 'POST', body: JSON.stringify({ path }) }),

@@ -22,15 +22,3 @@ export function useSaveWorktreeConfig() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['worktrees'] }),
   })
 }
-
-export function useCleanWorktrees() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (all?: boolean) => api.cleanWorktrees(all),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['worktrees'] })
-      // The sweep clears worktreePath on the tasks it touched.
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    },
-  })
-}

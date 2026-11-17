@@ -1,6 +1,5 @@
 import { FastifyInstance } from 'fastify';
 import * as worktreeService from '../services/worktreeService.js';
-import * as taskStore from '../services/taskStore.js';
 import * as log from '../services/logService.js';
 
 export async function worktreeRoutes(app: FastifyInstance) {
@@ -31,26 +30,13 @@ export async function worktreeRoutes(app: FastifyInstance) {
     }
   );
 
-  // Manual sweep. Without `all` it only removes what the scheduled pass would.
-  app.post<{ Body: { all?: boolean } }>(
-    '/api/worktrees/clean',
-    async (request) => {
-      const result = await worktreeService.cleanupWorktrees({ all: !!request.body?.all });
-      return result;
-    }
-  );
-
-  app.delete<{ Params: { projectId: string; taskId: string } }>(
-    '/api/projects/:projectId/tasks/:taskId/worktree',
-    async (request, reply) => {
-      const { projectId, taskId } = request.params;
-      const task = await taskStore.getTask(projectId, taskId);
-      if (!task) return reply.status(404).send({ error: 'Task not found' });
-      if (!task.worktreePath) return reply.status(404).send({ error: 'Task has no worktree' });
-
-      const removed = await worktreeService.removeTaskWorktree(task);
-      if (!removed) return reply.status(500).send({ error: 'Failed to remove worktree' });
-      return { success: true };
-    }
-  );
+  // Legacy "Clean worktrees". It no longer removes anything (R2-A3): it only forgets git
+  // records of folders that are already gone. Removal is the safe close, per task.
+  app.post('/api/worktrees/clean', async () => {
+    const result = await worktreeService.cleanupWorktrees();
+    return {
+      ...result,
+      message: 'Nothing was removed. Close a worktree from its task (Review tab) or the "worktrees" badge in Source Control: it checks Git, files and sessions first.',
+    };
+  });
 }

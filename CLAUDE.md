@@ -155,7 +155,7 @@ interface Project {
 **Shipyard Cloud**: GET /api/cloud/status, POST /api/cloud/signup|login|logout|sync
 **Agentes**: GET /api/agents (builtins + customizados + `available` por PATH), PUT /api/agents (`{ agents?, defaultAgent? }`)
 **Worktrees**: GET /api/worktrees (config + lista), PUT /api/worktrees (`{ enabled?, basePath? }`),
-  POST /api/worktrees/clean (`{ all? }`), DELETE /api/projects/:id/tasks/:tid/worktree
+  POST /api/worktrees/clean (so faz `git worktree prune`; nao remove nada — ver R2-A3). O DELETE .../tasks/:tid/worktree foi removido
 **Sistema**: GET/PATCH /api/settings (PATCH so aceita `terminalAiTitles`), POST /api/browse
 
 ## Portas
@@ -1385,13 +1385,21 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   (a sessao roda la dentro, via o parametro `cwd` do `createSession`)
 - Falhar criando a worktree **nunca** bloqueia o lancamento: `ensureTaskWorktree`
   loga e devolve `project.path` com o motivo
-- Limpeza: worktree de task `done` ha mais de 7 dias sai sozinha (varredura no
-  boot e a cada 6h). **A varredura automatica pula worktree com mudanca nao
-  commitada**; so o botao "Clean worktrees" (`all: true`) e o delete da task
-  removem a forca
-- O sweep de pastas orfas so apaga diretorio cujo nome casa com `-task-` **e**
-  que tem `.git` dentro — a pasta base e escolha do usuario e pode ter outras
-  coisas
+- **Nao ha remocao fora do encerramento seguro (R2-A3).** O unico caminho que apaga
+  pasta ou branch de worktree e `worktreeClose.closeTask` (previa + token + `git
+  worktree remove` sem `--force` + `update-ref -d` com sha esperado). `removeTaskWorktree`
+  (usado ao deletar task, HTTP e MCP) so delega a ele: se a previa nao permite, a worktree
+  fica onde esta e a task e apagada mesmo assim (a worktree vira "unlinked" no inventario).
+  `cleanupWorktrees` e a varredura de 6h (`startWorktreeCleanup`) so rodam `git worktree
+  prune` (esquece registro de pasta que ja sumiu); a varredura por idade, a limpeza
+  `all: true` e o `rm -rf` de pastas orfas foram removidos, e `gitService.removeWorktree`
+  / `deleteBranch` (force, `-D`) deixaram de existir. O cartao "Task worktrees" em Settings
+  nao tem mais botao de limpar: aponta para a aba Review / o badge de worktrees
+- `DELETE /api/projects/:id/files` recusa (409) pasta que e ou contem uma worktree
+  linkada do projeto
+- Fora do escopo desta regra (acao explicita do usuario sobre o checkout do projeto):
+  `git/discard` e `git/discard-all` do Source Control e o terminal integrado
+- Teste: `server/test/worktreeLegacy.test.ts` (L1-L7)
 - Deletar task (HTTP e MCP, individual e bulk) le a task antes de apagar: sem
   isso ninguem mais aponta para a worktree
 

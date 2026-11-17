@@ -1,5 +1,5 @@
-import { join, resolve, isAbsolute, basename } from 'path';
-import { mkdir, readdir, rm, stat } from 'fs/promises';
+import { join, resolve, isAbsolute } from 'path';
+import { mkdir, stat } from 'fs/promises';
 import * as gitService from './gitService.js';
 import * as taskStore from './taskStore.js';
 import { getProjects } from './projectDiscovery.js';
@@ -20,7 +20,7 @@ import type { Project, Task } from '../types/index.js';
 
 export const DEFAULT_WORKTREE_DIR = join(DATA_DIR, 'worktrees');
 
-/** Worktrees of tasks finished longer ago than this are swept away. */
+/** After this many days a finished task's worktree is flagged `stale` (informational: nothing is removed by age). */
 export const WORKTREE_TTL_DAYS = 7;
 
 export interface WorktreeConfig {
@@ -83,17 +83,6 @@ export function branchNameFor(task: Task): string {
   const key = task.number ? String(task.number) : task.id;
   const slug = slugify(task.title);
   return `shipyard/task-${key}${slug ? `-${slug}` : ''}`;
-}
-
-/**
- * Does this folder look like one Shipyard created? The base path is the
- * user's to choose, and it may well hold other things — the orphan sweep only
- * touches directories that match the naming scheme and carry git's worktree
- * marker, so a badly chosen folder cannot cost anyone their files.
- */
-async function looksLikeTaskWorktree(path: string): Promise<boolean> {
-  if (!/-task-/.test(basename(path))) return false;
-  return exists(join(path, '.git'));
 }
 
 /** Directory name: same shape as the branch, flattened for the filesystem. */
@@ -163,42 +152,45 @@ export async function ensureTaskWorktree(project: Project, task: Task): Promise<
 
 // -- Removing -------------------------------------------------------------
 
+export interface RemoveOutcome {
+  removed: boolean;
+  /** Why nothing was removed (the first blocker), when `removed` is false. */
+  reason?: string;
+}
+
 /**
- * Drop a task's worktree and its branch, and clear the fields on the task.
- * Best effort: a worktree that is already gone counts as removed.
+ * Ask the safe close (R2-A2/A3) to drop a task's worktree and branch. There is
+ * no other removal path: no `--force`, no `branch -D`, no recursive delete. The
+ * close only runs when Git proves the task integrated and nothing would be lost;
+ * otherwise the worktree stays exactly where it is (it shows as unlinked in the
+ * inventory once the task is gone). Never throws.
  */
 export async function removeTaskWorktree(
   task: Task,
-  options: { project?: Project; deleteBranch?: boolean; clearTask?: boolean } = {},
-): Promise<boolean> {
-  if (!task.worktreePath) return false;
-
-  const project = options.project || (await getProjects()).find(p => p.id === task.projectId);
-
+  options: { project?: Project; clearTask?: boolean } = {},
+): Promise<RemoveOutcome> {
+  if (!task.worktreePath && !task.worktreeBranch) return { removed: false, reason: 'The task has no worktree' };
   try {
-    if (project?.isGitRepo) {
-      await gitService.removeWorktree(project.path, task.worktreePath);
-      if (options.deleteBranch !== false && task.worktreeBranch) {
-        // -d, not -D: a branch holding commits that are not in the checked-out branch survives.
-        // Deleting it would destroy work no one integrated (R2-A1).
-        await gitService.deleteBranch(project.path, task.worktreeBranch, false);
-      }
-    } else {
-      await rm(task.worktreePath, { recursive: true, force: true });
+    const project = options.project || (await getProjects()).find(p => p.id === task.projectId);
+    if (!project?.isGitRepo) return { removed: false, reason: 'Not a git project: nothing is removed without Git to prove it is safe' };
+    const closer = await import('./worktreeClose.js');
+    const preview = await closer.previewClose(project, task);
+    if (!preview.allowed) {
+      const reason = preview.blockers[0]?.message || 'The worktree cannot be closed safely';
+      log.info('git', `Worktree of task #${task.number ?? task.id} kept`, reason, task.projectId);
+      return { removed: false, reason };
     }
+    const res = await closer.closeTask(project, task, { expectedToken: preview.token });
+    if (!res.ok || !res.complete) {
+      const reason = !res.ok ? res.message : 'Closed only partly; see the task lifecycle';
+      return { removed: false, reason };
+    }
+    log.info('git', `Worktree closed for task #${task.number ?? task.id}`, task.worktreePath, task.projectId);
+    return { removed: true };
   } catch (err: any) {
-    log.error('git', 'Failed to remove task worktree', err?.message || String(err), task.projectId);
-    return false;
+    log.error('git', 'Safe worktree close failed', err?.message || String(err), task.projectId);
+    return { removed: false, reason: err?.message || 'Unexpected error' };
   }
-
-  if (options.clearTask !== false) {
-    await taskStore.updateTask(task.projectId, task.id, {
-      worktreePath: undefined,
-      worktreeBranch: undefined,
-    });
-  }
-  log.info('git', `Worktree removed for task #${task.number ?? task.id}`, task.worktreePath, task.projectId);
-  return true;
 }
 
 // -- Listing and cleanup --------------------------------------------------
@@ -254,92 +246,30 @@ export async function listWorktrees(): Promise<WorktreeInfo[]> {
 }
 
 export interface CleanupResult {
+  /** Always 0: nothing is removed by a sweep any more. */
   removed: number;
-  orphans: number;
-  errors: number;
-  /** Left alone by the scheduled sweep because they hold uncommitted work. */
-  kept: number;
-}
-
-/** Does the worktree still hold changes nobody committed? */
-async function hasUncommittedWork(path: string): Promise<boolean> {
-  try {
-    const status = await gitService.getStatus(path);
-    return !status.isClean();
-  } catch {
-    // Unreadable worktree — treat it as empty so the sweep can clear it.
-    return false;
-  }
+  /** Stale git records (folder already gone) pruned. */
+  pruned: number;
 }
 
 /**
- * Sweep worktrees of tasks done more than WORKTREE_TTL_DAYS ago, plus any
- * directory under the base path no task claims any more. `all` drops the age
- * check and removes every worktree of a done task — that is what the manual
- * "Clean worktrees" button asks for.
+ * The legacy sweep deleted worktrees by age or on request, with force, without
+ * asking Git whether the work was integrated. It is gone (R2-A3). All that is
+ * left is `git worktree prune`, which only forgets records of folders that no
+ * longer exist. Removing a worktree is the safe close: `worktreeClose.closeTask`.
  */
-export async function cleanupWorktrees(options: { all?: boolean } = {}): Promise<CleanupResult> {
-  const config = getConfig();
+export async function cleanupWorktrees(): Promise<CleanupResult> {
   const [tasks, projects] = await Promise.all([taskStore.getAllTasks(), getProjects()]);
   const byId = new Map(projects.map(p => [p.id, p]));
-  const cutoff = Date.now() - WORKTREE_TTL_DAYS * 24 * 60 * 60 * 1000;
-
-  let removed = 0;
-  let errors = 0;
-  let kept = 0;
-  const claimed = new Set<string>();
   const touched = new Set(tasks.filter(t => t.worktreePath).map(t => t.projectId));
-
-  for (const task of tasks) {
-    if (!task.worktreePath) continue;
-    const sweep = options.all ? task.status === 'done' : isStale(task, cutoff);
-    // The scheduled sweep never throws away work nobody committed; the manual
-    // clean does, because the user asked for it.
-    if (sweep && !options.all && (await hasUncommittedWork(task.worktreePath))) {
-      claimed.add(resolve(task.worktreePath).toLowerCase());
-      kept++;
-      continue;
-    }
-    if (!sweep) {
-      claimed.add(resolve(task.worktreePath).toLowerCase());
-      continue;
-    }
-    if (await removeTaskWorktree(task, { project: byId.get(task.projectId) })) removed++;
-    else errors++;
-  }
-
-  // Directories left behind by a deleted task or a half-finished create.
-  let orphans = 0;
-  try {
-    const entries = await readdir(config.basePath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const full = join(config.basePath, entry.name);
-      if (claimed.has(resolve(full).toLowerCase())) continue;
-      if (!(await looksLikeTaskWorktree(full))) continue;
-      try {
-        await rm(full, { recursive: true, force: true });
-        orphans++;
-      } catch {
-        errors++;
-      }
-    }
-  } catch {
-    // No base directory yet — nothing to sweep.
-  }
-
-  // A repo keeps the record of a worktree until it is told the folder is gone.
+  let pruned = 0;
   await Promise.all(
     [...touched].map(async id => {
       const project = byId.get(id);
-      if (project?.isGitRepo) await gitService.pruneWorktrees(project.path);
+      if (project?.isGitRepo) { await gitService.pruneWorktrees(project.path); pruned++; }
     }),
   );
-
-  if (removed || orphans || kept) {
-    log.info('git', 'Worktree cleanup', `${removed} removed, ${orphans} orphan folders, ${kept} kept (uncommitted work), ${errors} errors`);
-  }
-  return { removed, orphans, errors, kept };
+  return { removed: 0, pruned };
 }
 
 // -- Scheduled sweep ------------------------------------------------------

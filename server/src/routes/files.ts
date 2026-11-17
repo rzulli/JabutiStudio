@@ -4,6 +4,8 @@ import { join, resolve, extname, relative, sep, dirname, basename } from 'path';
 import { getProjects } from '../services/projectDiscovery.js';
 import { openFolder } from '../services/terminalLauncher.js';
 import * as log from '../services/logService.js';
+import { listWorktrees } from '../services/gitService.js';
+import { isInside } from '../services/worktreeClose.js';
 import { searchFileNames, searchContent, buildMatcher, invalidateFileIndex, SEARCH_EXCLUDED_DIRS } from '../services/fileSearch.js';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
@@ -253,6 +255,11 @@ export async function fileRoutes(app: FastifyInstance) {
       try {
         const st = await stat(targetPath);
         if (st.isDirectory()) {
+          // A folder that is, or holds, a linked worktree is not deleted from here: that would
+          // throw away a branch's uncommitted work. Closing a worktree is the safe close flow.
+          const holds = (await listWorktrees(projectPath).catch(() => [])).slice(1)
+            .find(w => isInside(w.path, targetPath));
+          if (holds) return reply.status(409).send({ error: `This folder contains a git worktree (${holds.path}). Close it from the task's Review tab or the worktrees list instead of deleting the folder.` });
           await rm(targetPath, { recursive: true });
           log.info('files', `Directory deleted: ${relPath}`, undefined, request.params.projectId);
         } else {

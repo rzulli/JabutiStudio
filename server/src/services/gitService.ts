@@ -477,34 +477,6 @@ export async function createWorktree(projectPath: string, branch: string, dest: 
   await git.raw(args);
 }
 
-/**
- * Remove a worktree directory and its git record. Falls back to deleting the
- * directory when git refuses (uncommitted changes) only if `force` is set —
- * otherwise the caller gets the error and can keep the work.
- */
-export async function removeWorktree(projectPath: string, dest: string, force = true): Promise<void> {
-  const git = getGit(projectPath);
-  try {
-    await git.raw(force ? ['worktree', 'remove', '--force', dest] : ['worktree', 'remove', dest]);
-  } catch (err) {
-    if (!force) throw err;
-    // The record can outlive the directory (or the other way round) — clean
-    // both sides by hand so a retry doesn't hit the same wall.
-    await fsp.rm(dest, { recursive: true, force: true });
-    await pruneWorktrees(projectPath);
-  }
-}
-
-/** Delete a local branch. Used after its worktree is gone. */
-export async function deleteBranch(projectPath: string, branch: string, force = true): Promise<void> {
-  const git = getGit(projectPath);
-  try {
-    await git.raw(['branch', force ? '-D' : '-d', branch]);
-  } catch {
-    // Already gone, or still checked out somewhere — not worth failing over.
-  }
-}
-
 // ── Lifecycle primitives (R2-A1) ─────────────────────────
 // Fresh reads, never the 2.5 s status cache: acceptance and integration decide
 // on what git says now. They run `git` directly so exit codes (merge-tree,
