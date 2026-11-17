@@ -5,6 +5,10 @@ import { spawn, execSync, type ChildProcess } from 'child_process';
 import { request } from 'http';
 import { homedir, platform as osPlatform } from 'os';
 import { autoUpdater } from 'electron-updater';
+import {
+  ensureBackend, isUrlReachable, probeBackend, SERVER_PROTOCOL,
+  type BackendHandle, type OwnedProcess,
+} from './serverBootstrap';
 
 const APP_ID = 'games.jabuti.studio';
 
@@ -95,6 +99,10 @@ mkdirSync(join(DATA_DIR, 'tasks'), { recursive: true });
 // Use different port than dev server (5420) to avoid conflicts
 const PORT = isDev ? 5420 : 5430;
 let serverProcess: ChildProcess | null = null;
+/** The backend this window uses: its own child process, or one that was already running (never stopped). */
+let backend: BackendHandle | null = null;
+/** Vite's dev server, which proxies /api to the backend. Used when the reused backend serves no client. */
+const VITE_DEV_URL = 'http://localhost:5421';
 
 /** HTTP GET health check — resolves true if server responds, false on error */
 function checkServerReady(): Promise<boolean> {
@@ -124,7 +132,36 @@ async function waitForServer(maxAttempts = 30, intervalMs = 500): Promise<void> 
   console.log('[Electron] Server health check timed out, proceeding anyway');
 }
 
-function startServer(): Promise<void> {
+/**
+ * Brings up the backend. A compatible JabutiStudio already on the port is reused and left running on quit.
+ * A free port gets a backend started by this window. Any other process on the port aborts the launch
+ * without being started or stopped.
+ */
+async function startServer(): Promise<void> {
+  const handle = await ensureBackend({
+    port: PORT,
+    probe: () => probeBackend({ port: PORT, expectedProtocol: SERVER_PROTOCOL }),
+    spawnOwn: spawnServer,
+  });
+
+  if (handle.ownership === 'external') {
+    console.log(`[Electron] Reusing the JabutiStudio backend already on port ${PORT} (not stopped on quit)`);
+    if (isDev && !handle.serveClient && !process.env.VITE_DEV_SERVER) {
+      // localhost may resolve to ::1 while Vite listens on IPv4, so either loopback name counts.
+      const viteUp = await isUrlReachable('localhost', 5421) || await isUrlReachable('127.0.0.1', 5421);
+      if (!viteUp) {
+        throw new Error(
+          `The backend on port ${PORT} serves only the API, and the Vite dev server on port 5421 is not running. `
+          + 'Start it with pnpm dev, or use pnpm electron:dev.',
+        );
+      }
+    }
+  }
+  backend = handle;
+}
+
+/** Starts a backend as a child process of this window. Resolves once it is ready. */
+function spawnServer(): Promise<OwnedProcess> {
   return new Promise((res, reject) => {
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
@@ -167,6 +204,7 @@ function startServer(): Promise<void> {
     }
 
     const proc = serverProcess!;
+    const owned: OwnedProcess = { stop: () => { proc.kill('SIGTERM'); } };
     let started = false;
 
     proc.stdout?.on('data', (data: Buffer) => {
@@ -176,7 +214,7 @@ function startServer(): Promise<void> {
       if (!started && (msg.includes('running on') || msg.includes(`${PORT}`))) {
         started = true;
         // Server reported ready via stdout — confirm with HTTP health check
-        waitForServer(10, 300).then(() => res());
+        waitForServer(10, 300).then(() => res(owned));
       }
     });
 
@@ -206,17 +244,37 @@ function startServer(): Promise<void> {
       if (!started) {
         started = true;
         console.log('[Electron] Stdout detection timed out, falling back to HTTP polling');
-        waitForServer().then(() => res());
+        waitForServer().then(() => res(owned));
       }
     }, 5000);
   });
 }
 
+/** Stops only a backend this window started. A reused one belongs to someone else and keeps running. */
 function stopServer() {
-  if (serverProcess) {
-    serverProcess.kill('SIGTERM');
+  // Quit while our own backend is still starting: it is not registered yet, but it is ours to stop.
+  if (!backend) {
+    serverProcess?.kill('SIGTERM');
     serverProcess = null;
+    return;
   }
+  if (backend.ownership === 'own') {
+    console.log('[Electron] Stopping the backend started by this window');
+  } else {
+    console.log(`[Electron] Leaving the backend on port ${PORT} running: this window did not start it`);
+  }
+  backend.stop();
+  backend = null;
+  serverProcess = null;
+}
+
+/** Where the window loads the interface from. */
+function interfaceUrl(): string {
+  if (isDev && process.env.VITE_DEV_SERVER) return process.env.VITE_DEV_SERVER;
+  // A dev backend started without the client build answers only the API; the UI comes from Vite, whose
+  // proxy reaches the same backend.
+  if (isDev && backend?.ownership === 'external' && !backend.serveClient) return VITE_DEV_URL;
+  return `http://127.0.0.1:${PORT}`;
 }
 
 // ── Window ─────────────────────────────────────────────────────────
@@ -316,18 +374,12 @@ function createWindow() {
   mainWindow.on('focus', () => mainWindow?.flashFrame(false));
 
   // In dev mode with Vite, load from dev server; otherwise from Fastify
-  if (isDev && process.env.VITE_DEV_SERVER) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER);
-  } else {
-    mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-  }
+  mainWindow.loadURL(interfaceUrl());
 
   // Retry loading if the page fails (server not ready yet)
   let loadRetries = 0;
   const maxLoadRetries = 5;
-  const serverUrl = isDev && process.env.VITE_DEV_SERVER
-    ? process.env.VITE_DEV_SERVER
-    : `http://127.0.0.1:${PORT}`;
+  const serverUrl = interfaceUrl();
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDesc) => {
     if (loadRetries < maxLoadRetries) {
