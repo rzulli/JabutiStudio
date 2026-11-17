@@ -35,12 +35,12 @@ export async function systemRoutes(app: FastifyInstance) {
     return v;
   });
 
-  app.get<{ Params: { id: string; sid: string }; Querystring: { worktree?: string; goal?: string } }>('/api/projects/:id/systems/:sid/brief', async (request, reply) => {
+  app.get<{ Params: { id: string; sid: string }; Querystring: { worktree?: string; goal?: string; area?: string } }>('/api/projects/:id/systems/:sid/brief', async (request, reply) => {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
     const v = await systems.resolveSystem(project, request.params.sid, request.query.worktree);
     if ('error' in v) return reply.status(404).send(v);
-    return { text: systems.brief(v, request.query.goal), head: v.checkout.head, root: v.checkout.root };
+    return { text: systems.brief(v, request.query.goal, request.query.area), head: v.checkout.head, root: v.checkout.root };
   });
 
   app.post<{ Params: { id: string }; Body: systems.ProposalInput }>('/api/projects/:id/systems', async (request, reply) => {

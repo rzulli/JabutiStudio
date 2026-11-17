@@ -210,7 +210,7 @@ test('T7: the agent brief carries identity, revision, conflicts and what is unco
   const text = svc.brief(v, 'Investigate the cost')
   assert.match(text, /sys-first-maturation/)
   assert.match(text, /HEAD: [0-9a-f]{7,}/)
-  assert.match(text, /UNRESOLVED CONFLICT: DK-T-001 vs DK-T-002/)
+  assert.match(text, /UNRESOLVED CONFLICT \(DK-T-001 vs DK-T-002\)/)
   assert.match(text, /NOT confirmed/)
   assert.match(text, /integrated checkout/)
   assert.ok(text.length < 6000)

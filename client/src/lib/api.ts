@@ -478,13 +478,44 @@ export interface SystemSummary {
   files: number; decisions: number; conflicts: number; flags: string[]
 }
 export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; uncommitted: number; integration: string }
+export type SystemTier = 'core' | 'participant' | 'candidate' | 'test' | 'historical' | 'related'
+export type SystemFacet = 'logic' | 'data' | 'ui' | 'telemetry' | 'purchase' | 'requirement' | 'effect' | 'test' | 'other'
+export type EvidenceState = 'verified' | 'file-only' | 'moved' | 'stale' | 'missing'
+export type EvidenceBasis = 'demonstrated' | 'inferred' | 'candidate' | 'stale'
+export interface SystemEvidence { path: string; needle?: string; note?: string; state: EvidenceState; line?: number; resolvedPath?: string }
 export interface SystemMember {
   path: string; role: 'code' | 'scene' | 'resource' | 'test'; score: number
   why: { kind: 'anchor' | 'dk' | 'name' | 'mention'; detail: string }[]
-  confidence: 'declared' | 'extracted'; uncommitted: boolean; changedSinceAnalysis: boolean
+  confidence: 'declared' | 'extracted'; tier: SystemTier; facet: SystemFacet; areas: string[]
+  uncommitted: boolean; changedSinceAnalysis: boolean
   state: 'ok' | 'moved'; movedFrom?: string
   symbols: { id: string; label: string; kind: string; line: number }[]
 }
+export interface SystemFamily { key: string; label: string; count: number; sample: string[]; paths: string[] }
+export interface SystemArea {
+  id: string; name: string; kind: 'subsystem' | 'mechanic' | 'entity' | 'facet'; summary: string
+  status: 'proposed' | 'confirmed' | 'inferred'; origin: string; inferred: boolean; basis: EvidenceBasis
+  evidence: SystemEvidence[]
+  files: { path: string; tier: SystemTier; facet: SystemFacet; line?: number; uncommitted: boolean }[]
+  fileCount: number; testCount: number; families: SystemFamily[]
+}
+export interface SystemEndpoint { ref: string; label: string; type: 'self' | 'area' | 'system' | 'entity'; systemId?: string; areaId?: string; known: boolean }
+export interface SystemRelation {
+  id: string; kind: string; label: string; from: SystemEndpoint; to: SystemEndpoint; note?: string
+  status: 'proposed' | 'confirmed'; origin: string; basis: EvidenceBasis; evidence: SystemEvidence[]
+  direction: 'internal' | 'outgoing' | 'incoming'; storedIn: string; examinedHead?: string
+}
+export interface SystemTechnicalLink { toSystem?: string; toName: string; files: string[]; relations: Record<string, number>; edges: number; extracted: number; inferred: number }
+export interface SystemCompareRow {
+  kind: 'code' | 'code-comment' | 'document' | 'test'; label: string; ref: string; freshness?: string; note?: string
+  value?: number; unit?: string; line?: string; ambiguous?: boolean; fromDecision: string
+}
+export interface SystemCompareColumn {
+  key: string; value?: number; unit?: string
+  claimedBy: { id: string; title: string; decisionState: string; approval: string; evidenceStatus: string; implementation: string }[]
+  rows: SystemCompareRow[]; implemented: boolean; declared: boolean; inTests: boolean
+}
+export interface SystemComparison { id: string; topic: string; numeric: boolean; decisions: string[]; columns: SystemCompareColumn[]; approvalNote: string; unitNote: string }
 export interface SystemDecision {
   id: string; title: string; claim: string; decisionState: string
   approval?: { state: string; source: string; quote?: string }
@@ -495,13 +526,18 @@ export interface SystemDecision {
 }
 export interface SystemView {
   id: string; name: string; summary: string; responsibilities: string[]
+  kind: 'system' | 'subsystem' | 'mechanic' | 'entity'
+  areas: SystemArea[]; relations: SystemRelation[]; technical: SystemTechnicalLink[]; comparisons: SystemComparison[]
+  families: SystemFamily[]; testGroups: { dir: string; count: number; paths: string[] }[]
+  overlaps: { id: string; name: string; shared: number; ratio: number }[]
+  tierCounts: Record<SystemTier, number>
   status: SystemStatus; origin: 'discovery' | 'agent' | 'user'; confirmedAt?: string; confirmedVia?: string
   anchors: { terms: string[]; files: string[]; decisions: string[] }
   mergedInto?: string; mergedFrom?: string[]
-  suggestions: { at: string; origin: string; summary?: string; anchors: { terms: string[]; files: string[]; decisions: string[] } }[]
+  suggestions: { at: string; origin: string; summary?: string; anchors: { terms: string[]; files: string[]; decisions: string[] }; areas?: unknown[]; relations?: unknown[] }[]
   checkout: SystemCheckout
   members: SystemMember[]; weakerMembers: number
-  neighbors: { path: string; edges: number; confidence: string; relation: string; via: string }[]
+  neighbors: { path: string; edges: number; confidence: string; relation: string; via: string; relations: Record<string, number>; extractedEdges: number; inferredEdges: number }[]
   design: { available: boolean; reason?: string; decisions: SystemDecision[]; conflicts: [string, string][] }
   tasks: { id: string; number?: number; title: string; status: string; matchedBy: string }[]
   related: { id: string; name: string; shared: string[]; declared: boolean }[]
@@ -516,6 +552,7 @@ export interface SystemView {
 export interface SystemEdit {
   name?: string; summary?: string; responsibilities?: string[]; status?: 'confirmed' | 'proposed' | 'dismissed'
   anchors?: { terms?: string[]; files?: string[]; decisions?: string[] }; ackVanished?: boolean; clearSuggestions?: boolean
+  confirm?: { areas?: string[]; relations?: string[] }; remove?: { areas?: string[]; relations?: string[] }; adoptSuggestion?: number
 }
 const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
 
@@ -545,8 +582,8 @@ export const api = {
     request<{ systems: SystemSummary[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
   getSystem: (projectId: string, id: string, worktree?: string) =>
     request<SystemView>(`/projects/${projectId}/systems/${encodeURIComponent(id)}?${wt(worktree)}`),
-  getSystemBrief: (projectId: string, id: string, worktree?: string, goal?: string) =>
-    request<{ text: string; head?: string; root: string }>(`/projects/${projectId}/systems/${encodeURIComponent(id)}/brief?${wt(worktree)}${goal ? `&goal=${encodeURIComponent(goal)}` : ''}`),
+  getSystemBrief: (projectId: string, id: string, worktree?: string, goal?: string, area?: string) =>
+    request<{ text: string; head?: string; root: string }>(`/projects/${projectId}/systems/${encodeURIComponent(id)}/brief?${wt(worktree)}${goal ? `&goal=${encodeURIComponent(goal)}` : ''}${area ? `&area=${encodeURIComponent(area)}` : ''}`),
   discoverSystems: (projectId: string, worktree?: string) =>
     request<{ added: number; candidates: number }>(`/projects/${projectId}/systems/discover?${wt(worktree)}`, { method: 'POST' }),
   editSystem: (projectId: string, id: string, body: SystemEdit) =>

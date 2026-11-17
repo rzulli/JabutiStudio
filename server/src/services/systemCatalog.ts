@@ -7,6 +7,7 @@ import { writeJsonAtomic } from './atomicJson.js';
 import * as graphify from './graphifyAdapter.js';
 import * as designKnowledge from './designKnowledge.js';
 import * as taskStore from './taskStore.js';
+import * as sem from './systemSemantics.js';
 
 const run = promisify(execFile);
 
@@ -31,7 +32,28 @@ export type Origin = 'discovery' | 'agent' | 'user';
 export type Status = 'proposed' | 'confirmed' | 'dismissed' | 'merged';
 
 export interface Anchors { terms: string[]; files: string[]; decisions: string[] }
-interface Suggestion { at: string; origin: Origin; summary?: string; anchors: Anchors }
+interface Suggestion { at: string; origin: Origin; summary?: string; anchors: Anchors; areas?: number; relations?: number; payload?: { areas: StoredArea[]; relations: StoredRelation[] } }
+
+/**
+ * A responsibility inside a system (subsystem / mechanic / entity). Persisted only because it is a semantic
+ * judgement; its files, symbols and verification state are derived on every read. `anchors.files` entries may be
+ * `path` or `path#symbol`. Evidence = a pointer plus text the code must still contain (see verifyEvidence).
+ */
+export type AreaKind = 'subsystem' | 'mechanic' | 'entity';
+export interface StoredArea {
+  id: string; name: string; kind: AreaKind; summary: string;
+  status: 'proposed' | 'confirmed'; origin: Origin;
+  anchors: { files: string[]; terms: string[] };
+  evidence: sem.EvidenceRef[];
+}
+/**
+ * A gameplay relation. Endpoints: `self` | `area:<id>` | `sys:<systemId>[/<areaId>]` | `ent:<label>`.
+ * It is NEVER derived from calls/imports: someone points at the code that demonstrates it.
+ */
+export interface StoredRelation {
+  id: string; kind: sem.RelationKind; from: string; to: string; note?: string;
+  status: 'proposed' | 'confirmed'; origin: Origin; evidence: sem.EvidenceRef[];
+}
 interface Vanished { key: string; since: string }
 
 export interface StoredSystem {
@@ -48,6 +70,9 @@ export interface StoredSystem {
   mergedInto?: string;
   mergedFrom?: string[];
   anchors: Anchors;
+  kind?: 'system' | 'subsystem' | 'mechanic' | 'entity';
+  areas?: StoredArea[];
+  relations?: StoredRelation[];
   related: string[];                 // declared related system ids
   suggestions?: Suggestion[];        // proposals made against a confirmed system (never applied silently)
   seen?: { at: string; keys: string[] };
@@ -205,12 +230,16 @@ export interface Member {
   path: string; role: 'code' | 'scene' | 'resource' | 'test';
   why: Why[]; score: number;
   confidence: 'declared' | 'extracted';       // declared = a person/agent/DK named it; extracted = found by name or text
+  tier: sem.Tier; facet: sem.Facet; areas: string[];
   uncommitted: boolean; changedSinceAnalysis: boolean;
   state: 'ok' | 'moved';
   movedFrom?: string;
   symbols: { id: string; label: string; kind: string; line: number }[];
 }
-export interface Neighbor { path: string; edges: number; confidence: string; relation: string; via: string }
+export interface Neighbor {
+  path: string; edges: number; confidence: string; relation: string; via: string;
+  relations: Record<string, number>; extractedEdges: number; inferredEdges: number;
+}
 
 const roleOf = (p: string): Member['role'] =>
   /(^|\/)(tests?|test_[^/]*|[^/]*_test)(\/|\.|$)/i.test(p) || /(^|\/)tests?\//i.test(p) ? 'test'
@@ -240,8 +269,29 @@ export interface DecisionView {
   files: string[]; tests: string[];
 }
 
+export interface AreaView {
+  id: string; name: string; kind: AreaKind | 'facet'; summary: string; status: 'proposed' | 'confirmed' | 'inferred'; origin: Origin | 'derived';
+  /** inferred = grouped from file names/paths, not a judgement about design */
+  inferred: boolean; basis: sem.Basis; evidence: sem.ResolvedEvidence[];
+  files: { path: string; tier: sem.Tier; facet: sem.Facet; line?: number; uncommitted: boolean }[];
+  fileCount: number; testCount: number; families: sem.Family[];
+}
+export interface EndpointView { ref: string; label: string; type: 'self' | 'area' | 'system' | 'entity'; systemId?: string; areaId?: string; known: boolean }
+export interface RelationView {
+  id: string; kind: sem.RelationKind; label: string; from: EndpointView; to: EndpointView; note?: string;
+  status: 'proposed' | 'confirmed'; origin: Origin; basis: sem.Basis; evidence: sem.ResolvedEvidence[];
+  direction: 'internal' | 'outgoing' | 'incoming'; storedIn: string; examinedHead?: string;
+}
+export interface TechnicalLink { toSystem?: string; toName: string; files: string[]; relations: Record<string, number>; edges: number; extracted: number; inferred: number }
+
 export interface SystemView {
   id: string; name: string; summary: string; responsibilities: string[];
+  kind: 'system' | 'subsystem' | 'mechanic' | 'entity';
+  areas: AreaView[]; relations: RelationView[]; technical: TechnicalLink[];
+  comparisons: sem.Comparison[];
+  families: sem.Family[]; testGroups: { dir: string; count: number; paths: string[] }[];
+  overlaps: { id: string; name: string; shared: number; ratio: number }[];
+  tierCounts: Record<sem.Tier, number>;
   status: Status; origin: Origin; confirmedAt?: string; confirmedVia?: string;
   anchors: Anchors; mergedInto?: string; mergedFrom?: string[]; suggestions: Suggestion[];
   checkout: CheckoutInfo;
@@ -317,6 +367,8 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   for (const d of dkRes) byId.set(d.id, d);
 
   // ---- members ----
+  const stored = await listStored(project.id);
+  const areasStored = sys.areas ?? [];
   const cand = new Map<string, { why: Why[]; score: number; declared: boolean; moved?: string }>();
   const add = (path: string, why: Why, score: number, declared: boolean, movedFrom?: string) => {
     const e = cand.get(path) ?? { why: [], score: 0, declared: false };
@@ -324,15 +376,30 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     if (movedFrom) e.moved = movedFrom;
     cand.set(path, e);
   };
+  /** An anchored path in THIS checkout: itself, or the single file with the same base name (renamed/moved). */
+  const resolvePath = (p: string): { path: string; movedFrom?: string } | null => {
+    if (fileSet.has(p)) return { path: p };
+    const moved = files.filter(f => basename(f) === basename(p));
+    return moved.length === 1 ? { path: moved[0], movedFrom: p } : null;
+  };
   const unresolved: { path: string; state: 'gone' }[] = [];
   for (const a of sys.anchors.files) {
     const p = posix(a);
-    if (fileSet.has(p)) add(p, { kind: 'anchor', detail: 'named by the system' }, 100, true);
-    else {
-      const moved = files.filter(f => basename(f) === basename(p));
-      if (moved.length === 1) add(moved[0], { kind: 'anchor', detail: `named by the system (moved from ${p})` }, 100, true, p);
-      else unresolved.push({ path: p, state: 'gone' });
+    const r = resolvePath(p);
+    if (r) add(r.path, { kind: 'anchor', detail: r.movedFrom ? `named by the system (moved from ${p})` : 'named by the system' }, 100, true, r.movedFrom);
+    else unresolved.push({ path: p, state: 'gone' });
+  }
+  const areaAnchorPaths = new Map<string, { path: string; line?: number }[]>();
+  for (const area of areasStored) {
+    const list: { path: string; line?: number }[] = [];
+    for (const raw of area.anchors.files) {
+      const [pp, symbol] = posix(raw).split('#');
+      const r = resolvePath(pp);
+      if (!r) { unresolved.push({ path: pp, state: 'gone' }); continue; }
+      add(r.path, { kind: 'anchor', detail: `anchor of "${area.name}"${r.movedFrom ? ` (moved from ${pp})` : ''}` }, 90, true, r.movedFrom);
+      list.push({ path: r.path, line: await locate(root, r.path, symbol) });
     }
+    areaAnchorPaths.set(area.id, list);
   }
   const declaredOrTerm = (d: any) => sys.anchors.decisions.includes(d.id) ||
     terms.some(t => `${d.title} ${d.claim} ${(d.scope ?? []).join(' ')}`.toLowerCase().includes(t.toLowerCase()));
@@ -346,7 +413,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   const counts = await mentions(root, files, terms);
   for (const [f, n] of counts) {
     if (!fileSet.has(f)) continue;
-    if (n >= 3 || cand.has(f)) add(f, { kind: 'mention', detail: `${n} line${n > 1 ? 's' : ''} mention the system's terms` }, Math.min(n, 30), false);
+    if (n >= 3 || cand.has(f)) add(f, { kind: 'mention', detail: `${n} line${n > 1 ? 's' : ''} mention the system's terms` }, Math.min(n, 12), false);
   }
 
   // decisions that merely touch a strong member
@@ -362,7 +429,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
       relevance: sys.anchors.decisions.includes(d.id) ? 'declared' : direct ? 'term' : 'touches-member',
       evidence: (d.evidence ?? []).filter((e: any) => !e.candidate_only).map((e: any) => ({
         type: e.type, ref: e.path ? `${e.path} (was ${e.ref})` : e.ref, freshness: e.freshness, detail: e.detail, note: e.note,
-        excerpt: (e.excerpt ?? []).filter((x: any) => String(x.text).trim()).slice(0, 4).map((x: any) => `L${x.line}: ${x.text}`),
+        excerpt: (e.excerpt ?? []).filter((x: any) => String(x.text).trim()).slice(0, 10).map((x: any) => `L${x.line}: ${x.text}`),
       })),
       files: (d.files ?? []).map((f: any) => f.path), tests: (d.tests ?? []).map((t: any) => t.path),
     });
@@ -370,18 +437,49 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   const ids = new Set(decisions.map(d => d.id));
   const conflicts: [string, string][] = [];
   for (const d of decisions) for (const o of d.conflictsWith) if (ids.has(o) && d.id < o) conflicts.push([d.id, o]);
+  // conflicts form groups (A~B, B~C → one comparison of three), each compared side by side
+  const comparisons: sem.Comparison[] = [];
+  {
+    const parent = new Map<string, string>();
+    const find = (x: string): string => (parent.get(x) === undefined || parent.get(x) === x) ? x : find(parent.get(x)!);
+    for (const [a, b] of conflicts) parent.set(find(a), find(b));
+    const groups = new Map<string, string[]>();
+    for (const [a, b] of conflicts) for (const x of [a, b]) { const r = find(x); const gr = groups.get(r) ?? groups.set(r, []).get(r)!; if (!gr.includes(x)) gr.push(x); }
+    for (const gr of groups.values()) comparisons.push(sem.compareDecisions(gr.sort().map(did => decisions.find(d => d.id === did)!)));
+  }
 
-  // ---- rank + symbols ----
+  // ---- tiers, facets, families ----
+  const tierOf = (path: string, v: { why: Why[]; declared: boolean }): sem.Tier => {
+    const role = roleOf(path);
+    if (role === 'test') return 'test';
+    if (v.declared) return 'core';                                           // a person/agent/DK pointed at it
+    if (v.why.some(w => w.kind === 'name') && role !== 'resource') return 'participant';   // its name says so
+    return 'candidate';                                                      // text mention / generated data only
+  };
+  const tierRank: Record<sem.Tier, number> = { core: 0, participant: 1, candidate: 2, test: 3, historical: 4, related: 5 };
+  const tiered = [...cand].map(([path, v]) => ({ path, v, tier: tierOf(path, v) }));
+  const tierCounts: Record<sem.Tier, number> = { core: 0, participant: 0, related: 0, candidate: 0, test: 0, historical: 0 };
+  for (const t of tiered) tierCounts[t.tier]++;
+  const { families } = sem.familiesOf(tiered.filter(t => roleOf(t.path) === 'resource' && t.tier !== 'core').map(t => t.path));
+  const inFamily = new Set(families.flatMap(f => f.paths));
+  const tGroups = sem.testGroups(tiered.filter(t => t.tier === 'test').map(t => t.path));
+  const listable = tiered.filter(t => !inFamily.has(t.path))
+    .sort((a, b) => tierRank[a.tier] - tierRank[b.tier] || b.v.score - a.v.score || a.path.localeCompare(b.path));
+  const shown = [...listable.filter(t => t.tier !== 'test').slice(0, MEMBER_CAP), ...listable.filter(t => t.tier === 'test').slice(0, 12)];
+
+  const areaOfFile = new Map<string, string[]>();
+  for (const [aid, list] of areaAnchorPaths) for (const f of list) (areaOfFile.get(f.path) ?? areaOfFile.set(f.path, []).get(f.path)!).push(aid);
+
+  // ---- symbols ----
   const idx = g ? nodesByFile(g) : null;
-  const ranked = [...cand].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]));
   const members: Member[] = [];
-  for (const [path, v] of ranked.slice(0, MEMBER_CAP)) {
+  for (const { path, v, tier } of shown) {
     let changed = false;
     if (startedAt && info.isCanonical) { try { changed = (await fs.stat(join(root, path))).mtimeMs > startedAt; } catch { /* gone */ } }
     const syms = (idx?.get(path) ?? []).filter(n => n.kind === 'func' || n.kind === 'signal' || n.kind === 'class');
     const hit = (s: graphify.GNode) => terms.some(t => s.label.toLowerCase().includes(t.toLowerCase()));
     members.push({
-      path, role: roleOf(path), why: v.why, score: v.score,
+      path, role: roleOf(path), why: v.why, score: v.score, tier, facet: sem.facetOf(path), areas: areaOfFile.get(path) ?? [],
       confidence: v.declared ? 'declared' : 'extracted',
       uncommitted: dirtyFiles.has(path), changedSinceAnalysis: changed,
       state: v.moved ? 'moved' : 'ok', movedFrom: v.moved,
@@ -395,7 +493,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   if (g && idx) {
     const memberPaths = new Set(members.map(m => m.path));
     const acc = new Map<string, Neighbor>();
-    for (const m of members.filter(x => x.role === 'code' && (x.confidence === 'declared' || x.why.some(w => w.kind === 'name')))) {
+    for (const m of members.filter(x => x.role === 'code' && (x.tier === 'core' || x.tier === 'participant'))) {
       for (const n of idx.get(m.path) ?? []) {
         for (const side of [g.out.get(n.id) ?? [], g.inn.get(n.id) ?? []]) {
           for (const e of side) {
@@ -403,13 +501,18 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
             const other = g.nodes.get(e.from === n.id ? e.to : e.from);
             if (!other?.file || memberPaths.has(other.file) || skipped(other.file) || !fileSet.has(other.file)) continue;
             const cur = acc.get(other.file);
-            const conf = e.confidence === 'EXTRACTED' || cur?.confidence === 'EXTRACTED' ? 'EXTRACTED' : String(e.confidence);
-            acc.set(other.file, { path: other.file, edges: (cur?.edges ?? 0) + e.count, confidence: conf, relation: cur?.relation ?? e.relation, via: cur?.via ?? m.path });
+            const extracted = e.confidence === 'EXTRACTED';
+            const conf = extracted || cur?.confidence === 'EXTRACTED' ? 'EXTRACTED' : String(e.confidence);
+            const relations = { ...(cur?.relations ?? {}) }; relations[e.relation] = (relations[e.relation] ?? 0) + e.count;
+            acc.set(other.file, {
+              path: other.file, edges: (cur?.edges ?? 0) + e.count, confidence: conf, relation: cur?.relation ?? e.relation, via: cur?.via ?? m.path,
+              relations, extractedEdges: (cur?.extractedEdges ?? 0) + (extracted ? e.count : 0), inferredEdges: (cur?.inferredEdges ?? 0) + (extracted ? 0 : e.count),
+            });
           }
         }
       }
     }
-    neighbors.push(...[...acc.values()].sort((a, b) => Number(b.confidence === 'EXTRACTED') - Number(a.confidence === 'EXTRACTED') || b.edges - a.edges).slice(0, 14));
+    neighbors.push(...[...acc.values()].sort((a, b) => Number(b.confidence === 'EXTRACTED') - Number(a.confidence === 'EXTRACTED') || b.edges - a.edges).slice(0, 24));
   }
 
   // ---- tasks: only a verifiable link (a member file named in the task text) ----
@@ -425,15 +528,115 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     }
   } catch { /* tasks are optional */ }
 
-  // ---- related systems: shared members, plus declared ----
+  // ---- areas: stored responsibilities (verified now) or, failing that, an inferred split by facet ----
+  const areaViews: AreaView[] = [];
+  const codeLike = (p: string) => roleOf(p) === 'code' || roleOf(p) === 'scene';
+  for (const a of areasStored) {
+    const pinned = areaAnchorPaths.get(a.id) ?? [];
+    const pinnedSet = new Set(pinned.map(f => f.path));
+    const byTerm = a.anchors.terms.length
+      ? files.filter(f => codeLike(f) && !pinnedSet.has(f) && roleOf(f) !== 'test' && !!nameMatches(f, a.anchors.terms))
+      : [];
+    const fl: AreaView['files'] = [
+      ...pinned.map(f => ({ path: f.path, tier: 'core' as sem.Tier, facet: sem.facetOf(f.path), line: f.line, uncommitted: dirtyFiles.has(f.path) })),
+      ...byTerm.slice(0, 10).map(f => ({ path: f, tier: 'participant' as sem.Tier, facet: sem.facetOf(f), uncommitted: dirtyFiles.has(f) })),
+    ];
+    const ev = await Promise.all(a.evidence.map(e => sem.verifyEvidence(root, files, e)));
+    areaViews.push({
+      id: a.id, name: a.name, kind: a.kind, summary: a.summary, status: a.status, origin: a.origin, inferred: false,
+      basis: sem.basisOf(ev), evidence: ev, files: fl.filter(f => !sem.isTestPath(f.path)).slice(0, 14),
+      fileCount: pinned.length + byTerm.length,
+      testCount: a.anchors.terms.length ? files.filter(f => roleOf(f) === 'test' && !!nameMatches(f, a.anchors.terms)).length : 0,
+      families: [],
+    });
+  }
+  if (!areasStored.length) {
+    const groupsBy = new Map<sem.Facet, Member[]>();
+    for (const m of members) {
+      if (m.tier !== 'core' && m.tier !== 'participant') continue;
+      (groupsBy.get(m.facet) ?? groupsBy.set(m.facet, []).get(m.facet)!).push(m);
+    }
+    const order: sem.Facet[] = ['logic', 'purchase', 'requirement', 'effect', 'data', 'ui', 'telemetry', 'other'];
+    for (const f of order) {
+      const ms = groupsBy.get(f) ?? [];
+      const fam = f === 'data' ? families : [];
+      if (!ms.length && !fam.length) continue;
+      areaViews.push({
+        id: `facet:${f}`, name: sem.FACET_LABEL[f], kind: 'facet', status: 'inferred', origin: 'derived', inferred: true, basis: 'candidate', evidence: [],
+        summary: 'Grouped by what the files are named and where they live. Not a design responsibility until someone describes it.',
+        files: ms.slice(0, 14).map(m => ({ path: m.path, tier: m.tier, facet: m.facet, uncommitted: m.uncommitted })),
+        fileCount: ms.length + fam.reduce((n, x) => n + x.count, 0), testCount: 0, families: fam,
+      });
+    }
+  }
+
+  // ---- relations: only what someone documented with code evidence, re-verified against THIS checkout ----
+  const allStored = await listStored(project.id, true);
+  const endpoint = (ref: string, owner: StoredSystem): EndpointView => {
+    if (ref === 'self') return { ref, label: owner.name, type: 'self', systemId: owner.id, known: true };
+    if (ref.startsWith('area:')) { const aid = ref.slice(5); const a = owner.areas?.find(x => x.id === aid); return { ref, label: a?.name ?? aid, type: 'area', systemId: owner.id, areaId: aid, known: !!a }; }
+    if (ref.startsWith('sys:')) {
+      const [sid, aid] = ref.slice(4).split('/'); const o = allStored.find(x => x.id === sid); const a = o?.areas?.find(x => x.id === aid);
+      return { ref, label: o ? (a ? `${o.name} · ${a.name}` : o.name) : sid, type: 'system', systemId: o?.status === 'merged' && o.mergedInto ? o.mergedInto : sid, areaId: aid, known: !!o && (!aid || !!a) };
+    }
+    return { ref, label: ref.replace(/^ent:/, ''), type: 'entity', known: true };
+  };
+  const relViews: RelationView[] = [];
+  const relPairs: { r: StoredRelation; owner: StoredSystem; incoming: boolean }[] = [
+    ...(sys.relations ?? []).map(r => ({ r, owner: sys, incoming: false })),
+    ...allStored.filter(o => o.id !== sys.id && o.status !== 'dismissed').flatMap(o => (o.relations ?? [])
+      .filter(r => r.to === `sys:${sys.id}` || r.to.startsWith(`sys:${sys.id}/`)).map(r => ({ r, owner: o, incoming: true }))),
+  ];
+  for (const { r, owner, incoming } of relPairs) {
+    const ev = await Promise.all(r.evidence.map(e => sem.verifyEvidence(root, files, e)));
+    const from = endpoint(r.from, owner), to = endpoint(r.to, owner);
+    const internal = !incoming && from.systemId === sys.id && to.systemId === sys.id;
+    relViews.push({
+      id: `${owner.id}:${r.id}`, kind: r.kind, label: sem.RELATION_LABEL[r.kind], from, to, note: r.note, status: r.status, origin: r.origin,
+      basis: sem.basisOf(ev), evidence: ev, direction: incoming ? 'incoming' : internal ? 'internal' : 'outgoing', storedIn: owner.id, examinedHead: info.head,
+    });
+  }
+
+  // ---- technical links: Graphify edges grouped by the system that owns the other file (NOT gameplay facts) ----
+  const technical: TechnicalLink[] = [];
+  {
+    const others = allStored.filter(o => o.id !== sys.id && o.status !== 'dismissed' && o.status !== 'merged');
+    const ownerOf = (f: string) => others.find(o => o.anchors.files.map(posix).includes(f) || (o.areas ?? []).some(a => a.anchors.files.some(x => posix(x).split('#')[0] === f)) ||
+      (o.anchors.terms.length > 0 && !!nameMatches(f, o.anchors.terms)));
+    const by = new Map<string, TechnicalLink>();
+    for (const n of neighbors) {
+      const o = ownerOf(n.path); if (!o) continue;
+      const t = by.get(o.id) ?? by.set(o.id, { toSystem: o.id, toName: o.name, files: [], relations: {}, edges: 0, extracted: 0, inferred: 0 }).get(o.id)!;
+      t.files.push(n.path); t.edges += n.edges; t.extracted += n.extractedEdges; t.inferred += n.inferredEdges;
+      for (const [k, c] of Object.entries(n.relations)) t.relations[k] = (t.relations[k] ?? 0) + c;
+    }
+    technical.push(...[...by.values()].sort((a, b) => b.extracted - a.extracted || b.edges - a.edges));
+  }
+
+  // ---- related systems: shared members, plus declared (technical overlap, not gameplay) ----
   const related: SystemView['related'] = [];
-  const mine = new Set(members.map(m => m.path));
-  for (const o of await listStored(project.id)) {
+  const mine = new Set(members.filter(m => m.tier === 'core' || m.tier === 'participant').map(m => m.path));
+  for (const o of stored) {
     if (o.id === id) continue;
-    const otherFiles = new Set(o.anchors.files.map(posix));
+    const otherFiles = new Set([...o.anchors.files, ...(o.areas ?? []).flatMap(a => a.anchors.files.map(x => x.split('#')[0]))].map(posix));
     const shared = [...mine].filter(p => otherFiles.has(p) || (o.anchors.terms.length > 0 && !!nameMatches(p, o.anchors.terms)));
     const declared = sys.related.includes(o.id) || o.related.includes(id);
     if (shared.length || declared) related.push({ id: o.id, name: o.name, shared: shared.slice(0, 6), declared });
+  }
+
+  // ---- overlap with other candidates (redundant groupings such as two names for one thing) ----
+  const overlaps: SystemView['overlaps'] = [];
+  const myLex = await lexicalSet(root, files, sys);
+  if (myLex.size >= 5) {
+    for (const o of stored) {
+      if (o.id === id) continue;
+      const theirs = await lexicalSet(root, files, o);
+      if (theirs.size < 5) continue;
+      const shared = [...myLex].filter(p => theirs.has(p)).length;
+      const ratio = shared / Math.min(myLex.size, theirs.size);
+      if (ratio >= 0.5) overlaps.push({ id: o.id, name: o.name, shared, ratio: Math.round(ratio * 100) / 100 });
+    }
+    overlaps.sort((a, b) => b.ratio - a.ratio);
   }
 
   // ---- maintenance: vanished references (canonical checkout only, so a worktree never rewrites history) ----
@@ -442,10 +645,22 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   let vanished = sys.vanished ?? [];
   if (info.isCanonical && files.length > 0) {
     const prev = sys.seen?.keys ?? [];
-    const carry = g ? [] : prev.filter(k => k.startsWith('sym:'));
-    const nextKeys = [...keys, ...carry];
-    const gone = prev.filter(k => !nextKeys.includes(k) && !(k.startsWith('sym:') && !g));
-    const merged = new Map(vanished.filter(v => !keys.has(v.key)).map(v => [v.key, v]));
+    const fileSet = new Set(files);
+    // A reference is gone when the thing itself is gone, NOT when it merely stopped being listed (the member
+    // list is capped and tiered, so dropping out of it says nothing). A symbol is judged against the graph
+    // only while one exists for its file.
+    const isGone = (k: string): boolean => {
+      if (k.startsWith('file:')) return !fileSet.has(k.slice(5));
+      if (!k.startsWith('sym:')) return false;
+      const hash = k.indexOf('#'); const path = k.slice(4, hash); const label = k.slice(hash + 1);
+      if (!fileSet.has(path)) return true;
+      if (!g) return false;
+      const nodes = nodesByFile(g).get(path);
+      return !!nodes && nodes.length > 0 && !nodes.some(n => n.label === label);
+    };
+    const nextKeys = [...new Set([...keys, ...prev.filter(k => !isGone(k))])];
+    const gone = prev.filter(isGone);
+    const merged = new Map(vanished.filter(v => !keys.has(v.key) && isGone(v.key)).map(v => [v.key, v]));
     for (const k of gone) if (!merged.has(k)) merged.set(k, { key: k, since: now() });
     const nextVanished = [...merged.values()];
     const changedSeen = nextKeys.length !== prev.length || nextKeys.some(k => !prev.includes(k)) || nextVanished.length !== vanished.length;
@@ -460,23 +675,29 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
 
   const changedMembers = members.filter(m => m.changedSinceAnalysis).map(m => m.path);
   const limitations: string[] = [];
-  if (!g) limitations.push('Graphify has not analyzed this project: no symbols or call relations are shown.');
+  if (!g) limitations.push('Graphify has not analyzed this project: no symbols or technical relations are shown.');
   else {
-    if (!info.isCanonical) limitations.push('The Graphify graph describes the integrated checkout, not this worktree: symbols and relations may not match the files examined here. Membership by name/text and Git state are read from this worktree.');
-    if (changedMembers.length) limitations.push(`${changedMembers.length} member file(s) changed after the last analysis; symbols and relations for them may be out of date.`);
+    if (!info.isCanonical) limitations.push('The Graphify graph describes the integrated checkout, not this worktree: symbols and technical relations may not match the files examined here. Membership by name/text, evidence and Git state are read from this worktree.');
+    if (changedMembers.length) limitations.push(`${changedMembers.length} member file(s) changed after the last analysis; symbols and technical relations for them may be out of date.`);
     limitations.push('INFERRED relations are name-based guesses; calls through autoloads, instances or signal connections across files are often missing, so absence in the graph is not proof of absence.');
   }
   if (!dkAvailable) limitations.push(`Design decisions are not indexed for this project${dkReason ? ` (${dkReason})` : ''}.`);
   if (decisions.length) limitations.push('Test references are static: the catalog does not run tests, so no test result is shown.');
-  if (weaker(cand, members.length)) limitations.push(`${weaker(cand, members.length)} weaker member(s) not listed.`);
+  const weakerCount = Math.max(0, tiered.length - shown.length - inFamily.size);
+  if (weakerCount) limitations.push(`${weakerCount} weaker member(s) not listed.`);
   if (sys.status === 'proposed') limitations.push('This system is a proposal: grouping and responsibility text have not been confirmed by a person.');
+  if (!areasStored.length) limitations.push('No responsibilities were described for this system: the areas shown are inferred from file names and paths only.');
+  if (!relViews.length) limitations.push('No gameplay relations are documented. Technical links come from the code graph and are not gameplay facts.');
   if (unresolved.length) limitations.push(`${unresolved.length} file anchor(s) no longer exist in this checkout.`);
+  if (relViews.some(r => r.basis === 'stale')) limitations.push('Some documented relations have evidence that no longer holds in this checkout.');
 
   const value: SystemView = {
     id: sys.id, name: sys.name, summary: sys.summary, responsibilities: sys.responsibilities,
+    kind: sys.kind ?? 'system', areas: areaViews, relations: relViews, technical, comparisons,
+    families, testGroups: tGroups, overlaps, tierCounts,
     status: sys.status, origin: sys.origin, confirmedAt: sys.confirmedAt, confirmedVia: sys.confirmedVia,
     anchors: sys.anchors, mergedInto: sys.mergedInto, mergedFrom: sys.mergedFrom, suggestions: sys.suggestions ?? [],
-    checkout: info, members, weakerMembers: weaker(cand, members.length), neighbors,
+    checkout: info, members, weakerMembers: weakerCount, neighbors,
     design: { available: dkAvailable, reason: dkAvailable ? undefined : dkReason, decisions, conflicts },
     tasks, related,
     maintenance: {
@@ -489,7 +710,28 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   viewCache.set(key, { at: Date.now(), value });
   return value;
 }
-const weaker = (cand: Map<string, unknown>, shown: number) => Math.max(0, cand.size - shown);
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Line of `func|signal|const|var|class symbol` in a file, so an area can point at a symbol. */
+async function locate(root: string, path: string, symbol?: string): Promise<number | undefined> {
+  if (!symbol) return undefined;
+  try {
+    const i = (await fs.readFile(join(root, path), 'utf8')).split(/\r?\n/).findIndex(l => new RegExp(`\\b(func|signal|const|var|class)\\s+${esc(symbol)}\\b`).test(l));
+    return i >= 0 ? i + 1 : undefined;
+  } catch { return undefined; }
+}
+
+/** Code and scene files a system claims by name, text (3+ lines) or anchor. No DK, no tests, no generated resources. */
+function lexicalSet(root: string, files: string[], s: StoredSystem): Promise<Set<string>> {
+  return memo(`lex|${root}|${s.id}|${s.anchors.terms.join(',')}|${s.anchors.files.join(',')}`, VIEW_TTL, async () => {
+    const out = new Set<string>();
+    const ok = (f: string) => roleOf(f) === 'code' || roleOf(f) === 'scene';
+    for (const f of files) if (ok(f) && nameMatches(f, s.anchors.terms)) out.add(f);
+    for (const a of s.anchors.files) if (files.includes(posix(a))) out.add(posix(a));
+    for (const [f, n] of await mentions(root, files, s.anchors.terms)) if (n >= 3 && ok(f) && files.includes(f)) out.add(f);
+    return out;
+  });
+}
 
 export interface SystemSummary {
   id: string; name: string; summary: string; status: Status; origin: Origin;
@@ -542,15 +784,24 @@ const titleCase = (t: string) => t[0].toUpperCase() + t.slice(1);
 
 export interface Candidate { term: string; files: string[] }
 
+/** What a candidate really weighs: code/scene files, plus one per generated-resource family (200 `.tres` are one thing). */
+const effectiveSize = (list: string[]) => {
+  const nt = list.filter(f => roleOf(f) !== 'test');
+  const res = nt.filter(f => roleOf(f) === 'resource');
+  const fam = sem.familiesOf(res);
+  return nt.length - res.length + fam.families.length + fam.rest.length;
+};
+
 /** Topic words shared by several files' names: pure structure, no project knowledge. */
 export async function candidateTerms(root: string): Promise<Candidate[]> {
   const files = await listFiles(root);
   const byToken = new Map<string, Set<string>>();
   for (const f of files) for (const t of new Set(tokens(f))) (byToken.get(t) ?? byToken.set(t, new Set()).get(t)!).add(f);
-  const cands = [...byToken].map(([term, set]) => ({ term, files: [...set] }))
-    .filter(c => c.files.length >= 3 && c.files.some(f => roleOf(f) !== 'test'))
-    .sort((a, b) => b.files.length - a.files.length);
-  const kept: Candidate[] = [];
+  // a topic needs 3+ real things, not 3 test captures or 3 generated resources
+  const cands = [...byToken].map(([term, set]) => ({ term, files: [...set], size: effectiveSize([...set]) }))
+    .filter(c => c.size >= 3)
+    .sort((a, b) => b.size - a.size);
+  const kept: (Candidate & { size: number })[] = [];
   for (const c of cands) {
     const dupe = kept.some(k => c.files.filter(f => k.files.includes(f)).length >= 0.8 * c.files.length);
     if (!dupe) kept.push(c);
@@ -571,7 +822,7 @@ export async function discover(project: Project, worktree?: string) {
       if (owned) continue;
       store.systems.push({
         id: `sys-${c.term}`, name: titleCase(c.term), status: 'proposed', origin: 'discovery',
-        summary: `Candidate: ${c.files.length} files whose names share "${c.term}". Responsibility not described yet.`,
+        summary: `Candidate: ${effectiveSize(c.files)} code/scene files or resource families whose names share "${c.term}" (${c.files.filter(f => roleOf(f) === 'test').length} tests apart). Responsibility not described yet.`,
         responsibilities: [], createdAt: now(), updatedAt: now(), anchors: { terms: [c.term], files: [], decisions: [] }, related: [],
       });
       added++;
@@ -582,9 +833,48 @@ export async function discover(project: Project, worktree?: string) {
 
 // ---- proposals and review -----------------------------------------------------------------------
 
+export interface AreaInput { id?: string; name: string; kind?: AreaKind; summary?: string; files?: string[]; terms?: string[]; evidence?: sem.EvidenceRef[] }
+export interface RelationInput { id?: string; kind: string; from: string; to: string; note?: string; evidence?: sem.EvidenceRef[] }
 export interface ProposalInput {
   name: string; summary?: string; responsibilities?: string[];
   terms?: string[]; files?: string[]; decisions?: string[]; related?: string[];
+  kind?: StoredSystem['kind']; areas?: AreaInput[]; relations?: RelationInput[];
+}
+
+const cleanEv = (xs?: sem.EvidenceRef[]) => (xs ?? []).filter(e => e && typeof e.path === 'string' && e.path.trim())
+  .map(e => ({ path: posix(e.path.trim()), ...(e.needle ? { needle: e.needle } : {}), ...(e.note ? { note: e.note } : {}) }));
+const evKey = (e: sem.EvidenceRef) => `${e.path}|${e.needle ?? ''}`;
+const unionEv = (a: sem.EvidenceRef[], b: sem.EvidenceRef[]) => { const m = new Map(a.map(e => [evKey(e), e])); for (const e of b) m.set(evKey(e), e); return [...m.values()]; };
+
+const toAreas = (xs: AreaInput[] | undefined, origin: Origin): StoredArea[] => (xs ?? []).filter(a => a?.name?.trim()).map(a => ({
+  id: a.id?.trim() || slug(a.name), name: a.name.trim(), kind: a.kind ?? 'subsystem', summary: a.summary ?? '', status: 'proposed' as const, origin,
+  anchors: { files: uniq((a.files ?? []).map(posix)), terms: uniq(a.terms ?? []) }, evidence: cleanEv(a.evidence),
+}));
+const relId = (r: { kind: string; from: string; to: string }) => slug(`${r.from}-${r.kind}-${r.to}`);
+const toRelations = (xs: RelationInput[] | undefined, origin: Origin): StoredRelation[] =>
+  (xs ?? []).filter(r => r && (sem.RELATION_KINDS as readonly string[]).includes(r.kind) && r.from?.trim() && r.to?.trim()).map(r => ({
+    id: r.id?.trim() || relId(r), kind: r.kind as sem.RelationKind, from: r.from.trim(), to: r.to.trim(), note: r.note,
+    status: 'proposed' as const, origin, evidence: cleanEv(r.evidence),
+  }));
+
+/** Extends areas/relations without ever overwriting a confirmed one with something an agent wrote. */
+function mergeAreas(target: StoredSystem, areas: StoredArea[], relations: StoredRelation[], origin: Origin) {
+  let skipped = 0;
+  for (const a of areas) {
+    const cur = (target.areas ??= []).find(x => x.id === a.id);
+    if (!cur) { target.areas.push(a); continue; }
+    if (cur.status === 'confirmed' && origin !== 'user') { skipped++; continue; }
+    cur.summary = a.summary || cur.summary; cur.kind = a.kind;
+    cur.anchors = { files: uniq([...cur.anchors.files, ...a.anchors.files]), terms: uniq([...cur.anchors.terms, ...a.anchors.terms]) };
+    cur.evidence = unionEv(cur.evidence, a.evidence);
+  }
+  for (const r of relations) {
+    const cur = (target.relations ??= []).find(x => x.id === r.id);
+    if (!cur) { target.relations.push(r); continue; }
+    if (cur.status === 'confirmed' && origin !== 'user') { skipped++; continue; }
+    cur.note = r.note ?? cur.note; cur.evidence = unionEv(cur.evidence, r.evidence);
+  }
+  return skipped;
 }
 
 /**
@@ -595,12 +885,16 @@ export interface ProposalInput {
 export function propose(projectId: string, input: ProposalInput, origin: Origin) {
   return mutate(projectId, store => {
     const terms = uniq(input.terms ?? []), files = uniq((input.files ?? []).map(posix)), decisions = uniq(input.decisions ?? []);
+    const areas = toAreas(input.areas, origin), relations = toRelations(input.relations, origin);
     const wanted = slug(input.name);
     const existing = store.systems.find(s => s.status !== 'dismissed' && s.status !== 'merged' &&
       (s.id === `sys-${wanted}` || s.anchors.terms.some(t => terms.some(x => x.toLowerCase() === t.toLowerCase()))));
     if (existing) {
       if (existing.status === 'confirmed' && origin !== 'user') {
-        (existing.suggestions ??= []).push({ at: now(), origin, summary: input.summary, anchors: { terms, files, decisions } });
+        (existing.suggestions ??= []).push({
+          at: now(), origin, summary: input.summary, anchors: { terms, files, decisions },
+          areas: areas.length, relations: relations.length, payload: { areas, relations },
+        });
         existing.updatedAt = now();
         return { id: existing.id, outcome: 'suggestion-recorded' as const };
       }
@@ -608,23 +902,33 @@ export function propose(projectId: string, input: ProposalInput, origin: Origin)
       if (input.summary) existing.summary = input.summary;
       if (input.responsibilities?.length) existing.responsibilities = input.responsibilities;
       existing.related = uniq([...existing.related, ...(input.related ?? [])]);
+      if (input.kind) existing.kind = input.kind;
+      mergeAreas(existing, areas, relations, origin);
       if (existing.origin === 'discovery' && origin !== 'discovery') existing.origin = origin;
       existing.updatedAt = now();
       return { id: existing.id, outcome: 'extended' as const };
     }
     const id = `sys-${wanted || 'system'}`;
-    store.systems.push({
+    const created: StoredSystem = {
       id: store.systems.some(s => s.id === id) ? `${id}-${Date.now().toString(36)}` : id,
       name: input.name.trim(), summary: input.summary ?? '', responsibilities: input.responsibilities ?? [],
       status: 'proposed', origin, createdAt: now(), updatedAt: now(),
       anchors: { terms, files, decisions }, related: uniq(input.related ?? []),
-    });
-    return { id: store.systems[store.systems.length - 1].id, outcome: 'created' as const };
+      ...(input.kind ? { kind: input.kind } : {}), areas, relations,
+    };
+    store.systems.push(created);
+    return { id: created.id, outcome: 'created' as const };
   });
 }
 
-export type Edit = Partial<Pick<StoredSystem, 'name' | 'summary' | 'responsibilities'>> & {
+export type Edit = Partial<Pick<StoredSystem, 'name' | 'summary' | 'responsibilities' | 'kind'>> & {
   status?: 'confirmed' | 'proposed' | 'dismissed'; anchors?: Partial<Anchors>; related?: string[]; ackVanished?: boolean; clearSuggestions?: boolean;
+  /** a person's decisions about responsibilities and gameplay relations */
+  confirm?: { areas?: string[]; relations?: string[] };
+  remove?: { areas?: string[]; relations?: string[] };
+  upsertArea?: AreaInput; upsertRelation?: RelationInput;
+  /** index into `suggestions`: apply that agent proposal (as proposed, not confirmed) and drop it */
+  adoptSuggestion?: number;
 };
 
 /** Human review. The route only lets this through from the app's own UI. */
@@ -634,6 +938,7 @@ export function review(projectId: string, id: string, edit: Edit) {
     if (!s) return null;
     if (edit.name !== undefined) s.name = edit.name.trim() || s.name;
     if (edit.summary !== undefined) s.summary = edit.summary;
+    if (edit.kind) s.kind = edit.kind;
     if (edit.responsibilities) s.responsibilities = edit.responsibilities.map(x => x.trim()).filter(Boolean);
     if (edit.anchors) s.anchors = {
       terms: uniq(edit.anchors.terms ?? s.anchors.terms), files: uniq((edit.anchors.files ?? s.anchors.files).map(posix)),
@@ -644,6 +949,20 @@ export function review(projectId: string, id: string, edit: Edit) {
       s.status = edit.status;
       if (edit.status === 'confirmed') { s.confirmedAt = now(); s.confirmedVia = 'ui-request'; } else delete s.confirmedAt;
     }
+    if (edit.upsertArea) mergeAreas(s, toAreas([edit.upsertArea], 'user'), [], 'user');
+    if (edit.upsertRelation) mergeAreas(s, [], toRelations([edit.upsertRelation], 'user'), 'user');
+    for (const aid of edit.confirm?.areas ?? []) { const a = s.areas?.find(x => x.id === aid); if (a) a.status = 'confirmed'; }
+    for (const rid of edit.confirm?.relations ?? []) { const r = s.relations?.find(x => x.id === rid); if (r) r.status = 'confirmed'; }
+    if (edit.remove?.areas?.length) s.areas = (s.areas ?? []).filter(a => !edit.remove!.areas!.includes(a.id));
+    if (edit.remove?.relations?.length) s.relations = (s.relations ?? []).filter(r => !edit.remove!.relations!.includes(r.id));
+    if (edit.adoptSuggestion !== undefined) {
+      const sg = s.suggestions?.[edit.adoptSuggestion];
+      if (sg) {
+        s.anchors = { terms: uniq([...s.anchors.terms, ...sg.anchors.terms]), files: uniq([...s.anchors.files, ...sg.anchors.files]), decisions: uniq([...s.anchors.decisions, ...sg.anchors.decisions]) };
+        mergeAreas(s, sg.payload?.areas ?? [], sg.payload?.relations ?? [], 'user');
+        s.suggestions = s.suggestions!.filter((_, i) => i !== edit.adoptSuggestion);
+      }
+    }
     if (edit.ackVanished) s.vanished = [];
     if (edit.clearSuggestions) s.suggestions = [];
     s.updatedAt = now();
@@ -651,7 +970,7 @@ export function review(projectId: string, id: string, edit: Edit) {
   });
 }
 
-/** Fold `from` into `into`. The old id stays as a redirect so links and agent notes do not break. */
+/** Fold `from` into `into`. The old id stays as a redirect so links and agent notes do not break. Areas and relations survive. */
 export function merge(projectId: string, into: string, from: string[]) {
   return mutate(projectId, store => {
     const target = store.systems.find(s => s.id === into);
@@ -662,6 +981,14 @@ export function merge(projectId: string, into: string, from: string[]) {
       target.anchors = { terms: uniq([...target.anchors.terms, ...src.anchors.terms]), files: uniq([...target.anchors.files, ...src.anchors.files]), decisions: uniq([...target.anchors.decisions, ...src.anchors.decisions]) };
       target.responsibilities = uniq([...target.responsibilities, ...src.responsibilities]);
       target.mergedFrom = uniq([...(target.mergedFrom ?? []), src.id, ...(src.mergedFrom ?? [])]);
+      const rename = new Map<string, string>();
+      for (const a of src.areas ?? []) {
+        let aid = a.id;
+        if (target.areas?.some(x => x.id === aid)) { aid = `${a.id}-${slug(src.name)}`; rename.set(a.id, aid); }
+        (target.areas ??= []).push({ ...a, id: aid });
+      }
+      const fix = (ref: string) => ref.startsWith('area:') && rename.has(ref.slice(5)) ? `area:${rename.get(ref.slice(5))}` : ref;
+      for (const r of src.relations ?? []) (target.relations ??= []).push({ ...r, id: target.relations?.some(x => x.id === r.id) ? `${r.id}-${slug(src.name)}` : r.id, from: r.from === 'self' ? 'self' : fix(r.from), to: fix(r.to) });
       src.status = 'merged'; src.mergedInto = target.id; src.updatedAt = now();
     }
     target.updatedAt = now();
@@ -669,7 +996,7 @@ export function merge(projectId: string, into: string, from: string[]) {
   });
 }
 
-/** Take some anchors out of a system into a new proposed one. */
+/** Take some anchors out of a system into a new proposed one. A responsibility moves with them when ALL of its anchors moved. */
 export function split(projectId: string, id: string, input: { name: string; terms?: string[]; files?: string[] }) {
   return mutate(projectId, store => {
     const src = store.systems.find(s => s.id === id);
@@ -677,11 +1004,24 @@ export function split(projectId: string, id: string, input: { name: string; term
     const terms = uniq(input.terms ?? []), files = uniq((input.files ?? []).map(posix));
     src.anchors.terms = src.anchors.terms.filter(t => !terms.includes(t));
     src.anchors.files = src.anchors.files.filter(f => !files.includes(f));
+    const moves = (a: StoredArea) => {
+      const fs_ = a.anchors.files.map(f => posix(f).split('#')[0]);
+      const all = fs_.length > 0 && fs_.every(f => files.includes(f));
+      const allT = fs_.length === 0 && a.anchors.terms.length > 0 && a.anchors.terms.every(t => terms.includes(t));
+      return all || allT;
+    };
+    const movedAreas = (src.areas ?? []).filter(moves);
+    src.areas = (src.areas ?? []).filter(a => !movedAreas.includes(a));
     const base = `sys-${slug(input.name) || 'split'}`;
     const nid = store.systems.some(s => s.id === base) ? `${base}-${Date.now().toString(36)}` : base;
+    const movedIds = new Set(movedAreas.map(a => a.id));
+    const mine = (r: StoredRelation) => r.from.startsWith('area:') && movedIds.has(r.from.slice(5));
+    const movedRels = (src.relations ?? []).filter(mine);
+    src.relations = (src.relations ?? []).filter(r => !mine(r));
     store.systems.push({
       id: nid, name: input.name.trim(), summary: '', responsibilities: [], status: 'proposed', origin: 'user',
       createdAt: now(), updatedAt: now(), anchors: { terms, files, decisions: [] }, related: [src.id],
+      ...(movedAreas.length ? { areas: movedAreas } : {}), ...(movedRels.length ? { relations: movedRels } : {}),
     });
     src.updatedAt = now();
     return { id: nid };
@@ -690,38 +1030,77 @@ export function split(projectId: string, id: string, input: { name: string; term
 
 // ---- agent context ------------------------------------------------------------------------------
 
-/** Compact brief for Claude/Codex: identity, revision, top members, decisions and what is NOT known. */
-export function brief(v: SystemView, goal?: string): string {
+/**
+ * Compact brief for Claude/Codex. Three kinds of statement are kept apart on purpose, so the agent never
+ * promotes a guess: FACTS (git, verified evidence, DK as recorded), HYPOTHESES (inferred groupings, name-based
+ * graph edges, candidate files) and DECISIONS (what a person confirmed, and what nobody has decided).
+ * With `areaId` the brief narrows to one responsibility; everything else collapses to counts.
+ */
+export function brief(v: SystemView, goal?: string, areaId?: string): string {
   const L: string[] = [];
   const c = v.checkout;
-  L.push(`# System: ${v.name} (${v.id})`);
-  L.push(`Status: ${v.status} (${v.origin}${v.confirmedAt ? `, confirmed ${v.confirmedAt.slice(0, 10)} via this installation` : ''}). ${v.status !== 'confirmed' ? 'The grouping and the text below are NOT confirmed by a person.' : ''}`);
-  if (v.summary) L.push(`Responsibility: ${v.summary}`);
-  if (v.responsibilities.length) L.push(...v.responsibilities.map(r => `- ${r}`));
-  L.push('', `## Checkout examined`, `Root: ${c.root}`, `Branch: ${c.branch ?? '?'}  HEAD: ${c.head ?? '?'}  Uncommitted files: ${c.uncommitted}`,
-    `${c.isCanonical ? 'This is the integrated checkout.' : 'This is a WORKTREE, not integrated code.'} ${c.integration}.`);
-  L.push('', `## Members (${v.members.length}${v.weakerMembers ? ` of ${v.members.length + v.weakerMembers}` : ''}; most relevant first)`);
-  for (const m of v.members.slice(0, 18)) {
-    const syms = m.symbols.slice(0, 4).map(s => `${s.label}:${s.line}`).join(', ');
-    const flags = [m.confidence, m.uncommitted ? 'uncommitted' : '', m.changedSinceAnalysis ? 'changed since graph' : '', m.state === 'moved' ? `moved from ${m.movedFrom}` : ''].filter(Boolean).join(', ');
-    L.push(`- ${m.path} [${m.role}; ${flags}]${syms ? ` — ${syms}` : ''}`);
+  const area = areaId ? v.areas.find(a => a.id === areaId) : undefined;
+  const ev = (e: sem.ResolvedEvidence) => `${e.resolvedPath ?? e.path}${e.line ? `:${e.line}` : ''} [${e.state}]${e.note ? ` — ${e.note}` : ''}`;
+  L.push(`# System: ${v.name} (${v.id}) — ${v.kind}`);
+  L.push(`Classification: ${v.status} (${v.origin}${v.confirmedAt ? `, confirmed ${v.confirmedAt.slice(0, 10)} on this installation` : ''}).${v.status !== 'confirmed' ? ' The grouping and the text below are NOT confirmed by a person.' : ''}`);
+  if (v.summary) L.push(`Responsibility (${v.status === 'confirmed' ? 'confirmed text' : 'unconfirmed text'}): ${v.summary}`);
+  if (area) L.push('', `## Selected responsibility: ${area.name} (${area.id})`, `${area.kind}, ${area.status}, evidence basis: ${area.basis}${area.inferred ? ' (INFERRED from file names, not a design judgement)' : ''}`, area.summary);
+  L.push('', '## Checkout examined', `Root: ${c.root}`, `Branch: ${c.branch ?? '?'}  HEAD: ${c.head ?? '?'}  Uncommitted files: ${c.uncommitted}`,
+    `${c.isCanonical ? 'This is the project checkout (not a worktree).' : 'This is a WORKTREE.'} Integration: ${c.integration}.`);
+
+  L.push('', '## FACTS (verified now in this checkout, or recorded in git/DK)');
+  const showAreas = area ? [area] : v.areas.filter(a => !a.inferred);
+  if (showAreas.length) {
+    L.push('Responsibilities:');
+    for (const a of showAreas) {
+      L.push(`- ${a.name} (${a.id}; ${a.kind}; ${a.status}; basis: ${a.basis}) — ${a.summary || 'no description'}`);
+      for (const f of a.files.filter(x => x.tier === 'core').slice(0, area ? 10 : 3)) L.push(`    core: ${f.path}${f.line ? `:${f.line}` : ''}${f.uncommitted ? ' (uncommitted)' : ''}`);
+      for (const e of a.evidence.slice(0, area ? 6 : 2)) L.push(`    evidence: ${ev(e)}`);
+    }
   }
-  if (v.neighbors.length) {
-    L.push('', '## Possible participants (Graphify neighbours, NOT members)');
-    for (const n of v.neighbors.slice(0, 8)) L.push(`- ${n.path} — ${n.relation} ×${n.edges}, ${n.confidence}${n.confidence !== 'EXTRACTED' ? ' (name-based guess)' : ''}`);
+  const rels = area ? v.relations.filter(r => r.from.areaId === area.id || r.to.areaId === area.id) : v.relations;
+  if (rels.length) {
+    L.push('Gameplay relations (documented with code evidence; basis shows whether the evidence still holds HERE):');
+    for (const r of rels.slice(0, area ? 12 : 10)) {
+      L.push(`- ${r.from.label} ${r.label} ${r.to.label} [${r.status}, basis ${r.basis}, ${r.direction}] ${r.evidence.slice(0, 2).map(ev).join('; ')}`);
+    }
   }
-  L.push('', '## Design decisions (DK)');
+  if (!area) {
+    const core = v.members.filter(m => m.tier === 'core' && m.role !== 'test').slice(0, 12);
+    L.push(`Core implementation (${v.tierCounts.core} core, ${v.tierCounts.participant} participants, ${v.tierCounts.test} tests, ${v.tierCounts.candidate} candidates):`);
+    for (const m of core) {
+      const syms = m.symbols.slice(0, 3).map(s => `${s.label}:${s.line}`).join(', ');
+      L.push(`- ${m.path} [${m.facet}${m.uncommitted ? ', uncommitted' : ''}${m.changedSinceAnalysis ? ', changed since graph' : ''}${m.state === 'moved' ? `, moved from ${m.movedFrom}` : ''}]${syms ? ` — ${syms}` : ''}`);
+    }
+  }
+
+  L.push('', '## DESIGN DECISIONS (Design Knowledge, as recorded — freshness is not approval)');
   if (!v.design.available) L.push(`Not indexed${v.design.reason ? `: ${v.design.reason}` : ''}.`);
   else if (!v.design.decisions.length) L.push('None found for this system.');
-  for (const d of v.design.decisions) {
-    L.push(`- ${d.id} "${d.title}" — decision: ${d.decisionState}, approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}), evidence: ${d.evidenceStatus}, implementation: ${d.implementation}${d.relevance === 'touches-member' ? ' (touches a member file only)' : ''}`);
-    L.push(`  claim: ${d.claim}`);
+  for (const d of v.design.decisions.filter(x => x.relevance !== 'touches-member').slice(0, 8)) {
+    L.push(`- ${d.id} "${d.title}" — decision: ${d.decisionState}; approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}); evidence: ${d.evidenceStatus}; implementation: ${d.implementation}`);
   }
-  for (const [a, b] of v.design.conflicts) L.push(`UNRESOLVED CONFLICT: ${a} vs ${b}. Do not pick a side; ask the owner.`);
-  L.push('', '## Limitations');
+  for (const k of v.comparisons) {
+    L.push(`UNRESOLVED CONFLICT (${k.decisions.join(' vs ')}): do not pick a side; ask the owner.`);
+    for (const col of k.columns) {
+      L.push(`  ${k.numeric ? `Value ${col.key}` : col.key}: claimed by ${col.claimedBy.map(x => x.id).join(', ') || '—'}; ${col.implemented ? 'observed in code' : col.inTests ? 'appears only in tests (a fixture or assertion, not proof the game does it)' : 'only declared'}`);
+      for (const r of col.rows.slice(0, 4)) L.push(`    - ${r.label}: ${r.ref}${r.unit ? ` (unit stated in source: ${r.unit})` : ''}`);
+    }
+  }
+
+  L.push('', '## HYPOTHESES (not facts: check in the code before relying on them)');
+  if (v.areas.some(a => a.inferred)) L.push(`- Areas are inferred from file names/paths: ${v.areas.filter(a => a.inferred).map(a => `${a.name} (${a.fileCount})`).join(', ')}.`);
+  for (const t of v.technical.slice(0, 6)) L.push(`- Technical link (code graph, NOT gameplay): ${v.name} ↔ ${t.toName} — ${Object.entries(t.relations).map(([k, n]) => `${k}×${n}`).join(', ')}; ${t.extracted} extracted / ${t.inferred} name-based guesses.`);
+  const nb = v.neighbors.slice(0, area ? 4 : 6);
+  if (nb.length) L.push(`- Technical neighbours: ${nb.map(n => `${n.path} (${n.relation}×${n.edges}, ${n.confidence === 'EXTRACTED' ? 'extracted' : 'name-based guess'})`).join('; ')}`);
+  if (v.overlaps.length) L.push(`- Possibly the same thing as: ${v.overlaps.map(o => `${o.name} (${Math.round(o.ratio * 100)}% of files shared)`).join(', ')}.`);
+  if (v.families.length) L.push(`- Generated resources (not individual members): ${v.families.slice(0, 3).map(f => `${f.label} ×${f.count}`).join(', ')}.`);
+  for (const sg of v.suggestions) L.push(`- Pending agent suggestion (${sg.origin}, ${sg.at.slice(0, 10)}): ${sg.summary ?? ''}`);
+
+  L.push('', '## LIMITATIONS');
   L.push(...v.limitations.map(l => `- ${l}`));
-  if (v.maintenance.vanished.length) L.push(`- References that disappeared since an earlier resolution: ${v.maintenance.vanished.slice(0, 8).map(x => x.key).join('; ')}`);
-  L.push('', `More detail: MCP get_system {projectId, systemId: "${v.id}"}, get_design_context for a file or topic, Graphify Explorer for relations.`);
-  if (goal) L.push('', `## Request`, goal);
+  if (v.maintenance.vanished.length) L.push(`- References that disappeared since an earlier resolution: ${v.maintenance.vanished.slice(0, 6).map(x => x.key).join('; ')}`);
+  L.push('', `Go deeper with: MCP get_system {projectId, systemId: "${v.id}"}, get_design_context {file|query}, the Graphify Explorer. Tests were not run.`);
+  if (goal) L.push('', '## Request', goal);
   return L.join('\n');
 }

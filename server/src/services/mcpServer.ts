@@ -348,13 +348,13 @@ export async function listSystems(projectId: string, worktreeTask?: string): Pro
   return { content: [{ type: 'text', text: compact(await systemCatalog.catalog(project, task?.worktreePath || undefined)) }] };
 }
 
-export async function getSystem(projectId: string, systemId: string, taskId?: string): Promise<McpToolResult> {
+export async function getSystem(projectId: string, systemId: string, taskId?: string, areaId?: string): Promise<McpToolResult> {
   const project = (await getProjects()).find(p => p.id === projectId);
   if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
   const task = taskId ? (await taskStore.getTasks(projectId)).find(t => t.id === taskId) : undefined;
   const v = await systemCatalog.resolveSystem(project, systemId, task?.worktreePath || undefined);
   if ('error' in v) return { content: [{ type: 'text', text: v.error }], isError: true };
-  return { content: [{ type: 'text', text: systemCatalog.brief(v) }] };
+  return { content: [{ type: 'text', text: systemCatalog.brief(v, undefined, areaId) }] };
 }
 
 export async function proposeSystem(projectId: string, input: systemCatalog.ProposalInput): Promise<McpToolResult> {
@@ -969,7 +969,7 @@ export const MCP_TOOLS = [
   {
     name: 'get_system',
     description: 'Compact brief for one system: responsibility, checkout (branch, HEAD, dirty, integrated or worktree), member files and symbols, Graphify neighbours with confidence, DK decisions and conflicts, and limitations. Read this before changing a system.',
-    inputSchema: { type: 'object' as const, properties: { projectId: PROJECT_ID, systemId: { type: 'string', description: 'e.g. sys-humus (from list_systems)' }, taskId: TASK_ID }, required: ['projectId', 'systemId'] },
+    inputSchema: { type: 'object' as const, properties: { projectId: PROJECT_ID, systemId: { type: 'string', description: 'e.g. sys-humus (from list_systems)' }, areaId: { type: 'string', description: 'Narrow the brief to one responsibility (area id)' }, taskId: TASK_ID }, required: ['projectId', 'systemId'] },
     annotations: readOnly,
   },
   {
@@ -982,6 +982,17 @@ export const MCP_TOOLS = [
         responsibilities: { type: 'array', items: { type: 'string' } },
         terms: { type: 'array', items: { type: 'string' } }, files: { type: 'array', items: { type: 'string' } },
         decisions: { type: 'array', items: { type: 'string' } }, related: { type: 'array', items: { type: 'string' }, description: 'ids of related systems' },
+        kind: { type: 'string', enum: ['system', 'subsystem', 'mechanic', 'entity'] },
+        areas: { type: 'array', description: 'Functional responsibilities inside the system (subsystem/mechanic/entity). Each may carry anchors (terms, files) and evidence.', items: { type: 'object', properties: {
+          name: { type: 'string' }, kind: { type: 'string', enum: ['subsystem', 'mechanic', 'entity'] }, summary: { type: 'string' },
+          terms: { type: 'array', items: { type: 'string' } }, files: { type: 'array', items: { type: 'string' } },
+          evidence: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, needle: { type: 'string', description: 'exact text that must appear in the file' }, note: { type: 'string' } }, required: ['path'] } },
+        }, required: ['name'] } },
+        relations: { type: 'array', description: 'Gameplay relations. from/to: "self", "area:<id>", "sys:<systemId>[/<areaId>]" or "ent:<label>". Needs verifiable evidence (path + needle); without it the relation stays a candidate. Never derive from imports/calls alone.', items: { type: 'object', properties: {
+          kind: { type: 'string', enum: ['produces', 'consumes', 'stores', 'modifies', 'unlocks', 'depends_on', 'controls', 'implemented_by', 'validated_by'] },
+          from: { type: 'string' }, to: { type: 'string' }, note: { type: 'string' },
+          evidence: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, needle: { type: 'string' }, note: { type: 'string' } }, required: ['path'] } },
+        }, required: ['kind', 'from', 'to'] } },
       },
       required: ['projectId', 'name'],
     },
@@ -1156,7 +1167,7 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
     case 'list_systems':
       return listSystems(args.projectId, args.taskId);
     case 'get_system':
-      return getSystem(args.projectId, args.systemId, args.taskId);
+      return getSystem(args.projectId, args.systemId, args.taskId, args.areaId);
     case 'propose_system':
       return proposeSystem(args.projectId, args as any);
     case 'get_git_log':

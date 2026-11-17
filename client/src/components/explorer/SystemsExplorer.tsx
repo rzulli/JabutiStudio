@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import {
-  Search, Sparkles, Code2, Network, RefreshCw, GitBranch, AlertTriangle, CheckCircle2, CircleDashed, Pencil, Wand2, ChevronRight,
-} from 'lucide-react'
-import { api, type SystemView, type SystemMember, type SystemDecision, type SystemSummary } from '@/lib/api'
+import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, CheckCircle2, Pencil, Wand2 } from 'lucide-react'
+import { api, type SystemView, type SystemSummary } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { extensionOf } from '@/lib/explorerView'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
 import { EXPLORER_EDITOR_EVENT } from './ProjectExplorer'
+import { StatusPill, baseName, type AskAgent, type SystemActions } from './system/parts'
+import { OverviewTab, ImplementationTab, EvidenceTab } from './system/Tabs'
+import { SystemMap } from './system/SystemMap'
+import { RulesTab } from './system/RulesTab'
 
 /**
  * Systems: Project → Systems → one system → design, implementation, evidence, work.
@@ -16,33 +18,10 @@ import { EXPLORER_EDITOR_EVENT } from './ProjectExplorer'
  * the semantic identity and the person's classification. See server/src/services/systemCatalog.ts.
  */
 
-const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1)
 const lines = (s: string) => s.split('\n').map(x => x.trim()).filter(Boolean)
 const words = (s: string) => s.split(/[,\n]/).map(x => x.trim()).filter(Boolean)
 
-const STATUS_LABEL = { proposed: 'proposed', confirmed: 'confirmed', dismissed: 'dismissed', merged: 'merged' } as const
 const ORIGIN_LABEL = { discovery: 'found by discovery', agent: 'proposed by an agent', user: 'created by you' } as const
-
-function StatusPill({ status }: { status: keyof typeof STATUS_LABEL }) {
-  return (
-    <span className={cn('inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
-      status === 'confirmed' ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning')}>
-      {status === 'confirmed' ? <CheckCircle2 className="h-2.5 w-2.5" /> : <CircleDashed className="h-2.5 w-2.5" />}
-      {STATUS_LABEL[status]}
-    </span>
-  )
-}
-
-function Section({ title, count, children, testId }: { title: string; count?: number; children: React.ReactNode; testId?: string }) {
-  return (
-    <section className="space-y-1.5" data-testid={testId}>
-      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}{count !== undefined && <span className="ml-1.5 tabular-nums opacity-60">{count}</span>}
-      </h3>
-      {children}
-    </section>
-  )
-}
 
 export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: string; onOpenInGraph: (file: string) => void }) {
   const qc = useQueryClient()
@@ -82,16 +61,16 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
     window.dispatchEvent(new CustomEvent(EXPLORER_EDITOR_EVENT, { detail: { open: true } }))
   }, [editor])
 
-  const ask = async (agent: 'claude' | 'codex' | 'design', sys: SystemView) => {
-    const goal = agent === 'design'
+  const ask = async (agent: AskAgent, sys: SystemView, areaId?: string, extra?: string) => {
+    const goal = extra ?? (agent === 'design'
       ? 'Propose a design change for this system as a written proposal: what to change, why, which decisions/files are affected, what is still unknown. Do not edit code, do not record approvals, do not pick a side in an unresolved conflict.'
-      : 'Explain how this system works today in the examined checkout, what is confirmed and what is not, and where design and implementation diverge. Read the real code before answering. Do not change anything until I ask.'
+      : 'Explain how this system works today in the examined checkout, what is confirmed and what is not, and where design and implementation diverge. Read the real code before answering. Do not change anything until I ask.')
     try {
-      const b = await api.getSystemBrief(projectId, sys.id, worktree || undefined, goal)
+      const b = await api.getSystemBrief(projectId, sys.id, worktree || undefined, goal, areaId)
       window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
         detail: { projectId, type: 'claude', prompt: b.text, ...(agent === 'codex' ? { agent: 'codex' } : {}) },
       }))
-      toast.success(`Sent ${sys.name} to ${agent === 'codex' ? 'Codex' : 'Claude'} (${b.head ?? 'no HEAD'})`)
+      toast.success(`Sent ${sys.name}${areaId ? ` / ${areaId}` : ''} to ${agent === 'codex' ? 'Codex' : 'Claude'} (${b.head ?? 'no HEAD'})`)
     } catch (e: any) { toast.error(e.message || 'Could not build the brief') }
   }
 
@@ -173,7 +152,7 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
         ) : (
           <SystemDetail
             v={v} projectId={projectId} reviewing={reviewing} setReviewing={setReviewing} allSystems={systems}
-            onOpen={openFile} onGraph={onOpenInGraph} onAsk={a => ask(a, v)} onChanged={refresh}
+            onOpen={openFile} onGraph={onOpenInGraph} onAsk={(a, area, goal) => ask(a, v, area, goal)} onChanged={refresh}
             onPick={pick} refreshing={detailQ.isFetching}
           />
         )}
@@ -182,35 +161,45 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
   )
 }
 
+const TABS = [['overview', 'Overview'], ['map', 'Map'], ['rules', 'Rules & decisions'], ['implementation', 'Implementation'], ['evidence', 'Evidence']] as const
+
 function SystemDetail({ v, projectId, reviewing, setReviewing, allSystems, onOpen, onGraph, onAsk, onChanged, onPick, refreshing }: {
   v: SystemView; projectId: string; reviewing: boolean; setReviewing: (b: boolean) => void; allSystems: SystemSummary[]
   onOpen: (file: string, line?: number) => void; onGraph: (file: string) => void
-  onAsk: (a: 'claude' | 'codex' | 'design') => void; onChanged: () => void; onPick: (id: string) => void; refreshing: boolean
+  onAsk: (a: AskAgent, area?: string, goal?: string) => void; onChanged: () => void; onPick: (id: string) => void; refreshing: boolean
 }) {
+  const tabKey = `shipyard:system-tab:${projectId}`
+  const [tab, setTabState] = useState<string>(() => { try { return localStorage.getItem(tabKey) || 'overview' } catch { return 'overview' } })
+  const setTab = (t: string) => { setTabState(t); try { localStorage.setItem(tabKey, t) } catch { /* ignore */ } }
+  const [area, setArea] = useState<string | null>(null)
+  useEffect(() => { setArea(null) }, [v.id])
+  const actions: SystemActions = { onOpen, onGraph, onAsk, onPickSystem: onPick }
   const c = v.checkout
-  const groups = (['code', 'scene', 'resource', 'test'] as const).map(r => [r, v.members.filter(m => m.role === r)] as const).filter(([, m]) => m.length)
   const m = v.maintenance
+  const stale = m.needsReanalysis || m.vanished.length > 0 || m.unresolvedAnchors.length > 0
+  const conflicts = v.comparisons.length
   return (
-    <div className="mx-auto max-w-3xl space-y-5 p-4">
+    <div className="mx-auto max-w-4xl space-y-3 p-4">
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold" data-testid="system-name">{v.name}</h2>
+          <span className="rounded bg-accent px-1.5 py-0.5 text-[10px]" data-testid="system-kind">{v.kind}</span>
           <StatusPill status={v.status} />
           <span className="text-[11px] text-muted-foreground">{ORIGIN_LABEL[v.origin]}</span>
           {refreshing && <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />}
         </div>
         {v.summary
-          ? <p className="text-sm">{v.summary}</p>
+          ? <p className="text-sm" data-testid="system-summary">{v.summary}</p>
           : <p className="text-sm text-muted-foreground">No responsibility written yet. Ask an agent to describe it, or review it yourself.</p>}
-        {v.responsibilities.length > 0 && <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">{v.responsibilities.map(r => <li key={r}>{r}</li>)}</ul>}
-        {v.status !== 'confirmed' && (
-          <p className="text-[11px] text-warning">Not confirmed: the grouping and the text above are a proposal, not a decision of the project.</p>
-        )}
+        {v.status !== 'confirmed' && <p className="text-[11px] text-warning">Not confirmed: the grouping and the text above are a proposal, not a decision of the project.</p>}
         <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2 py-1.5 text-[11px]', c.isCanonical ? 'bg-card/40' : 'border-warning/50 bg-warning/10')} data-testid="system-checkout">
           <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{c.branch ?? '?'} <code className="font-mono">{c.head ?? ''}</code></span>
-          <span>{c.isCanonical ? 'integrated checkout' : 'worktree (not integrated code)'}</span>
+          <span>{c.isCanonical ? 'project checkout' : 'worktree'}</span>
           <span>{c.uncommitted ? `${c.uncommitted} uncommitted` : 'clean'}</span>
           <span className="text-muted-foreground">{c.integration}</span>
+          <span className={cn('ml-auto', stale ? 'text-warning' : 'text-muted-foreground')} data-testid="analysis-state">
+            {!m.graph.built ? 'code graph: not analyzed' : stale ? 'analysis out of date' : 'analysis current'}
+          </span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           <button onClick={() => onAsk('claude')} data-testid="system-ask-claude" className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent"><Sparkles className="h-3 w-3" /> Ask Claude</button>
@@ -222,152 +211,22 @@ function SystemDetail({ v, projectId, reviewing, setReviewing, allSystems, onOpe
 
       {reviewing && <ReviewPanel v={v} projectId={projectId} allSystems={allSystems} onChanged={() => { onChanged(); setReviewing(false) }} onPick={onPick} />}
 
-      {(v.limitations.length > 0 || m.vanished.length > 0 || m.unresolvedAnchors.length > 0) && (
-        <Section title="Maintenance and limits" testId="system-maintenance">
-          <ul className="space-y-1 text-[11px] text-muted-foreground">
-            {m.needsReanalysis && (
-              <li className="flex gap-1.5 text-warning"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                Changed after the last Graphify analysis: {m.changedMembers.map(baseName).join(', ')}. Re-analyze in Files to refresh symbols and relations.</li>
-            )}
-            {m.vanished.length > 0 && (
-              <li className="flex gap-1.5 text-warning" data-testid="system-vanished"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                <span>Disappeared since earlier: {m.vanished.slice(0, 6).map(x => x.key.replace(/^(file|sym):/, '')).join('; ')}{m.vanished.length > 6 ? ` +${m.vanished.length - 6}` : ''}.{' '}
-                  <button className="underline" onClick={async () => { await api.editSystem(projectId, v.id, { ackVanished: true }); onChanged() }}>Acknowledge</button></span>
-              </li>
-            )}
-            {m.unresolvedAnchors.map(a => <li key={a.path} className="flex gap-1.5 text-warning"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />Anchored file no longer exists: <code>{a.path}</code></li>)}
-            {v.limitations.map(l => <li key={l}>• {l}</li>)}
-          </ul>
-        </Section>
-      )}
-
-      <Section title="Design decisions" count={v.design.decisions.length} testId="system-decisions">
-        {!v.design.available && <p className="text-[11px] text-muted-foreground">Not indexed for this project{v.design.reason ? `: ${v.design.reason}` : ''}.</p>}
-        {v.design.available && !v.design.decisions.length && <p className="text-[11px] text-muted-foreground">No decisions found for this system.</p>}
-        {v.design.conflicts.map(([a, b]) => (
-          <p key={a + b} className="flex items-center gap-1.5 rounded-md border border-destructive/50 bg-destructive/10 px-2 py-1 text-[11px] text-destructive" data-testid="system-conflict">
-            <AlertTriangle className="h-3 w-3" /> Unresolved conflict: {a} vs {b}. Nobody has decided; do not pick a side.
-          </p>
+      <nav className="flex gap-1 border-b" role="tablist" data-testid="system-tabs">
+        {TABS.map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} data-testid={`tab-${id}`}
+            className={cn('-mb-px border-b-2 px-2.5 py-1.5 text-xs', tab === id ? 'border-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground')}>
+            {label}
+            {id === 'rules' && conflicts > 0 && <span className="ml-1 rounded bg-destructive/15 px-1 text-[10px] text-destructive">{conflicts}</span>}
+            {id === 'evidence' && stale && <AlertTriangle className="ml-1 inline h-3 w-3 text-warning" />}
+          </button>
         ))}
-        {v.design.decisions.map(d => <DecisionCard key={d.id} d={d} onOpen={onOpen} />)}
-      </Section>
+      </nav>
 
-      <Section title="Implementation" count={v.members.length + v.weakerMembers} testId="system-members">
-        {groups.map(([role, ms]) => (
-          <div key={role} className="space-y-0.5">
-            <p className="text-[10px] uppercase text-muted-foreground">{role === 'code' ? 'Scripts' : role === 'scene' ? 'Scenes' : role === 'resource' ? 'Resources' : 'Tests'} · {ms.length}</p>
-            {ms.map(mm => <MemberRow key={mm.path} m={mm} onOpen={onOpen} onGraph={onGraph} />)}
-          </div>
-        ))}
-        {v.weakerMembers > 0 && <p className="text-[11px] text-muted-foreground">+ {v.weakerMembers} weaker references not listed.</p>}
-      </Section>
-
-      {v.neighbors.length > 0 && (
-        <Section title="Possible participants (Graphify neighbours, not members)" count={v.neighbors.length}>
-          <div className="space-y-0.5">
-            {v.neighbors.map(n => (
-              <div key={n.path} className="flex items-center gap-2 text-[11px]">
-                <button onClick={() => onOpen(n.path)} className="truncate font-mono hover:underline">{n.path}</button>
-                <span className={cn('shrink-0 rounded px-1 text-[10px]', n.confidence === 'EXTRACTED' ? 'bg-accent' : 'border border-dashed text-muted-foreground')}>
-                  {n.confidence === 'EXTRACTED' ? 'extracted' : 'inferred'} · {n.relation} ×{n.edges}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Section>
-      )}
-
-      {v.related.length > 0 && (
-        <Section title="Related systems" count={v.related.length}>
-          <div className="flex flex-wrap gap-1.5">
-            {v.related.map(r => (
-              <button key={r.id} onClick={() => onPick(r.id)} title={r.shared.join('\n')} className="flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] hover:bg-accent">
-                {r.name}<span className="text-muted-foreground">{r.shared.length ? `${r.shared.length} shared` : 'declared'}</span>
-              </button>
-            ))}
-          </div>
-        </Section>
-      )}
-
-      <Section title="Related tasks" count={v.tasks.length}>
-        {!v.tasks.length && <p className="text-[11px] text-muted-foreground">No task names a member file of this system.</p>}
-        {v.tasks.map(t => <p key={t.id} className="text-[11px]"><span className="text-muted-foreground">{t.number ? `#${t.number}` : ''} {t.status}</span> {t.title} <span className="text-muted-foreground">· {t.matchedBy}</span></p>)}
-      </Section>
-
-      {v.suggestions.length > 0 && (
-        <Section title="Pending suggestions (not applied)" count={v.suggestions.length}>
-          {v.suggestions.map(s => <p key={s.at} className="text-[11px] text-muted-foreground">{s.origin} · {s.at.slice(0, 10)}: {s.summary ?? ''} {[...s.anchors.terms, ...s.anchors.files].join(', ')}</p>)}
-          <p className="text-[11px] text-muted-foreground">Use “Review classification” to adopt them.</p>
-        </Section>
-      )}
-    </div>
-  )
-}
-
-function MemberRow({ m, onOpen, onGraph }: { m: SystemMember; onOpen: (f: string, l?: number) => void; onGraph: (f: string) => void }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div data-testid="system-member" data-path={m.path}>
-      <div className="group flex items-center gap-1.5 text-[11px]">
-        {m.symbols.length > 0
-          ? <button onClick={() => setOpen(!open)} aria-label="symbols"><ChevronRight className={cn('h-3 w-3 transition-transform', open && 'rotate-90')} /></button>
-          : <span className="w-3" />}
-        <button onClick={() => onOpen(m.path)} className="truncate font-mono hover:underline" title="Open in the editor">{m.path}</button>
-        <span className="shrink-0 text-[10px] text-muted-foreground" title={m.why.map(w => `${w.kind}: ${w.detail}`).join('\n')}>
-          {m.confidence === 'declared' ? 'declared' : m.why[0]?.kind === 'name' ? 'by name' : 'by text'}
-        </span>
-        {m.state === 'moved' && <span className="shrink-0 rounded bg-warning/15 px-1 text-[10px] text-warning" title={`was ${m.movedFrom}`}>moved</span>}
-        {m.uncommitted && <span className="shrink-0 rounded bg-warning/15 px-1 text-[10px] text-warning">uncommitted</span>}
-        {m.changedSinceAnalysis && <span className="shrink-0 rounded bg-warning/15 px-1 text-[10px] text-warning" title="Changed after the last Graphify analysis">graph stale</span>}
-        {m.role === 'code' && (
-          <button onClick={() => onGraph(m.path)} title="Open in Graphify" aria-label="Open in Graphify" data-testid="member-graph"
-            className="ml-auto shrink-0 opacity-0 group-hover:opacity-100"><Network className="h-3 w-3" /></button>
-        )}
-        <button onClick={() => onOpen(m.path)} title="Open in editor" aria-label="Open in editor" className={cn('shrink-0 opacity-0 group-hover:opacity-100', m.role !== 'code' && 'ml-auto')}><Code2 className="h-3 w-3" /></button>
-      </div>
-      {open && (
-        <div className="ml-5 space-y-0.5 pb-1">
-          {m.symbols.map(s => (
-            <button key={s.id} onClick={() => onOpen(m.path, s.line || undefined)} className="block truncate font-mono text-[10px] text-muted-foreground hover:text-foreground">
-              {s.label.replace(/\(\)$/, '')}{s.line ? ` :${s.line}` : ''}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const EV_LABEL: Record<string, string> = { code: 'Implemented in code', document_claim: 'Declared in a document', test: 'Test expectation' }
-
-function DecisionCard({ d, onOpen }: { d: SystemDecision; onOpen: (f: string, l?: number) => void }) {
-  const approval = d.approval?.state ?? 'unknown'
-  return (
-    <div className="space-y-1.5 rounded-md border p-2" data-testid="system-decision" data-id={d.id}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="font-mono text-[11px] font-medium">{d.id}</span>
-        <span className="text-xs">{d.title}</span>
-      </div>
-      <p className="text-[11px] text-muted-foreground">{d.claim}</p>
-      <div className="flex flex-wrap gap-1.5 text-[10px]">
-        <span className="rounded bg-accent px-1.5 py-0.5">human approval: {approval === 'unknown' ? 'not located' : `${approval} (${d.approval?.source})`}</span>
-        <span className="rounded bg-accent px-1.5 py-0.5">evidence: {d.evidenceStatus}</span>
-        <span className="rounded bg-accent px-1.5 py-0.5">implementation: {d.implementation}</span>
-        {d.relevance === 'touches-member' && <span className="rounded border border-dashed px-1.5 py-0.5 text-muted-foreground">touches a member file only</span>}
-      </div>
-      <div className="space-y-1">
-        {d.evidence.map(e => (
-          <div key={e.ref} className="text-[11px]">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium">{EV_LABEL[e.type] ?? e.type}</span>
-              <button onClick={() => { const [f, l] = e.ref.split('#L'); onOpen(f.replace(/ \(was.*$/, ''), l ? parseInt(l, 10) : undefined) }} className="truncate font-mono text-muted-foreground hover:underline">{e.ref}</button>
-              {e.freshness && <span className="text-[10px] text-muted-foreground">{e.freshness}</span>}
-            </div>
-            {e.excerpt.slice(0, 2).map(x => <pre key={x} className="overflow-x-auto rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px]">{x}</pre>)}
-          </div>
-        ))}
-        {d.tests.length > 0 && <p className="text-[10px] text-muted-foreground">Tests referenced (static; no result available): {d.tests.map(baseName).join(', ')}</p>}
-      </div>
+      {tab === 'overview' && <OverviewTab v={v} actions={actions} goTab={setTab} selectArea={setArea} />}
+      {tab === 'map' && <SystemMap v={v} actions={actions} selectedArea={area} onSelectArea={setArea} />}
+      {tab === 'rules' && <RulesTab v={v} actions={actions} />}
+      {tab === 'implementation' && <ImplementationTab v={v} actions={actions} area={area} setArea={setArea} />}
+      {tab === 'evidence' && <EvidenceTab v={v} actions={actions} projectId={projectId} onChanged={onChanged} onPick={onPick} />}
     </div>
   )
 }
@@ -403,6 +262,31 @@ function ReviewPanel({ v, projectId, allSystems, onChanged, onPick }: {
         <button onClick={() => save('dismissed')} className="rounded-md border px-2 py-1 text-[11px] hover:bg-accent">Dismiss</button>
         {v.suggestions.length > 0 && <button onClick={() => run(() => api.editSystem(projectId, v.id, { clearSuggestions: true }), 'Suggestions cleared')} className="rounded-md border px-2 py-1 text-[11px] hover:bg-accent">Clear suggestions</button>}
       </div>
+      {(v.areas.some(a => !a.inferred) || v.relations.some(r => r.direction !== 'incoming') || v.suggestions.length > 0) && (
+        <div className="space-y-1 border-t pt-2 text-[11px]" data-testid="review-items">
+          <p className="text-muted-foreground">Responsibilities and gameplay relations proposed here. Confirming says <b>you</b> accept the item; its evidence is still re-checked against the code every time.</p>
+          {v.areas.filter(a => !a.inferred).map(a => (
+            <div key={a.id} className="flex flex-wrap items-center gap-1.5">
+              <span className="font-medium">{a.name}</span><span className="text-muted-foreground">{a.kind} · {a.status}</span>
+              {a.status !== 'confirmed' && <button className="rounded-md border px-1.5 hover:bg-accent" onClick={() => run(() => api.editSystem(projectId, v.id, { confirm: { areas: [a.id] } }), 'Area confirmed')}>Confirm</button>}
+              <button className="rounded-md border px-1.5 hover:bg-accent" onClick={() => run(() => api.editSystem(projectId, v.id, { remove: { areas: [a.id] } }), 'Area removed')}>Remove</button>
+            </div>
+          ))}
+          {v.relations.filter(r => r.direction !== 'incoming').map(r => (
+            <div key={r.id} className="flex flex-wrap items-center gap-1.5">
+              <span>{r.from.label} {r.label} {r.to.label}</span><span className="text-muted-foreground">{r.status} · {r.basis}</span>
+              {r.status !== 'confirmed' && <button className="rounded-md border px-1.5 hover:bg-accent" onClick={() => run(() => api.editSystem(projectId, v.id, { confirm: { relations: [r.id] } }), 'Relation confirmed')}>Confirm</button>}
+              <button className="rounded-md border px-1.5 hover:bg-accent" onClick={() => run(() => api.editSystem(projectId, v.id, { remove: { relations: [r.id] } }), 'Relation removed')}>Remove</button>
+            </div>
+          ))}
+          {v.suggestions.map((sg, i) => (
+            <div key={sg.at} className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground">Pending suggestion ({sg.origin}, {sg.at.slice(0, 10)}): {sg.summary ?? ''}{sg.areas?.length ? ` · ${sg.areas.length} areas` : ''}{sg.relations?.length ? ` · ${sg.relations.length} relations` : ''}</span>
+              <button className="rounded-md border px-1.5 hover:bg-accent" onClick={() => run(() => api.editSystem(projectId, v.id, { adoptSuggestion: i }), 'Suggestion adopted as proposed')}>Adopt as proposal</button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-1.5 border-t pt-2 text-[11px]">
         <span className="text-muted-foreground">Merge into this:</span>
         <select value={mergeId} onChange={e => setMergeId(e.target.value)} className="h-6 rounded-md border bg-background px-1">
