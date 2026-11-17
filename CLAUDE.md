@@ -566,7 +566,7 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   salva aparece. Aba em diff nao tem preview; "Edit file" sai do diff
 
 ### MCP (servidor de ferramentas para agentes)
-- `mcpServer.ts` expoe 33 tools (inclui `list_systems`, `get_system`, `propose_system`). Cobertura: projetos, milestones (CRUD),
+- `mcpServer.ts` expoe 34 tools (inclui `list_systems`, `get_system`, `propose_system`). Cobertura: projetos, milestones (CRUD),
   tarefas (incl. `create_tasks`/`bulk_update_tasks`/`bulk_delete_tasks`/`reorder_tasks`),
   git (status/log/diff) e sync (`list_sync_integrations`/`sync_push`/`sync_pull`)
 - `get_task` devolve tambem os comentarios e os metadados de anexo
@@ -696,6 +696,34 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
   conflito, evidencia por origem e impacto candidato (lista manual, incompleta)
 - Testes: `pnpm --filter server test` (`test/design.test.ts` usa copia de `dk.py`
   em `test/fixtures/dk` — recopiar se o original mudar)
+
+### Design Knowledge Core (R1-B1: contrato unico, fonte nativa + legado)
+- `designCore.ts` e o **unico contrato** que Inspector, System Explorer, rotas e MCP consomem
+  (`query({file|q|id|system, worktree, revision})`, `forSystem`, `propose`, `attest`). Duas fontes por tras da
+  mesma forma `Decision` (campos snake_case do dk.py, para nao quebrar a UI): **nativa**
+  (`designDecisions.ts`) e **legado** (`designKnowledge.ts` -> dk.py do projeto, ex. PNMG). O legado e
+  temporario: sai em R1-B3. Registros legados nunca sao convertidos nem reescritos; mesmo id nos dois = mostra o nativo e avisa
+- **Persistencia nativa**: `jabutistudio.decisions.json` na raiz do repo do jogo (v1, `gitRoots` como o
+  `jabutistudio.systems.json`, schema zod estrito, caminhos relativos sem `..`, sem caminho absoluto). Nao precisa de
+  Python nem de `docs/design_knowledge/`. So guarda **alegacoes + evidencias** (`status: proposed|withdrawn`);
+  **aprovacao nunca entra no arquivo** (fica no ledger `attested_local` em `data/design-approvals/`, preso ao sha256
+  do `claim`: editar o texto a faz caducar -> `approval.lapsed`). Sistemas sao referenciados por id (`systems[]`);
+  nada de decisao e copiado para o arquivo de sistemas. Escrita so no checkout canonico (tmp+rename, lock); worktree
+  e `revision` sao somente leitura
+- **Proposta, nunca aprovacao**: `addProposal` exige >=1 evidencia real (arquivo existe, `needle` presente, fingerprint
+  tirado na hora), referencias (`conflictsWith`/`supersedes`) existentes, origem `agent` (MCP, curl) ou `user` (so
+  declara quem escreveu; nao verifica). MCP `propose_design_decision` so propoe; nao existe tool de aprovar
+- **Frescor derivado a cada leitura** do checkout (ou `git show <revision>:`): CURRENT | MOVED (mesmo fingerprint/texto
+  em outro caminho, mesma extensao, unico candidato) | AMBIGUOUS (varios) | CHANGED (arquivo mudou, texto ainda la) |
+  STALE (texto sumiu) | GONE | UNKNOWN (evidencia sem fingerprint nem texto). `implementation`: `divergent` quando
+  evidencia `code` com needle ficou STALE/GONE. CURRENT nao significa aprovado
+- **Confianca**: `approval.state` unknown | claimed (evidencia `human_decision` em arquivo/documento = afirmacao nao
+  verificada) | approved/rejected com `source: attested_local`. Conflitos (`conflicts_with`, inverso derivado) sao
+  preservados lado a lado em `conflicts[]`; nunca se escolhe um lado
+- `available` agora e verdadeiro para qualquer repo git (a fonte nativa pode estar vazia): o catalogo de sistemas mostra
+  "None recorded" + "Propose decision…" em vez de "Not indexed". Rotas: `GET /design` (`file|q|id|system`, `worktree`,
+  `revision`), `POST /design/proposals`, `POST /design/approve` (so UI). Testes: `server/test/designCore.test.ts`
+  (T1-T11 do R1-B1). Pendente (R1-B2/B3): paridade e migracao dos registros do PNMG, aposentar dk.py
 
 ### System Explorer (Projeto -> Sistemas -> Sistema)
 - Aba **Systems** dentro do Explorer (`SystemsExplorer.tsx`, montada por `ExplorerHost`; "Files & symbols" e o

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Scale, AlertTriangle, ChevronRight, Sparkles } from 'lucide-react'
 import { api, type DesignDecision, type DesignEvidence, type DesignFreshness } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { ProposeDecision } from './ProposeDecision'
 
 /**
  * Design decisions that cite or list the selected file (from the project's own Design Knowledge
@@ -58,6 +59,7 @@ function ApprovalBadge({ d }: { d: DesignDecision }) {
       {a.source === 'attestation-lapsed' ? 'approval lapsed' : 'claimed, unverified'}
     </span>
   }
+  if (a.lapsed) return <span className="rounded border border-dashed px-1 text-[9px] uppercase text-warning" title="A local attestation existed for an earlier wording of this claim.">approval lapsed</span>
   return <span className="rounded border border-dashed px-1 text-[9px] uppercase text-muted-foreground" title="No approval is recorded.">not approved</span>
 }
 
@@ -110,6 +112,7 @@ function Decision({ d, projectId, onOpen, onInvestigate, others, ctx }: {
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-mono text-[10px] text-muted-foreground">{d.id}</span>
             <ApprovalBadge d={d} />
+            {d.source === 'native' && <span className="rounded border px-1 text-[9px] uppercase text-muted-foreground" title="Stored in jabutistudio.decisions.json in the project">{d.provenance?.origin === 'agent' ? 'agent proposal' : 'proposal'}</span>}
             {d.conflicts_with.length > 0 && <span className="flex items-center gap-0.5 text-[10px] text-destructive"><AlertTriangle className="h-3 w-3" />conflict</span>}
           </div>
           <div className="mt-0.5 text-xs font-medium leading-snug">{d.title}</div>
@@ -169,7 +172,7 @@ export function DesignDecisions({ projectId, file, worktree, onOpen, onInvestiga
     queryFn: () => api.getDesign(projectId, file, worktree),
     staleTime: 5_000,
   })
-  if (!q.data || !q.data.available) return null // projects without a registry see nothing new
+  if (!q.data || !q.data.available) return null
   const decisions = q.data.decisions ?? []
   const byId = Object.fromEntries(decisions.map(d => [d.id, d]))
   const where = q.data.examined && !q.data.examined.isCanonical ? q.data.branch ?? 'worktree' : null
@@ -181,6 +184,7 @@ export function DesignDecisions({ projectId, file, worktree, onOpen, onInvestiga
       </div>
       {decisions.length === 0 && <p className="px-3 pb-2 text-[11px] text-muted-foreground">No recorded decision cites this file. That does not mean none exists.</p>}
       {decisions.map(d => <Decision key={d.id} d={d} projectId={projectId} others={byId} onOpen={onOpen} onInvestigate={onInvestigate} ctx={{ projectId, file, examined: q.data.examined?.root, branch: q.data.branch, head: q.data.head }} />)}
+      <ProposeDecision projectId={projectId} file={file} />
     </div>
   )
 }

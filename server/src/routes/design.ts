@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import * as projectDiscovery from '../services/projectDiscovery.js';
 import * as dk from '../services/designKnowledge.js';
+import * as core from '../services/designCore.js';
+import { EVIDENCE_TYPES } from '../services/designDecisions.js';
 
 /** The browser renderer sets these on its own fetches; an agent, MCP client or plain curl does not. */
 export function fromAppUi(h: Record<string, unknown>) {
@@ -11,18 +13,35 @@ export function fromAppUi(h: Record<string, unknown>) {
 export async function designRoutes(app: FastifyInstance) {
   const resolve = async (id: string) => (await projectDiscovery.getProjects()).find(p => p.id === id);
 
-  // Read-only. `file` or `q`; `worktree` selects which checkout's code is judged (default: the project's own).
-  app.get<{ Params: { id: string }; Querystring: { file?: string; q?: string; worktree?: string } }>(
+  // Read-only. `file`, `q`, `id` or `system`; `worktree` selects which checkout's code is judged and
+  // `revision` reads native decisions as of a commit. Works for projects with no decisions at all.
+  app.get<{ Params: { id: string }; Querystring: { file?: string; q?: string; id?: string; system?: string; worktree?: string; revision?: string } }>(
     '/api/projects/:id/design',
     async (request, reply) => {
       const project = await resolve(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
-      const { file, q, worktree } = request.query;
-      if (file) return dk.contextForFile(project, file, worktree);
-      if (q) return dk.contextForQuery(project, q, worktree);
-      return reply.status(400).send({ error: 'file or q is required' });
+      const { file, q, id, system, worktree, revision } = request.query;
+      if (!file && !q && !id && !system) return reply.status(400).send({ error: 'file, q, id or system is required' });
+      return core.query(project, { file, q, id, system, worktree, revision });
     },
   );
+
+  // A proposal only: it is stored as `proposed` and can never carry an approval. From the UI the origin is
+  // "user", from anything else "agent" — a statement of who wrote it, not a verification.
+  app.post<{ Params: { id: string }; Body: Record<string, any> }>('/api/projects/:id/design/proposals', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const b = request.body ?? {};
+    const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    const evidence = Array.isArray(b.evidence) ? b.evidence.filter((e: any) => e && typeof e.path === 'string' && EVIDENCE_TYPES.includes(e.type)) : [];
+    const res = await core.propose(project, {
+      title: String(b.title ?? ''), claim: String(b.claim ?? ''), scope: strs(b.scope), systems: strs(b.systems), files: strs(b.files),
+      conflictsWith: strs(b.conflictsWith), supersedes: strs(b.supersedes), evidence,
+      origin: fromAppUi(request.headers) ? 'user' : 'agent',
+    });
+    if (!res.ok) return reply.status(400).send({ error: res.error });
+    return res.decision;
+  });
 
   app.get<{ Params: { id: string }; Querystring: { worktree?: string } }>('/api/projects/:id/design/validate', async (request, reply) => {
     const project = await resolve(request.params.id);
@@ -52,7 +71,7 @@ export async function designRoutes(app: FastifyInstance) {
       if (!decisionId || !['approved', 'rejected', 'revoked'].includes(state ?? '')) {
         return reply.status(400).send({ error: 'decisionId and state (approved|rejected|revoked) are required' });
       }
-      const res = await dk.attest(project, { decisionId, state: state as dk.AttestState, quote: quote ?? '' });
+      const res = await core.attest(project, { decisionId, state: state as dk.AttestState, quote: quote ?? '' });
       if (!res.ok) return reply.status(400).send({ error: res.error });
       return res.entry;
     },

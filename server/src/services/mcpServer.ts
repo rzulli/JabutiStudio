@@ -6,7 +6,7 @@ import * as syncStore from './syncStore.js';
 import * as syncEngine from './sync/syncEngine.js';
 import * as taskAttachments from './taskAttachments.js';
 import * as worktreeService from './worktreeService.js';
-import * as designKnowledge from './designKnowledge.js';
+import * as designCore from './designCore.js';
 import * as systemCatalog from './systemCatalog.js';
 import type { Project, Task, EffortPoints } from '../types/index.js';
 
@@ -311,18 +311,17 @@ export async function deleteTask(projectId: string, taskId: string): Promise<Mcp
  * Design decisions that touch a file or topic, for an agent about to change it. Read-only by design:
  * there is no tool that approves anything. `claimed` is a document or record saying so, never approval.
  */
-export async function getDesignContext(projectId: string, file?: string, query?: string, taskId?: string): Promise<McpToolResult> {
+export async function getDesignContext(projectId: string, file?: string, query?: string, taskId?: string, revision?: string): Promise<McpToolResult> {
   const project = (await getProjects()).find(p => p.id === projectId);
   if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
   if (!file && !query) return { content: [{ type: 'text', text: 'Pass file or query' }], isError: true };
   const task = taskId ? (await taskStore.getTasks(projectId)).find(t => t.id === taskId) : undefined;
   const worktree = task?.worktreePath || undefined; // judge freshness in the task's checkout, not the integrated one
-  const res: any = file
-    ? await designKnowledge.contextForFile(project, file, worktree)
-    : await designKnowledge.contextForQuery(project, query!, worktree);
+  const res: any = await designCore.query(project, file ? { file, worktree, revision } : { q: query, worktree, revision });
   if (!res.available) return { content: [{ type: 'text', text: compact({ available: false, reason: res.reason }) }] };
   const decisions = (res.decisions ?? []).map((d: any) => ({
-    id: d.id, title: d.title, claim: d.claim, decision: d.decision_state, approval: d.approval,
+    id: d.id, title: d.title, claim: d.claim, origin: d.source, provenance: d.provenance, systems: d.systems?.length ? d.systems : undefined,
+    decision: d.decision_state, approval: d.approval,
     evidence: d.evidence_status, implementation: d.implementation, conflictsWith: d.conflicts_with,
     matchedBy: d.matched_by,
     sources: d.evidence.filter((e: any) => !e.candidate_only).map((e: any) => ({
@@ -333,12 +332,28 @@ export async function getDesignContext(projectId: string, file?: string, query?:
   }));
   return { content: [{ type: 'text', text: compact({
     examined: { ...res.examined, branch: res.branch, head: res.head },
-    indexed: res.indexed, note: res.note ?? undefined, decisions,
+    sources: res.sources, indexed: res.indexed, note: res.note ?? undefined, limitations: res.limitations?.length ? res.limitations : undefined,
+    decisions, conflicts: res.conflicts?.length ? res.conflicts : undefined,
     graph: res.graph && res.graph.built ? { incoming: res.graph.incoming, outgoing: res.graph.outgoing } : undefined,
-    rules: 'approval.state "approved" with source "attested_local" is a local UI attestation (not cryptographic proof of a person); "claimed" is an unverified assertion; '
-      + 'candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
+    rules: 'approval.state "approved" with source "attested_local" is a local UI attestation (not cryptographic proof of a person); "claimed" is an unverified assertion in a document; "unknown" means nobody confirmed it. '
+      + 'A native proposal (origin "native", decision "hypothesis") is a claim with evidence, never an approved rule. CURRENT evidence does not mean approved. '
+      + 'Conflicting decisions are both kept: do not pick one. candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
       + 'a passing test does not prove a design decision.',
   }) }] };
+}
+
+/** Agents may only PROPOSE: the result is stored as `proposed` and nothing here can approve or confirm it. */
+export async function proposeDesignDecision(projectId: string, a: any): Promise<McpToolResult> {
+  const project = (await getProjects()).find(p => p.id === projectId);
+  if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
+  const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const res = await designCore.propose(project, {
+    title: String(a.title ?? ''), claim: String(a.claim ?? ''), scope: strs(a.scope), systems: strs(a.systems), files: strs(a.files),
+    conflictsWith: strs(a.conflictsWith), supersedes: strs(a.supersedes), evidence: Array.isArray(a.evidence) ? a.evidence : [], origin: 'agent',
+  });
+  if (!res.ok) return { content: [{ type: 'text', text: res.error }], isError: true };
+  return { content: [{ type: 'text', text: compact({ proposed: res.decision.id, status: 'proposed',
+    note: 'Stored in jabutistudio.decisions.json in the project checkout (commit it to share). It is a proposal a person must review; it is not an approved rule.' }) }] };
 }
 
 export async function listSystems(projectId: string, worktreeTask?: string): Promise<McpToolResult> {
@@ -955,10 +970,32 @@ export const MCP_TOOLS = [
         file: { type: 'string', description: 'Project-relative file path, e.g. scripts/HumusEconomyParams.gd' },
         query: { type: 'string', description: 'Topic words, e.g. "first maturation humus cost"' },
         taskId: TASK_ID,
+        revision: { type: 'string', description: 'Optional git revision: read native decisions and evidence as of that commit instead of the checkout' },
       },
       required: ['projectId'],
     },
     annotations: readOnly,
+  },
+  {
+    name: 'propose_design_decision',
+    description: 'Propose (never approve) a design decision or claim backed by real evidence. Every evidence item must point to a file in the checkout (optionally lines and an exact `needle` text that must appear). Use it when you found a rule in code/docs/tests that is not recorded, or when claims conflict (conflictsWith). It is stored as proposed; a person decides. Never invent a decision or say the owner approved something you did not see.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        projectId: PROJECT_ID, title: { type: 'string' }, claim: { type: 'string', description: 'The rule or claim, stated precisely' },
+        scope: { type: 'array', items: { type: 'string' }, description: 'Topic words for retrieval' },
+        systems: { type: 'array', items: { type: 'string' }, description: 'ids of related systems (list_systems)' },
+        files: { type: 'array', items: { type: 'string' } },
+        evidence: { type: 'array', minItems: 1, items: { type: 'object', properties: {
+          type: { type: 'string', enum: ['code', 'test', 'document_claim', 'data', 'human_decision', 'runtime', 'playtest'] },
+          path: { type: 'string' }, startLine: { type: 'number' }, endLine: { type: 'number' },
+          needle: { type: 'string', description: 'exact text that must appear in the file' }, note: { type: 'string' },
+        }, required: ['type', 'path'] } },
+        conflictsWith: { type: 'array', items: { type: 'string' }, description: 'ids of decisions this contradicts' },
+        supersedes: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['projectId', 'title', 'claim', 'evidence'],
+    },
   },
   {
     name: 'list_systems',
@@ -1163,7 +1200,9 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
     case 'get_git_status':
       return getGitStatus(args.projectId);
     case 'get_design_context':
-      return getDesignContext(args.projectId, args.file, args.query, args.taskId);
+      return getDesignContext(args.projectId, args.file, args.query, args.taskId, args.revision);
+    case 'propose_design_decision':
+      return proposeDesignDecision(args.projectId, args);
     case 'list_systems':
       return listSystems(args.projectId, args.taskId);
     case 'get_system':

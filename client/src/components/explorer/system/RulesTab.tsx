@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AlertTriangle, ChevronRight, Sparkles } from 'lucide-react'
+import { ProposeDecision } from '../ProposeDecision'
 import type { SystemComparison, SystemCompareColumn, SystemCompareRow, SystemDecision, SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { baseName, Section, type SystemActions } from './parts'
@@ -15,7 +16,7 @@ const openRef = (ref: string, onOpen: SystemActions['onOpen']) => {
   onOpen(f, l ? parseInt(l, 10) : undefined)
 }
 
-export function RulesTab({ v, actions }: { v: SystemView; actions: SystemActions }) {
+export function RulesTab({ v, actions, projectId }: { v: SystemView; actions: SystemActions; projectId: string }) {
   const inConflict = new Set(v.comparisons.flatMap(c => c.decisions))
   const rest = v.design.decisions.filter(d => !inConflict.has(d.id))
   return (
@@ -30,6 +31,7 @@ export function RulesTab({ v, actions }: { v: SystemView; actions: SystemActions
         <Section title="Decisions" count={v.design.decisions.length} testId="system-decisions">
           {!v.design.decisions.length && <p className="text-[11px] text-muted-foreground">No decisions found for this system.</p>}
           {rest.map(d => <DecisionCard key={d.id} d={d} onOpen={actions.onOpen} />)}
+          <div className="-mx-3"><ProposeDecision projectId={projectId} systemId={v.id} /></div>
           {!rest.length && v.comparisons.length > 0 && <p className="text-[11px] text-muted-foreground">All recorded decisions of this system are part of the comparison above.</p>}
         </Section>
       )}
@@ -114,7 +116,7 @@ function DecisionCard({ d, onOpen }: { d: SystemDecision; onOpen: SystemActions[
   const approval = d.approval?.state ?? 'unknown'
   return (
     <div className="space-y-1.5 rounded-md border p-2" data-testid="system-decision" data-id={d.id}>
-      <div className="flex flex-wrap items-center gap-1.5"><span className="font-mono text-[11px] font-medium">{d.id}</span><span className="text-xs">{d.title}</span></div>
+      <div className="flex flex-wrap items-center gap-1.5"><span className="font-mono text-[11px] font-medium">{d.id}</span><span className="text-xs">{d.title}</span>{d.origin === 'native' && <span className="rounded border px-1 text-[9px] uppercase text-muted-foreground">proposal</span>}</div>
       <p className="text-[11px] text-muted-foreground">{d.claim}</p>
       <div className="flex flex-wrap gap-1.5 text-[10px]">
         <span className="rounded bg-accent px-1.5 py-0.5">human approval: {approval === 'unknown' ? 'not located' : `${approval} (${d.approval?.source})`}</span>

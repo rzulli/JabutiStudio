@@ -196,7 +196,7 @@ const withLock = <T,>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-async function readLedger(projectId: string): Promise<Ledger> {
+export async function readLedger(projectId: string): Promise<Ledger> {
   try {
     const data = JSON.parse(await readFile(ledgerPath(projectId), 'utf-8'));
     return { version: 1, approvals: data.approvals ?? [], history: data.history ?? [] };
@@ -223,15 +223,20 @@ export async function attest(project: DkProject, input: { decisionId: string; st
     decision_id: input.decisionId, state: input.state, claim_sha256: found.claim_sha256, quote,
     channel: 'ui-request', trust: 'attested_local', at: new Date().toISOString(), projectId: project.id,
   };
+  await recordAttestation(project, entry);
+  return { ok: true as const, entry };
+}
+
+/** Append an attestation to the local ledger (shared by legacy and native decisions). */
+export async function recordAttestation(project: DkProject, entry: Json) {
   await withLock(async () => {
     const ledger = await readLedger(project.id);
-    ledger.approvals = [...ledger.approvals.filter(a => a.decision_id !== input.decisionId), entry];
+    ledger.approvals = [...ledger.approvals.filter(a => a.decision_id !== entry.decision_id), entry];
     ledger.history.push(entry);
     await mkdir(join(DATA_DIR, 'design-approvals'), { recursive: true });
     await writeJsonAtomic(ledgerPath(project.id), ledger);
   });
   cache.clear();
-  return { ok: true as const, entry };
 }
 
 export const clearCache = () => cache.clear();

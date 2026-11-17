@@ -190,10 +190,11 @@ test('T8: the agent brief separates facts, decisions and hypotheses and stays co
 
 test('T9: without Design Knowledge nothing is invented; areas, relations and implementation still work', async () => {
   const v = await view()
-  assert.equal(v.design.available, false)
+  assert.equal(v.design.available, true)
+  assert.deepEqual(v.design.decisions, [])
   assert.deepEqual(v.comparisons, [])
   assert.ok(v.areas.length >= 2 && v.members.length > 0)
-  assert.ok(svc.brief(v).includes('Not indexed'))
+  assert.ok(svc.brief(v).includes('None recorded'))
 })
 
 test('T5: worktree evidence is checked against its own unintegrated and dirty checkout', async () => {

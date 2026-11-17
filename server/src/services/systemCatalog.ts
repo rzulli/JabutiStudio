@@ -7,6 +7,7 @@ import { DATA_DIR } from './dataDir.js';
 import { writeJsonAtomic } from './atomicJson.js';
 import * as graphify from './graphifyAdapter.js';
 import * as designKnowledge from './designKnowledge.js';
+import * as designCore from './designCore.js';
 import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
@@ -122,6 +123,7 @@ async function mutate<T>(projectId: string, fn: (s: Store) => T): Promise<T> {
 }
 
 export const resetCaches = () => { storeCache.clear(); viewCache.clear(); memoCache.clear(); };
+designCore.onDecisionsChanged(() => { viewCache.clear(); memoCache.clear(); });
 
 const slug = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const uniq = (xs: string[]) => [...new Set(xs.map(x => x.trim()).filter(Boolean))];
@@ -266,7 +268,7 @@ function nodesByFile(g: graphify.Graph) {
 export interface DecisionView {
   id: string; title: string; claim: string;
   decisionState: string; approval: any; evidenceStatus: string; implementation: string;
-  conflictsWith: string[]; relevance: 'declared' | 'term' | 'touches-member';
+  conflictsWith: string[]; relevance: 'declared' | 'term' | 'touches-member'; origin?: string; provenance?: any;
   evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[];
   files: string[]; tests: string[];
 }
@@ -490,10 +492,9 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   // ---- design decisions (DK) ----
   const dkRes: any[] = [];
   let dkAvailable = false, dkReason: string | undefined;
-  for (const q of uniq([...terms, ...sys.anchors.decisions])) {
-    const r: any = await designKnowledge.contextForQuery(project, q, worktree);
-    if (r.available) { dkAvailable = true; dkRes.push(...(r.decisions ?? [])); }
-    else dkReason = r.reason;
+  {
+    const r = await designCore.forSystem(project, { id: sys.id, anchors: { terms: uniq(terms), decisions: sys.anchors.decisions } }, worktree);
+    dkAvailable = r.available; dkReason = r.reason; dkRes.push(...r.decisions);
   }
   const byId = new Map<string, any>();
   for (const d of dkRes) byId.set(d.id, d);
@@ -535,7 +536,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     }
     areaAnchorPaths.set(area.id, list);
   }
-  const declaredOrTerm = (d: any) => sys.anchors.decisions.includes(d.id) ||
+  const declaredOrTerm = (d: any) => sys.anchors.decisions.includes(d.id) || (d.systems ?? []).includes(sys.id) ||
     terms.some(t => `${d.title} ${d.claim} ${(d.scope ?? []).join(' ')}`.toLowerCase().includes(t.toLowerCase()));
   for (const d of byId.values()) if (declaredOrTerm(d)) {
     for (const f of [...(d.files ?? []), ...(d.tests ?? [])]) if (fileSet.has(f.path)) add(f.path, { kind: 'dk', detail: `${d.id}${f.role ? ` — ${f.role}` : ''}` }, 60, true);
@@ -560,7 +561,8 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     decisions.push({
       id: d.id, title: d.title, claim: d.claim, decisionState: d.decision_state, approval: d.approval,
       evidenceStatus: d.evidence_status, implementation: d.implementation, conflictsWith: d.conflicts_with ?? [],
-      relevance: sys.anchors.decisions.includes(d.id) ? 'declared' : direct ? 'term' : 'touches-member',
+      origin: d.source, provenance: d.provenance,
+      relevance: sys.anchors.decisions.includes(d.id) || (d.systems ?? []).includes(sys.id) ? 'declared' : direct ? 'term' : 'touches-member',
       evidence: (d.evidence ?? []).filter((e: any) => !e.candidate_only).map((e: any) => ({
         type: e.type, ref: e.path ? `${e.path} (was ${e.ref})` : e.ref, freshness: e.freshness, detail: e.detail, note: e.note,
         excerpt: (e.excerpt ?? []).filter((x: any) => String(x.text).trim()).slice(0, 10).map((x: any) => `L${x.line}: ${x.text}`),
@@ -1213,9 +1215,9 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
 
   L.push('', '## DESIGN DECISIONS (Design Knowledge, as recorded — freshness is not approval)');
   if (!v.design.available) L.push(`Not indexed${v.design.reason ? `: ${v.design.reason}` : ''}.`);
-  else if (!v.design.decisions.length) L.push('None found for this system.');
+  else if (!v.design.decisions.length) L.push("None recorded for this system.");
   for (const d of v.design.decisions.filter(x => x.relevance !== 'touches-member').slice(0, 8)) {
-    L.push(`- ${d.id} "${d.title}" — decision: ${d.decisionState}; approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}); evidence: ${d.evidenceStatus}; implementation: ${d.implementation}`);
+    L.push(`- ${d.id} "${d.title}"${d.origin === 'native' ? ' [proposal in the project file]' : ''} — decision: ${d.decisionState}; approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}); evidence: ${d.evidenceStatus}; implementation: ${d.implementation}`);
   }
   for (const k of v.comparisons) {
     L.push(`UNRESOLVED CONFLICT (${k.decisions.join(' vs ')}): do not pick a side; ask the owner.`);

@@ -233,7 +233,7 @@ function SystemDetail({ v, projectId, reviewing, setReviewing, allSystems, onOpe
 
       {tab === 'overview' && <OverviewTab v={v} actions={actions} goTab={setTab} selectArea={setArea} />}
       {tab === 'map' && <SystemMap v={v} actions={actions} selectedArea={area} onSelectArea={setArea} />}
-      {tab === 'rules' && <RulesTab v={v} actions={actions} />}
+      {tab === 'rules' && <RulesTab v={v} actions={actions} projectId={projectId} />}
       {tab === 'implementation' && <ImplementationTab v={v} actions={actions} area={area} setArea={setArea} />}
       {tab === 'evidence' && <EvidenceTab v={v} actions={actions} projectId={projectId} onChanged={onChanged} onPick={onPick} />}
     </div>

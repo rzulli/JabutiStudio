@@ -90,7 +90,7 @@ after(async () => {
 
 const get = async (url: string) => (await app.inject({ method: 'GET', url })).json()
 
-test('T8/T1: a project without DK still yields system candidates, with decisions marked unavailable', async () => {
+test('T8/T1: a project without DK still yields system candidates, with no decisions invented', async () => {
   const r = await svc.discover(nodkP)
   assert.ok(!('error' in r) && r.added >= 1)
   const cat = await get('/api/projects/nodk/systems')
@@ -99,7 +99,8 @@ test('T8/T1: a project without DK still yields system candidates, with decisions
   assert.equal(grain.status, 'proposed')
   assert.equal(grain.origin, 'discovery')
   const v = await get('/api/projects/nodk/systems/sys-grain')
-  assert.equal(v.design.available, false)
+  assert.equal(v.design.available, true) // native store: any git project can hold decisions
+  assert.deepEqual(v.design.decisions, [])
   const paths = v.members.map((m: any) => m.path)
   assert.ok(paths.includes('scripts/GrainStore.gd') && paths.includes('tests/grain_smoke.gd'))
   assert.ok(paths.includes('scripts/Mill.gd'), 'found by text, not by name')

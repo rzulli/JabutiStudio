@@ -458,7 +458,8 @@ export interface AiBackendStatus {
 
 
 export type DesignFreshness = 'CURRENT' | 'MOVED' | 'CHANGED' | 'AMBIGUOUS' | 'STALE' | 'GONE' | 'UNKNOWN'
-export interface DesignApproval { state: 'unknown' | 'claimed' | 'approved' | 'rejected' | 'revoked'; source: string; quote?: string; at?: string; channel?: string; detail?: string }
+export interface DesignApproval {
+  lapsed?: boolean; state: 'unknown' | 'claimed' | 'approved' | 'rejected' | 'revoked'; source: string; quote?: string; at?: string; channel?: string; detail?: string }
 export interface DesignEvidence {
   type: string; ref: string; note: string; candidate_only: boolean; freshness: DesignFreshness; detail: string
   lines?: [number, number] | null; path?: string | null; excerpt: { line: number; text: string }[]
@@ -469,6 +470,7 @@ export interface DesignDecision {
   supersedes: string[]; conflicts_with: string[]; matched_by?: string[]
   files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
   evidence: DesignEvidence[]
+  source?: 'native' | 'legacy'; systems?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
 }
 
 // ---- System catalog (Explorer > Systems) ----
@@ -520,7 +522,7 @@ export interface SystemDecision {
   id: string; title: string; claim: string; decisionState: string
   approval?: { state: string; source: string; quote?: string }
   evidenceStatus: string; implementation: string; conflictsWith: string[]
-  relevance: 'declared' | 'term' | 'touches-member'
+  relevance: 'declared' | 'term' | 'touches-member'; origin?: string
   evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[]
   files: string[]; tests: string[]
 }
@@ -594,11 +596,18 @@ export interface KnowledgePlan {
 
 const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
 
+export interface ProposeDecisionBody {
+  title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[]; conflictsWith?: string[]
+  evidence: { type: string; path: string; startLine?: number; needle?: string; note?: string }[]
+}
+
 export interface DesignContext {
   available: boolean; reason?: string
   root?: string; branch?: string | null; head?: string | null; indexed?: boolean; note?: string | null
-  examined?: { root: string; isCanonical: boolean; registry: string }
+  examined?: { root: string; isCanonical: boolean; registry: string; revision?: string }
   decisions?: DesignDecision[]
+  conflicts?: { ids: string[] }[]
+  sources?: { native: { state: string; reason?: string; count: number }; legacy: { available: boolean; reason?: string } }
   graph?: { built: boolean; incoming: { file: string; relation: string; confidence: string; line: number }[]; outgoing: { file: string; relation: string; confidence: string; line: number }[] }
 }
 
@@ -614,6 +623,8 @@ export const api = {
     request<DesignContext>(`/projects/${projectId}/design?file=${encodeURIComponent(file)}${worktree ? `&worktree=${encodeURIComponent(worktree)}` : ''}`),
   getDesignCheckouts: (projectId: string) =>
     request<{ registry: boolean; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
+  proposeDecision: (projectId: string, body: ProposeDecisionBody) =>
+    request<DesignDecision & { id: string }>(`/projects/${projectId}/design/proposals`, { method: 'POST', body: JSON.stringify(body) }),
   attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   getSystems: (projectId: string, worktree?: string) =>

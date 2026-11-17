@@ -181,7 +181,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   <p style="font-size: 13px; color: #888;">Permissions requested:</p>
   <ul class="perms">
     <li>View projects, git status, history and diffs</li>
-    <li>View design decisions and their evidence (never approve them)</li>
+    <li>View design decisions and their evidence, and propose decisions (never approve them)</li>
     <li>View the system catalog and propose systems (never confirm them)</li>
     <li>View, create, update, and delete tasks</li>
     <li>Create, rename and delete milestones</li>
