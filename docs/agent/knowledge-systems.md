@@ -162,6 +162,26 @@
 - Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
   **Nao hardcodar nomes/ids/caminhos de um jogo na logica geral** — so em fixtures
 
+## Repositorio sem commits, erros de leitura e aba Versions (KNOWLEDGE-BOOTSTRAP)
+
+- **Unborn nao e erro.** `isUnborn(root)` (`systemCatalog.ts`) = sem `HEAD^{commit}` mas com `symbolic-ref HEAD`. `reconcile`
+  devolve `revision: {commit: null, unborn: true}`, `checkout.unborn`, branch via `symbolic-ref`, sistemas locais como
+  `unpublished-proposal`; `catalog().checkout.integration` = "no commits yet". Revisao **explicita** inexistente continua erro.
+- **Publicar exige commit raiz** (a identidade do arquivo e `gitRoots`): `portableGitRoot` lanca `UnbornRepoError`;
+  `previewExport` devolve `needsFirstCommit`; arquivo ja existente num repo unborn fica `untracked` (nao `invalid`).
+- **Primeiro commit** (`createFirstCommit`, `POST .../knowledge/first-commit`, so UI): um commit **vazio** (`--allow-empty`),
+  sem staging, sem tocar arquivos nem catalogo; recusa se ja ha commits ou se ha algo no indice. O usuario pode preferir o
+  proprio commit pelo Git panel.
+- **Erro nunca vira lista vazia**: `readStore` so trata `ENOENT` como "sem sistemas"; JSON invalido/forma inesperada lanca
+  (e nao sobrescreve); `catalog()` devolve `loadErrors[]` em vez de descartar sistemas; `GET /systems` responde 500 com a
+  causa; o client mostra caixa de erro + Retry, nunca "No systems yet".
+- **UI**: barra de contexto fixa no topo da aba Systems (branch/sha ou "no commits yet", checkout/worktree, "catalogo local,
+  compartilhado") e abas **Systems | Versions**. "Versions" substituiu o botao do rodape ("Publish & recover"); la ficam
+  publicar, comparar, recuperar e o primeiro commit, cada um dizendo o que escreve (arquivo do repo / so catalogo / Git).
+- **Auditoria canonico x worktree**: `docs/proposals/knowledge-canonical-vs-worktree.md`. Resumo: o catalogo e unico por
+  projeto e compartilhado por todos os checkouts; nao e branch-aware; tarefa/merge nao tocam Knowledge.
+- Teste: `server/test/systemUnborn.test.ts` (U1-U8).
+
 ## Edicao humana de Systems (R3-KNOWLEDGE-UX)
 
 - **Editor dedicado** (`EditSystemDialog.tsx`, 5 passos: Identity / Responsibilities / Members / Relations / Review). Nada grava antes do passo Review, que mostra o diff e uma caixa por item a confirmar; "Save changes" nao confirma nada. Reusa `PATCH /systems/:sid` (`fromAppUi`), com `Edit.setArea`, `Edit.dropSuggestion`, `upsertRelation`. Merge e Split sao dialogos proprios (`StructureDialogs.tsx`) com comparacao e previa; o sistema fundido fica como redirect.
