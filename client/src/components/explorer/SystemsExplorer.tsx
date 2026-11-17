@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, Pencil, Wand2, BookUp, MoreHorizontal, Merge, Scissors, EyeOff, Plus } from 'lucide-react'
+import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, Pencil, Wand2, BookUp, Database, MoreHorizontal, Merge, Scissors, EyeOff, Plus } from 'lucide-react'
 import { api, type SystemView, type SystemSummary } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { extensionOf } from '@/lib/explorerView'
@@ -171,7 +171,22 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
         )}
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-dark" data-testid="systems-list">
           {catalogQ.isLoading && <p className="p-3 text-xs text-muted-foreground">Loading…</p>}
-          {!catalogQ.isLoading && !systems.length && <p className="p-3 text-xs text-muted-foreground">No systems yet.</p>}
+          {/* A failed read is an error, never "No systems yet": the catalog may be fine and simply not readable right now. */}
+          {catalogQ.isError && (
+            <div className="m-2 space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-2 text-[11px]" role="alert" data-testid="systems-error">
+              <p className="font-medium text-destructive">{systems.length ? 'Could not refresh the systems' : 'Could not load the systems'}</p>
+              <p className="break-words text-muted-foreground">{(catalogQ.error as Error)?.message}</p>
+              <p className="text-muted-foreground">{systems.length ? 'Showing the last result that loaded. ' : 'Your catalog was not changed. '}This is not an empty catalog.</p>
+              <button onClick={() => catalogQ.refetch()} className="underline" data-testid="systems-retry">Retry</button>
+            </div>
+          )}
+          {!!catalogQ.data?.loadErrors?.length && (
+            <div className="m-2 space-y-1 rounded-md border border-warning/50 bg-warning/10 p-2 text-[11px]" role="alert" data-testid="systems-load-errors">
+              <p className="font-medium text-warning">{catalogQ.data.loadErrors.length} system(s) could not be read</p>
+              {catalogQ.data.loadErrors.map(e => <p key={e.id} className="break-words text-muted-foreground"><b>{e.name}</b>: {e.error}</p>)}
+            </div>
+          )}
+          {!catalogQ.isLoading && !catalogQ.isError && !systems.length && !catalogQ.data?.loadErrors?.length && <p className="p-3 text-xs text-muted-foreground">No systems yet.</p>}
           {filtered.map((s: SystemSummary) => (
             <button key={s.id} onClick={() => pick(s.id)} data-testid="system-row"
               className={cn('w-full border-b border-border/40 px-2.5 py-2 text-left hover:bg-accent/60', current === s.id && 'bg-accent')}>
@@ -188,22 +203,19 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
             </button>
           ))}
         </div>
-        <div className="border-t p-1.5">
-          <button onClick={() => setView(view === 'knowledge' ? 'systems' : 'knowledge')} data-testid="systems-knowledge"
-            title="Publish the knowledge to the repository, or recover it from there"
-            className={cn('flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground', view === 'knowledge' && 'bg-accent text-foreground')}>
-            <BookUp className="h-3 w-3" /> Publish &amp; recover knowledge
-          </button>
-        </div>
       </aside>
 
       <NewSystemDialog projectId={projectId} allSystems={systems} open={newOpen} initialMode={newMode} onOpenChange={setNewOpen} onOpenFile={openFile}
         onCreated={async id => { await refresh(); pick(id) }}
         onSent={s => setAwaiting({ label: s.label, since: Date.now(), known: systems.map(x => x.id) })} />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <ContextBar checkout={catalogQ.data?.checkout ?? null} worktree={worktree} view={view} onView={setView} />
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto scrollbar-dark" data-testid="system-detail">
         {view === 'knowledge' ? (
           <KnowledgePanel projectId={projectId} worktree={worktree} onChanged={refresh} onOpenSystem={pick} />
-        ) : !v && !current && !catalogQ.isLoading ? (
+        ) : !v && !current && !catalogQ.isLoading && catalogQ.isError ? (
+          <p className="p-6 text-xs text-muted-foreground">The systems could not be loaded, so nothing is shown here. See the message in the list.</p>
+        ) : !v && !current && !catalogQ.isLoading && !catalogQ.data?.loadErrors?.length ? (
           <EmptyDesign onManual={() => openNew('manual')} onAgent={() => openNew('agent')} onDiscover={discover} busy={busy} />
         ) : !v ? (
           <p className="p-6 text-xs text-muted-foreground">{detailQ.error ? (detailQ.error as Error).message : 'Loading…'}</p>
@@ -215,6 +227,39 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
           />
         )}
       </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Which knowledge the person is looking at, always visible. The catalog (systems, classification) is this installation's
+ * local store, identical for every checkout; the checkout only decides where code evidence is read and which committed
+ * file is compared. "Versions" is where anything that touches the repository file lives; the list is for design work.
+ */
+function ContextBar({ checkout, worktree, view, onView }: { checkout: import('@/lib/api').SystemCheckout | null; worktree: string; view: 'systems' | 'knowledge'; onView: (v: 'systems' | 'knowledge') => void }) {
+  const tab = (id: 'systems' | 'knowledge', label: string, icon: React.ReactNode, title: string) => (
+    <button onClick={() => onView(id)} title={title} data-testid={`systems-tab-${id}`} aria-pressed={view === id}
+      className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] hover:bg-accent hover:text-foreground', view === id ? 'bg-accent text-foreground' : 'text-muted-foreground')}>{icon}{label}</button>
+  )
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-card/40 px-3 py-1.5 text-[11px]" data-testid="systems-context">
+      <div className="flex gap-0.5">
+        {tab('systems', 'Systems', <Database className="h-3 w-3" />, 'Explore and author the systems of the game')}
+        {tab('knowledge', 'Versions', <BookUp className="h-3 w-3" />, 'Publish to the repository file, compare with what is committed, recover from it')}
+      </div>
+      {checkout ? (
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-muted-foreground" data-testid="systems-context-checkout">
+          <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />
+            <span className="font-medium text-foreground">{checkout.branch ?? '?'}</span>
+            {checkout.unborn ? <span className="rounded bg-warning/15 px-1 text-warning" data-testid="systems-context-unborn">no commits yet</span> : checkout.head && <code className="font-mono">{checkout.head}</code>}
+          </span>
+          <span>{worktree ? 'worktree' : 'project checkout'}{checkout.uncommitted ? ` · ${checkout.uncommitted} uncommitted` : ''}</span>
+        </span>
+      ) : <span className="text-muted-foreground">checkout unavailable</span>}
+      <span className="ml-auto text-muted-foreground" title="Systems and their classification live in this installation's local catalog, not in Git. Every checkout and branch of this project shows the same catalog; switching checkout only changes where code evidence is read.">
+        Catalog: local to this installation, shared by every checkout
+      </span>
     </div>
   )
 }

@@ -140,21 +140,29 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
   const sel = k?.systems.find(s => s.id === selected) ?? null
 
   if (kq.isLoading) return <p className="p-6 text-xs text-muted-foreground">Reading knowledge…</p>
-  if (!k) return <p className="p-6 text-xs text-destructive">{(kq.error as Error)?.message ?? 'Could not read knowledge'}</p>
+  if (!k) return (
+    <div className="m-4 space-y-1.5 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs" role="alert" data-testid="knowledge-error">
+      <p className="font-medium text-destructive">Could not read the versions of this knowledge</p>
+      <p className="break-words">{(kq.error as Error)?.message ?? 'Unknown error'}</p>
+      <p className="text-muted-foreground">Your systems and the repository were not changed. This is a read error, not an empty catalog.</p>
+      <button onClick={refresh} className="underline" data-testid="knowledge-retry">Retry</button>
+    </div>
+  )
 
   const f = k.file
+  const unborn = k.checkout.unborn
   return (
     <div className="mx-auto max-w-4xl space-y-3 p-4 text-xs" data-testid="knowledge-panel">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-semibold">Knowledge</h2>
-        <span className="text-[11px] text-muted-foreground">publish and recover what you classified, in the repository</span>
+        <h2 className="text-base font-semibold">Versions</h2>
+        <span className="text-[11px] text-muted-foreground">publish, compare and recover systems through the repository file. Publishing is not design approval.</span>
         <button onClick={refresh} className="ml-auto flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent" data-testid="knowledge-refresh">
           <RefreshCw className={cn('h-3 w-3', (kq.isFetching || pq.isFetching) && 'animate-spin')} /> Refresh <span className="text-muted-foreground">read {readAt}</span>
         </button>
       </div>
 
       <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2 py-1.5 text-[11px]', !k.checkout.isCanonical && 'border-warning/50 bg-warning/10')} data-testid="knowledge-checkout">
-        <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{k.checkout.branch ?? '?'} <code className="font-mono">{k.checkout.head}</code></span>
+        <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{k.checkout.branch ?? '?'} {unborn ? <span className="text-warning">no commits yet</span> : <code className="font-mono">{k.checkout.head}</code>}</span>
         <span>{k.checkout.isCanonical ? 'project checkout' : 'worktree'}</span>
         <span>{k.checkout.dirty ? 'uncommitted changes' : 'clean'}</span>
         <label className="ml-auto flex items-center gap-1">revision
@@ -163,7 +171,7 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
             className="h-6 w-28 rounded-md border bg-background px-1.5 font-mono" />
         </label>
       </div>
-      {revision && <p className="text-[11px] text-warning" data-testid="knowledge-readonly">Past revision {k.revision.commit.slice(0, 8)}: read-only. Uncommitted edits and the working file are not consulted.</p>}
+      {revision && <p className="text-[11px] text-warning" data-testid="knowledge-readonly">Past revision {k.revision.commit?.slice(0, 8)}: read-only. Uncommitted edits and the working file are not consulted.</p>}
       {!revision && worktree && <p className="text-[11px] text-warning" data-testid="knowledge-readonly">Worktree: read-only here. Publish from the project checkout; integration into it still needs your Git merge.</p>}
       {!k.checkout.isCanonical && <p className="text-[11px] text-muted-foreground">The code graph describes the project checkout, not this worktree; technical relations are not verified here.</p>}
 
@@ -181,6 +189,32 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
       </div>
 
       {note && <p className="rounded-md border border-warning/50 bg-warning/10 p-2 text-[11px]" data-testid="knowledge-note">{note}</p>}
+
+      {/* Repository with no commits: the catalog is fine; only publishing needs a first commit. */}
+      {unborn && (
+        <div className="space-y-2 rounded-md border border-warning/50 bg-warning/10 p-3" data-testid="knowledge-unborn">
+          <p className="flex items-center gap-1.5 font-medium"><GitBranch className="h-3 w-3" /> This repository has no commits yet</p>
+          <p className="text-muted-foreground">Your {k.systems.length} system(s) are intact: they live in this installation's catalog, not in Git. Only publishing and recovering through the repository file need a first commit, because that file is tied to the repository history.</p>
+          {writable
+            ? <>
+                <Confirm testId="knowledge-first-commit" label="Create an empty first commit…"
+                  ask={`Add one empty commit to ${k.checkout.branch ?? 'this branch'}? No files are added or staged; your files stay exactly as they are, untracked. Git history is the only thing that changes.`}
+                  onConfirm={async () => { try { const r = await api.firstCommitKnowledge(projectId); toast.success(`First commit ${r.commit} created. Nothing else was touched.`); setNote(null); await refresh() } catch (e: any) { toast.error(e.message || 'Could not create the commit'); setNote(e.message) } }} />
+                <p className="text-[11px] text-muted-foreground">Prefer to choose the files yourself? Make your own first commit in the Git panel; this view detects it on Refresh.</p>
+              </>
+            : <p className="text-[11px] text-warning">Switch to the project checkout to create it.</p>}
+        </div>
+      )}
+
+      {/* What each operation changes: a published file is versioned data; the catalog is local data. */}
+      {writable && (
+        <div className="grid gap-2 sm:grid-cols-2" data-testid="knowledge-scope">
+          <div className="rounded-md border p-2"><p className="font-medium">Publish <span className="ml-1 rounded bg-warning/15 px-1 text-[10px] font-normal text-warning">writes a repository file</span></p>
+            <p className="mt-0.5 text-muted-foreground">Writes <code className="font-mono">jabutistudio.systems.json</code> in this checkout. It is left uncommitted; you commit it. The local catalog is not modified.</p></div>
+          <div className="rounded-md border p-2"><p className="font-medium">Recover <span className="ml-1 rounded bg-success/15 px-1 text-[10px] font-normal text-success">writes local catalog only</span></p>
+            <p className="mt-0.5 text-muted-foreground">Adds systems found in that file to this installation's catalog. Nothing in the repository changes. Conflicts block the import.</p></div>
+        </div>
+      )}
 
       <div className="rounded-md border" data-testid="knowledge-systems">
         {k.systems.length === 0 && <p className="p-3 text-muted-foreground">No systems here yet. Find or propose systems first.</p>}
@@ -208,7 +242,7 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
             {plan.export.systems.some(s => s.origin === 'discovery' && s.status === 'proposed') && <p className="text-[11px] text-muted-foreground">Unreviewed discovery candidates start unticked; tick the ones worth publishing.</p>}
             <Confirm testId="knowledge-export-btn" disabled={!exportIds.length} label={`Create the file (${exportIds.length})…`} ask={`Write ${plan.export.target} with ${exportIds.length} system(s) now? Nothing is staged or committed.`}
               onConfirm={async () => { try { await api.exportKnowledge(projectId, exportIds); toast.success('File created in the working tree (not committed)'); setNote(null); await refresh() } catch (e) { await fail(e) } }} />
-          </> : <p className="text-muted-foreground">{plan.export.reason}</p>}
+          </> : <p className="text-muted-foreground">{plan.export.needsFirstCommit ? 'Publishing unlocks after the first commit (see above).' : plan.export.reason}</p>}
         </div>
       )}
 
@@ -283,7 +317,7 @@ export function KnowledgePanel({ projectId, worktree, onChanged, onOpenSystem }:
       <button onClick={() => setTech(!tech)} className="text-[10px] text-muted-foreground underline">{tech ? 'Hide' : 'Show'} technical details</button>
       {tech && (
         <div className="space-y-1 rounded bg-muted/40 p-2 font-mono text-[10px]" data-testid="knowledge-tech">
-          <p>revision {k.revision.commit}</p><p>committed sha256 {f.revisionSha256 ?? '—'}</p><p>working sha256 {f.workingSha256 ?? '—'}</p>
+          <p>revision {k.revision.commit ?? 'none (no commits yet)'}</p><p>committed sha256 {f.revisionSha256 ?? '—'}</p><p>working sha256 {f.workingSha256 ?? '—'}</p>
           <p>expected sha256 {upd?.sha256 ?? f.expectedSha256 ?? '—'}</p>
           {k.limitations.map(l => <p key={l} className="font-sans">· {l}</p>)}
         </div>

@@ -571,7 +571,7 @@ export interface SystemSummary {
   kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean; createdAt: string
   files: number; decisions: number; conflicts: number; flags: string[]
 }
-export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; uncommitted: number; integration: string }
+export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; unborn?: boolean; uncommitted: number; integration: string }
 export type SystemTier = 'core' | 'participant' | 'candidate' | 'test' | 'historical' | 'related'
 export type SystemFacet = 'logic' | 'data' | 'ui' | 'telemetry' | 'purchase' | 'requirement' | 'effect' | 'test' | 'other'
 export type EvidenceState = 'verified' | 'file-only' | 'moved' | 'stale' | 'missing'
@@ -673,15 +673,15 @@ export interface KnowledgeSystem {
 }
 export interface KnowledgeReconciliation {
   project: string
-  checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null }
-  revision: { requested: string; commit: string; examinedWorkingTree: boolean }
+  checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null; unborn: boolean }
+  revision: { requested: string; commit: string | null; unborn: boolean; examinedWorkingTree: boolean }
   file: { state: 'present' | 'modified' | 'untracked' | 'absent' | 'invalid' | 'incompatible'; reason?: string
     revisionSha256?: string; workingSha256?: string; expectedSha256?: string; integration?: 'same' | 'differs' | 'absent-in-main' }
   systems: KnowledgeSystem[]; limitations: string[]
 }
 export interface KnowledgeDigest { id: string; name: string; status: string; origin: string; areas: number; relations: number; proposedItems: number }
 export interface KnowledgePlan {
-  export: { target: string; canExport: boolean; reason?: string; systems: KnowledgeDigest[] }
+  export: { target: string; canExport: boolean; reason?: string; needsFirstCommit?: boolean; systems: KnowledgeDigest[] }
   update: { exists: false } | { exists: true; error: string } | {
     exists: true; sha256: string; fileOnly: KnowledgeDigest[]
     rows: { id: string; name: string; action: 'add' | 'update' | 'unchanged' | 'needs-choice'; status: string; origin: string
@@ -728,7 +728,7 @@ export const api = {
   attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   getSystems: (projectId: string, worktree?: string) =>
-    request<{ systems: SystemSummary[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
+    request<{ systems: SystemSummary[]; loadErrors: { id: string; name: string; error: string }[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
   getSystem: (projectId: string, id: string, worktree?: string) =>
     request<SystemView>(`/projects/${projectId}/systems/${encodeURIComponent(id)}?${wt(worktree)}`),
   getSystemBrief: (projectId: string, id: string, worktree?: string, goal?: string, area?: string) =>
@@ -746,6 +746,8 @@ export const api = {
   getKnowledge: (projectId: string, worktree?: string, revision?: string) =>
     request<KnowledgeReconciliation>(`/projects/${projectId}/systems/knowledge?${wt(worktree)}${revision ? `&revision=${encodeURIComponent(revision)}` : ''}`),
   getKnowledgePlan: (projectId: string) => request<KnowledgePlan>(`/projects/${projectId}/systems/knowledge/plan`),
+  firstCommitKnowledge: (projectId: string) =>
+    request<{ commit: string; branch: string | null }>(`/projects/${projectId}/systems/knowledge/first-commit`, { method: 'POST', body: '{}' }),
   exportKnowledge: (projectId: string, systemIds: string[]) =>
     request<{ sha256: string | null }>(`/projects/${projectId}/systems/knowledge/export`, { method: 'POST', body: JSON.stringify({ systemIds }) }),
   updateKnowledge: (projectId: string, body: { expectedSha256: string; systemIds: string[]; takeLocal: string[]; expectedLocal: Record<string, string> }) =>
