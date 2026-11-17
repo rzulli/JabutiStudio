@@ -63,10 +63,12 @@ const TEXT_EXTENSIONS = new Set([
   '.txt', '.log', '.csv', '.tsv',
   '.vue', '.svelte', '.astro',
   '.prisma', '.proto',
+  // Godot: all plain text (project.godot is INI-like; .tscn/.tres are section+property files)
+  '.gd', '.godot', '.tscn', '.tres', '.gdshader', '.gdshaderinc', '.gdextension', '.import',
   '.lock', // package-lock, yarn.lock etc
 ]);
 
-function getMimeHint(ext: string, name: string): string {
+export function getMimeHint(ext: string, name: string): string {
   if (IMAGE_TYPES[ext]) return IMAGE_TYPES[ext];
   if (ext === '.md' || ext === '.mdx' || ext === '.markdown') return 'text/markdown';
   if (ext === '.json' || ext === '.jsonc') return 'application/json';

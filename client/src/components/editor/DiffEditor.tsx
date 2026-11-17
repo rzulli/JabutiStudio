@@ -44,6 +44,10 @@ function getLanguageExtension(ext: string): Extension[] {
     '.gd': () => gdscript,
     '.tscn': () => godotResource,
     '.tres': () => godotResource,
+    // project.godot, *.import, *.gdextension: [section] + key=value, same shape as .tres
+    '.godot': () => godotResource,
+    '.import': () => godotResource,
+    '.gdextension': () => godotResource,
   }
   const factory = map[ext]
   return factory ? [factory()] : []
