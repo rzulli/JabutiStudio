@@ -38,6 +38,7 @@ before(async () => {
   put(hum, 'tests/humus_params_smoke.gd', 'extends Node\n')
   for (let i = 1; i <= 5; i++) put(hum, `perks_v5/humus_farto_0${i}.tres`, '[gd_resource]\n')
   git(hum, 'init', '-q'); git(hum, 'add', '-A'); git(hum, 'commit', '-qm', 'base')
+  writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'hum', path: hum }] }))
   const pd = await import('../src/services/projectDiscovery.js')
   P = (await pd.addProjects([hum])).find(p => p.path === hum)
   svc = await import('../src/services/systemCatalog.js')

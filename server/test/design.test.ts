@@ -47,6 +47,7 @@ before(async () => {
   writeRecord()
   git(project, 'init', '-q'); git(project, 'add', '-A'); git(project, 'commit', '-qm', 'base')
   git(project, 'worktree', 'add', '-q', '-b', 'task-1', wt)
+  writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'dkproj', path: project }] }))
   const projects = await (await import('../src/services/projectDiscovery.js')).addProjects([project])
   assert.equal(projects.find(p => p.path === project)?.id, 'dkproj')
   svc = await import('../src/services/designKnowledge.js')

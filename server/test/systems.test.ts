@@ -72,6 +72,7 @@ before(async () => {
   }
   git(withDk, 'init', '-q'); git(withDk, 'add', '-A'); git(withDk, 'commit', '-qm', 'base')
 
+  writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'nodk', path: nodk }, { id: 'withdk', path: withDk }] }))
   const pd = await import('../src/services/projectDiscovery.js')
   const projects = await pd.addProjects([nodk, withDk])
   nodkP = projects.find(p => p.path === nodk); dkP = projects.find(p => p.path === withDk)

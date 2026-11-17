@@ -6,7 +6,7 @@ import * as syncStore from '../syncStore.js';
 import * as deployStore from '../deployStore.js';
 import * as aiConfigStore from '../aiConfigStore.js';
 import { getSettings, saveSettings } from '../settingsStore.js';
-import { addProjects, getProjects, removeProject, updateProject } from '../projectDiscovery.js';
+import { addProjects, claimProjectIdentity, getProjects, removeProject, updateProject } from '../projectDiscovery.js';
 
 /**
  * What the cloud sync moves, and how each piece maps to a local store.
@@ -114,13 +114,19 @@ async function isDir(path: string): Promise<boolean> {
  */
 async function locate(folder: string): Promise<string | null> {
   const roots = new Set<string>();
+  const matches = new Map<string, string>();
+  const add = async (path: string) => {
+    if (!(await isDir(path))) return;
+    const key = process.platform === 'win32' ? path.replace(/\\/g, '/').toLowerCase() : path;
+    matches.set(key, path);
+  };
   for (const p of getSettings().selectedProjects) {
     roots.add(dirname(p));
     roots.add(dirname(dirname(p)));
   }
   for (const root of roots) {
     const direct = join(root, folder);
-    if (await isDir(direct)) return direct;
+    await add(direct);
   }
   for (const root of roots) {
     let entries: string[] = [];
@@ -128,10 +134,10 @@ async function locate(folder: string): Promise<string | null> {
     for (const entry of entries) {
       if (entry.startsWith('.') || entry === 'node_modules') continue;
       const candidate = join(root, entry, folder);
-      if (await isDir(candidate)) return candidate;
+      await add(candidate);
     }
   }
-  return null;
+  return matches.size === 1 ? [...matches.values()][0] : null;
 }
 
 export interface RemoteRecord {
@@ -204,7 +210,7 @@ export async function applyRemote(records: RemoteRecord[]): Promise<{ missing: R
         continue;
       }
       const path = await locate(data.folder);
-      if (path) {
+      if (path && await claimProjectIdentity(path, id)) {
         toAdd.push(path);
         toUpdate.push({ id, data });
         found.push(id);

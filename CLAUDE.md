@@ -731,9 +731,16 @@ Os timestamps sao cascading — etapas posteriores preenchem as anteriores autom
 - Para outro projeto Godot, descubra candidatos e revise/proponha suas responsabilidades e evidencias; DK e
   opcional, nao copie dados de outro jogo. Adicione testes de semantica e manutencao em `server/test/systemsV2.test.ts`;
   rode `pnpm --filter shipyard-server test` (inclui `systems.test.ts` e os testes V2).
-- O catalogo usa o ID de projeto compartilhado pelo app. Projetos com o mesmo nome recebem sufixos conforme a
-  ordem de cadastro; mudar essa ordem pode associar dados ao projeto errado. Nao reorganizar esses projetos sem
-  antes preservar e conferir seus arquivos `data/systems/` (a limitacao tambem afeta outros dados por ID).
+- O ID de projeto e compartilhado por tasks, sistemas, Graphify e integracoes. `data/project-identities.json`
+  reserva o ID por caminho, inclusive depois da remocao; novos projetos usam hash do caminho e nao dependem da
+  ordem. Na primeira inicializacao, IDs existentes sao preservados a partir de `projects.json`. IDs legados
+  duplicados entre caminhos sao ambiguos: a inicializacao falha sem sobrescrever dados, para revisao manual.
+  O importador de workspace remapeia os caminhos desse registro junto aos de settings e projects. Na nuvem,
+  IDs recebidos so sao vinculados a caminhos sem outro dono; pastas candidatas ambiguas ficam pendentes.
+- Reanalise Graphify real: `SHIPYARD_GRAPHIFY_PYTHON=<python do graphify-godot>` e
+  `node --import tsx --test --test-force-exit test/graphifyIntegration.test.ts` em `server/`. O teste usa uma
+  fixture descartavel e verifica reextracao, renomeacao, classificacao e evidencias; sem o interpretador configurado,
+  ele e explicitamente pulado na suite normal. Nao executa o projeto Godot.
 - `designKnowledge.dkScript` cai para o `dk.py` mais novo entre os checkouts quando o do projeto nao tem `--root`
 - Teste: `server/test/systems.test.ts` (fixture com git init, sem DK, worktree, idempotencia, vanished, MCP).
   **Nao hardcodar nomes/ids/caminhos de um jogo na logica geral** — so em fixtures

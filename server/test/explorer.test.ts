@@ -25,6 +25,7 @@ before(async () => {
   copyFileSync(join(here, 'fixtures/pnmg-slice.graph.json'), join(out, 'graph.json'))
   mkdirSync(projectRoot)
   writeFileSync(join(projectRoot, 'project.godot'), 'config_version=5\n')
+  writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ projects: [{ id: 'pnmg', path: projectRoot }] }))
   adapter = await import('../src/services/graphifyAdapter.js')
   const projects = await (await import('../src/services/projectDiscovery.js')).addProjects([projectRoot])
   assert.equal(projects.find(p => p.path === projectRoot)?.id, 'pnmg')

@@ -210,10 +210,12 @@ function main() {
   }
   copyTree(join(bundleRoot, 'data'), DATA_DIR);
 
+  const pathKey = p => /^[a-z]:[\\/]/i.test(p) ? p.replace(/\\/g, '/').toLowerCase() : p;
+  const paths = new Map([...pathMap].map(([from, to]) => [pathKey(from), to]));
   const settingsPath = join(DATA_DIR, 'settings.json');
   if (existsSync(settingsPath)) {
     const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    settings.selectedProjects = (settings.selectedProjects || []).map(p => pathMap.get(p)).filter(Boolean);
+    settings.selectedProjects = (settings.selectedProjects || []).map(p => paths.get(pathKey(p))).filter(Boolean);
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
 
@@ -221,10 +223,17 @@ function main() {
   if (existsSync(projectsPath)) {
     const file = JSON.parse(readFileSync(projectsPath, 'utf8'));
     file.projects = (file.projects || []).map(p => {
-      const next = pathMap.get(p.path);
+      const next = paths.get(pathKey(p.path));
       return next ? { ...p, path: next } : p;
     });
     writeFileSync(projectsPath, JSON.stringify(file, null, 2));
+  }
+
+  const identitiesPath = join(DATA_DIR, 'project-identities.json');
+  if (existsSync(identitiesPath)) {
+    const registry = JSON.parse(readFileSync(identitiesPath, 'utf8'));
+    registry.identities = registry.identities.map(p => ({ ...p, path: paths.get(pathKey(p.path)) ?? p.path }));
+    writeFileSync(identitiesPath, JSON.stringify(registry, null, 2));
   }
 
   console.log(`\ndata dir written to ${DATA_DIR}`);

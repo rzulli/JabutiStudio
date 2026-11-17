@@ -1,18 +1,59 @@
 import { readdir, readFile, stat, access, writeFile, mkdir } from 'fs/promises';
 import { join, basename, resolve } from 'path';
+import { createHash } from 'crypto';
 import type { Project, ProjectsCache } from '../types/index.js';
 import { getSettings, saveSettings } from './settingsStore.js';
 import { DATA_DIR } from './dataDir.js';
+import { writeJsonAtomic } from './atomicJson.js';
 import * as gitService from './gitService.js';
 import { listSessions } from './terminalService.js';
 
 const CACHE_FILE = join(DATA_DIR, 'projects.json');
+const IDENTITIES_FILE = join(DATA_DIR, 'project-identities.json');
 
 const PROJECT_MARKERS = ['package.json', '.git', 'CLAUDE.md', 'Cargo.toml', 'go.mod', 'requirements.txt', 'pyproject.toml'];
 const IGNORE_DIRS = new Set(['node_modules', '.git', '.cache', '.vscode', 'dist', 'build', '.next', '__pycache__']);
 
 let projectsCache: Project[] = [];
 let cachedLastScannedAt: string = new Date().toISOString();
+type ProjectIdentity = { path: string; id: string };
+let identities: ProjectIdentity[] | undefined;
+let identityLoad: Promise<void> | undefined;
+const pathKey = (p: string) => {
+  const full = resolve(p).replace(/\\/g, '/');
+  return process.platform === 'win32' ? full.toLowerCase() : full;
+};
+
+async function loadIdentities(): Promise<void> {
+  if (identities) return;
+  if (identityLoad) return identityLoad;
+  identityLoad = (async () => {
+    let saved: ProjectIdentity[] = [];
+    try {
+      const raw = JSON.parse(await readFile(IDENTITIES_FILE, 'utf8'));
+      if (!Array.isArray(raw.identities) || raw.identities.some((x: any) => typeof x?.path !== 'string' || typeof x?.id !== 'string')) throw new Error('Invalid identity registry');
+      saved = raw.identities;
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (!projectsCache.length) projectsCache = await loadCache();
+    for (const p of projectsCache) {
+      const existing = saved.find(x => pathKey(x.path) === pathKey(p.path));
+      if (existing && existing.id !== p.id) throw new Error(`Project identity conflict for ${p.path}`);
+      if (!existing) saved.push({ path: p.path, id: p.id });
+    }
+    const ids = new Set<string>(), paths = new Set<string>();
+    for (const p of saved) {
+      const key = pathKey(p.path);
+      if (ids.has(p.id) || paths.has(key)) throw new Error(`Ambiguous project identity: ${p.id} (${p.path})`);
+      ids.add(p.id); paths.add(key);
+    }
+    await mkdir(DATA_DIR, { recursive: true });
+    await writeJsonAtomic(IDENTITIES_FILE, { version: 1, identities: saved });
+    identities = saved;
+  })();
+  try { await identityLoad; } finally { identityLoad = undefined; }
+}
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -298,10 +339,10 @@ async function buildProject(projectPath: string): Promise<Project> {
   const parentName = basename(resolve(projectPath, '..'));
   const gitInfo = await detectGitInfo(projectPath);
   const techStack = await detectTechStack(projectPath);
-  const existing = projectsCache.find(p => p.path === projectPath);
+  const existing = projectsCache.find(p => pathKey(p.path) === pathKey(projectPath));
 
   return {
-    id: slugify(name),
+    id: '',
     name: existing?.name || name,
     path: projectPath,
     category: parentName,
@@ -319,26 +360,16 @@ async function buildProject(projectPath: string): Promise<Project> {
 function deduplicateProjects(projects: Project[]): Project[] {
   const byPath = new Map<string, Project>();
   for (const p of projects) {
-    if (!byPath.has(p.path)) {
-      byPath.set(p.path, p);
+    if (!byPath.has(pathKey(p.path))) {
+      byPath.set(pathKey(p.path), p);
     }
   }
-  // Make ids unique
-  const idCount = new Map<string, number>();
-  const result: Project[] = [];
-  for (const p of byPath.values()) {
-    const count = idCount.get(p.id) || 0;
-    if (count > 0) {
-      p.id = `${p.id}-${count}`;
-    }
-    idCount.set(p.id, count + 1);
-    result.push(p);
-  }
-  return result;
+  return [...byPath.values()];
 }
 
 // Load projects from the user's selected paths
 async function loadSelectedProjects(): Promise<Project[]> {
+  await loadIdentities();
   const settings = getSettings();
   const projects: Project[] = [];
 
@@ -348,7 +379,28 @@ async function loadSelectedProjects(): Promise<Project[]> {
     }
   }
 
-  return deduplicateProjects(projects);
+  const unique = deduplicateProjects(projects);
+  const nextIdentities = [...identities!];
+  const used = new Set(nextIdentities.map(x => x.id));
+  let changed = false;
+  for (const p of unique) {
+    let identity = nextIdentities.find(x => pathKey(x.path) === pathKey(p.path));
+    if (!identity) {
+      const hash = createHash('sha256').update(pathKey(p.path)).digest('hex');
+      const prefix = slugify(basename(p.path)) || 'project';
+      let length = 12, id = `${prefix}-${hash.slice(0, length)}`;
+      while (used.has(id) && length < hash.length) id = `${prefix}-${hash.slice(0, ++length)}`;
+      if (used.has(id)) throw new Error(`Cannot allocate a unique ID for ${p.path}`);
+      identity = { path: p.path, id };
+      nextIdentities.push(identity); used.add(id); changed = true;
+    }
+    p.id = identity.id;
+  }
+  if (changed) {
+    await writeJsonAtomic(IDENTITIES_FILE, { version: 1, identities: nextIdentities });
+    identities = nextIdentities;
+  }
+  return unique;
 }
 
 // Scan a directory to discover projects (for the "add projects" UI)
@@ -390,8 +442,10 @@ export async function scanDirectory(dir: string, maxDepth = 3): Promise<{ path: 
 
 // Add project paths to the selected list
 export async function addProjects(paths: string[]): Promise<Project[]> {
+  await loadIdentities();
   const settings = getSettings();
-  const newPaths = paths.filter(p => !settings.selectedProjects.includes(p));
+  const known = new Set(settings.selectedProjects.map(pathKey));
+  const newPaths = paths.filter(p => { const key = pathKey(p); if (known.has(key)) return false; known.add(key); return true; });
   if (newPaths.length > 0) {
     settings.selectedProjects = [...settings.selectedProjects, ...newPaths];
     await saveSettings(settings);
@@ -401,8 +455,9 @@ export async function addProjects(paths: string[]): Promise<Project[]> {
 
 // Remove a project path from the selected list
 export async function removeProject(projectPath: string): Promise<Project[]> {
+  await loadIdentities();
   const settings = getSettings();
-  settings.selectedProjects = settings.selectedProjects.filter(p => p !== projectPath);
+  settings.selectedProjects = settings.selectedProjects.filter(p => pathKey(p) !== pathKey(projectPath));
   await saveSettings(settings);
   return refreshProjects();
 }
@@ -411,12 +466,14 @@ async function loadCache(): Promise<Project[]> {
   try {
     const data = await readFile(CACHE_FILE, 'utf-8');
     const cache: ProjectsCache = JSON.parse(data);
+    if (!Array.isArray(cache.projects) || cache.projects.some(p => typeof p?.id !== 'string' || typeof p?.path !== 'string')) throw new Error('Invalid project cache');
     if (cache.lastScannedAt) {
       cachedLastScannedAt = cache.lastScannedAt;
     }
     return cache.projects;
-  } catch {
-    return [];
+  } catch (error: any) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
   }
 }
 
@@ -476,12 +533,36 @@ export async function refreshGitStatus(): Promise<Project[]> {
   return updated;
 }
 
-export async function refreshProjects(): Promise<Project[]> {
-  clearGitCaches();
-  const projects = await loadSelectedProjects();
-  projectsCache = projects;
-  await saveCache(projects, true);
-  return projects;
+let projectRefresh: Promise<unknown> = Promise.resolve();
+function withProjectLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = projectRefresh.then(fn);
+  projectRefresh = next.catch(() => undefined);
+  return next;
+}
+
+/** Preserve a cloud project's ID only when neither the path nor the ID belongs to another project. */
+export function claimProjectIdentity(path: string, id: string): Promise<boolean> {
+  return withProjectLock(async () => {
+    await loadIdentities();
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) return false;
+    const byPath = identities!.find(x => pathKey(x.path) === pathKey(path));
+    const byId = identities!.find(x => x.id === id);
+    if (byPath || byId) return !!byPath && byPath.id === id && byId === byPath;
+    const next = [...identities!, { path, id }];
+    await writeJsonAtomic(IDENTITIES_FILE, { version: 1, identities: next });
+    identities = next;
+    return true;
+  });
+}
+
+export function refreshProjects(): Promise<Project[]> {
+  return withProjectLock(async () => {
+    clearGitCaches();
+    const projects = await loadSelectedProjects();
+    projectsCache = projects;
+    await saveCache(projects, true);
+    return projects;
+  });
 }
 
 export async function updateProject(id: string, updates: Partial<Pick<Project, 'name' | 'favorite' | 'lastOpenedAt' | 'externalLink' | 'notes' | 'links'>>): Promise<Project | null> {
@@ -497,11 +578,12 @@ export async function updateProject(id: string, updates: Partial<Pick<Project, '
 export async function initProjectDiscovery(): Promise<void> {
   // Load cache for instant response
   projectsCache = await loadCache();
+  await loadIdentities();
 
   // Full refresh on startup (detects tech stack, git, etc.)
   refreshProjects().then(() => {
     console.log(`Loaded ${projectsCache.length} projects`);
-  });
+  }).catch(err => console.error('Project refresh failed:', err));
 
   // Lightweight git refresh every 15s (only updates git status fields); each
   // repo decides inside refreshGitStatus whether it is due on this tick.

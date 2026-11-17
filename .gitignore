@@ -5,6 +5,7 @@ dist
 
 # Data (user-specific, created on first run)
 data/projects.json
+data/project-identities.json
 data/settings.json
 data/tasks/*
 !data/tasks/.gitkeep
