@@ -46,6 +46,37 @@ export async function systemRoutes(app: FastifyInstance) {
     catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
   });
 
+  // Read-only previews of the three explicit operations (nothing is written). Writes target the project's own
+  // checkout; a worktree or a past revision can be inspected but not published from here.
+  app.get<{ Params: { id: string } }>('/api/projects/:id/systems/knowledge/plan', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const [exportPlan, update, imp] = await Promise.all([knowledge.previewExport(project), knowledge.previewUpdate(project), knowledge.previewImport(project)]);
+    return { export: exportPlan, update, import: imp };
+  });
+
+  // Initial export: refuses to overwrite (exportPortable). Never stages or commits.
+  app.post<{ Params: { id: string } }>('/api/projects/:id/systems/knowledge/export', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    try { await systems.exportPortable(project); return { sha256: await knowledge.portableSha256(project) }; }
+    catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
+  });
+
+  // Import of a recovered file: all-or-nothing; any changed or duplicate system blocks it (no auto-resolution).
+  app.post<{ Params: { id: string }; Body: { expectedSha256?: string } }>('/api/projects/:id/systems/knowledge/import', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    if (!/^[a-f0-9]{64}$/.test(request.body?.expectedSha256 ?? '')) return reply.status(400).send({ error: 'expectedSha256 is required' });
+    try {
+      const r = await systems.importPortable(project, { expectedSha256: request.body!.expectedSha256 });
+      if (r.conflicts.length) return reply.status(409).send({ error: `Nothing was imported: ${r.conflicts.length} system(s) conflict with the local catalog`, conflicts: r.conflicts });
+      return r;
+    } catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
+  });
+
   app.get<{ Params: { id: string; sid: string }; Querystring: { worktree?: string } }>('/api/projects/:id/systems/:sid', async (request, reply) => {
     const project = await resolve(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });

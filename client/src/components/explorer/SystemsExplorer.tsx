@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, CheckCircle2, Pencil, Wand2 } from 'lucide-react'
+import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, CheckCircle2, Pencil, Wand2, BookUp } from 'lucide-react'
 import { api, type SystemView, type SystemSummary } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { extensionOf } from '@/lib/explorerView'
@@ -11,6 +11,7 @@ import { StatusPill, baseName, type AskAgent, type SystemActions } from './syste
 import { OverviewTab, ImplementationTab, EvidenceTab } from './system/Tabs'
 import { SystemMap } from './system/SystemMap'
 import { RulesTab } from './system/RulesTab'
+import { KnowledgePanel } from './system/KnowledgePanel'
 
 /**
  * Systems: Project → Systems → one system → design, implementation, evidence, work.
@@ -33,7 +34,8 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
   const [reviewing, setReviewing] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  const pick = (id: string) => { setSelected(id); setReviewing(false); try { localStorage.setItem(key, id) } catch { /* ignore */ } }
+  const [view, setView] = useState<'systems' | 'knowledge'>('systems')
+  const pick = (id: string) => { setView('systems'); setSelected(id); setReviewing(false); try { localStorage.setItem(key, id) } catch { /* ignore */ } }
 
   const checkoutsQ = useQuery({ queryKey: ['design-checkouts', projectId], queryFn: () => api.getDesignCheckouts(projectId), staleTime: 30_000 })
   // The catalog is derived on demand: a poll while the tab is open is the whole "maintenance".
@@ -115,6 +117,11 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
               <Sparkles className="h-3 w-3" /> Ask agent
             </button>
           </div>
+          <button onClick={() => setView(view === 'knowledge' ? 'systems' : 'knowledge')} data-testid="systems-knowledge"
+            title="Publish the knowledge to the repository, or recover it from there"
+            className={cn('flex w-full items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent', view === 'knowledge' && 'bg-accent')}>
+            <BookUp className="h-3 w-3" /> Knowledge / Publish
+          </button>
           {checkouts.length > 1 && (
             <select value={worktree} onChange={e => setWorktree(e.target.value)} data-testid="systems-checkout"
               className="h-7 w-full rounded-md border bg-background px-1.5 text-[11px]">
@@ -147,7 +154,9 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
       </aside>
 
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto scrollbar-dark" data-testid="system-detail">
-        {!v ? (
+        {view === 'knowledge' ? (
+          <KnowledgePanel projectId={projectId} worktree={worktree} onChanged={refresh} onOpenSystem={pick} />
+        ) : !v ? (
           <p className="p-6 text-xs text-muted-foreground">{detailQ.error ? (detailQ.error as Error).message : current ? 'Loading…' : 'Select a system.'}</p>
         ) : (
           <SystemDetail

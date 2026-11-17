@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import { join, basename, extname, dirname, relative, isAbsolute } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { DATA_DIR } from './dataDir.js';
 import { writeJsonAtomic } from './atomicJson.js';
 import * as graphify from './graphifyAdapter.js';
@@ -407,10 +407,27 @@ export async function exportPortable(project: Project): Promise<void> {
   }
 }
 
-export async function importPortable(project: Project): Promise<{ added: number; conflicts: string[] }> {
+export type ImportKind = 'new' | 'identical' | 'changed' | 'duplicate';
+/**
+ * How one portable system relates to what this installation already has. Shared by the import and by its preview,
+ * so what the person reviews is exactly what the import accepts or refuses.
+ *   changed = same id, different content;  duplicate = different id, same name or terms as an open system.
+ */
+export function classifyPortableImport(stored: StoredSystem[], s: ReturnType<typeof portableSystem>): { kind: ImportKind; against?: string } {
+  const current = stored.find(x => x.id === s.id);
+  if (current) return { kind: JSON.stringify(portableSystem(current)) === JSON.stringify(s) ? 'identical' : 'changed', against: current.id };
+  const dup = stored.find(x => x.status !== 'dismissed' && x.status !== 'merged' &&
+    (x.name.toLowerCase() === s.name.toLowerCase() || x.anchors.terms.some(t => s.anchors.terms.some(u => t.toLowerCase() === u.toLowerCase()))));
+  return dup ? { kind: 'duplicate', against: dup.id } : { kind: 'new' };
+}
+
+export async function importPortable(project: Project, opts: { expectedSha256?: string } = {}): Promise<{ added: number; conflicts: string[] }> {
   const file = portablePath(project.path);
   if ((await fs.lstat(file)).isSymbolicLink()) throw new Error('Portable catalog cannot be a symlink');
-  const document = portableSchema.parse(JSON.parse(await fs.readFile(file, 'utf8')));
+  const raw = await fs.readFile(file);
+  if (opts.expectedSha256 && createHash('sha256').update(raw).digest('hex') !== opts.expectedSha256)
+    throw new Error('Portable catalog changed since the preview; review it again before importing');
+  const document = portableSchema.parse(JSON.parse(raw.toString('utf8')));
   if (JSON.stringify(document.gitRoots) !== JSON.stringify(await portableGitRoot(project.path))) throw new Error('Portable catalog belongs to a different Git history');
   await checkPortablePaths(project.path, document.systems);
   return locked(async () => {
@@ -418,10 +435,8 @@ export async function importPortable(project: Project): Promise<{ added: number;
     await checkLocalStore(project.id);
     const store = await readStore(project.id);
     const conflicts = document.systems.filter(s => {
-      const current = store.systems.find(x => x.id === s.id);
-      if (current) return JSON.stringify(portableSystem(current)) !== JSON.stringify(s);
-      return store.systems.some(x => x.status !== 'dismissed' && x.status !== 'merged' &&
-        (x.name.toLowerCase() === s.name.toLowerCase() || x.anchors.terms.some(t => s.anchors.terms.some(u => t.toLowerCase() === u.toLowerCase()))));
+      const k = classifyPortableImport(store.systems, s).kind;
+      return k === 'changed' || k === 'duplicate';
     }).map(s => s.id);
     if (conflicts.length) return { added: 0, conflicts };
     const added = document.systems.filter(s => !store.systems.some(x => x.id === s.id));

@@ -554,6 +554,44 @@ export interface SystemEdit {
   anchors?: { terms?: string[]; files?: string[]; decisions?: string[] }; ackVanished?: boolean; clearSuggestions?: boolean
   confirm?: { areas?: string[]; relations?: string[] }; remove?: { areas?: string[]; relations?: string[] }; adoptSuggestion?: number
 }
+/** Portable system as published in jabutistudio.systems.json (only the fields the UI compares). */
+export interface PortableSystem {
+  id: string; name: string; summary: string; responsibilities: string[]; status: 'proposed' | 'confirmed' | 'dismissed' | 'merged'
+  origin: 'discovery' | 'agent' | 'user'; confirmedAt?: string; confirmedVia?: string; updatedAt: string; kind?: string
+  anchors: { terms: string[]; files: string[]; decisions: string[] }
+  areas?: { id: string; name: string; kind: string; status: string }[]
+  relations?: { id: string; kind: string; from: string; to: string; status: string }[]
+}
+export type KnowledgeState = 'published' | 'local-change' | 'diverged' | 'unpublished-proposal' | 'unavailable'
+export interface KnowledgeChange { field: string; published: unknown; local: unknown }
+export interface KnowledgeSystem {
+  id: string; name: string; state: KnowledgeState
+  published: PortableSystem | null; workingFile: PortableSystem | null; local: PortableSystem | null
+  changes: KnowledgeChange[]; fileChanges: KnowledgeChange[]; evidenceStale: boolean
+}
+export interface KnowledgeReconciliation {
+  project: string
+  checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null }
+  revision: { requested: string; commit: string; examinedWorkingTree: boolean }
+  file: { state: 'present' | 'modified' | 'untracked' | 'absent' | 'invalid' | 'incompatible'; reason?: string
+    revisionSha256?: string; workingSha256?: string; expectedSha256?: string; integration?: 'same' | 'differs' | 'absent-in-main' }
+  systems: KnowledgeSystem[]; limitations: string[]
+}
+export interface KnowledgeDigest { id: string; name: string; status: string; origin: string; areas: number; relations: number; proposedItems: number }
+export interface KnowledgePlan {
+  export: { target: string; canExport: boolean; reason?: string; systems: KnowledgeDigest[] }
+  update: { exists: false } | { exists: true; error: string } | {
+    exists: true; sha256: string; fileOnly: KnowledgeDigest[]
+    rows: { id: string; name: string; action: 'add' | 'update' | 'unchanged' | 'needs-choice'; status: string; origin: string
+      changes: KnowledgeChange[]; file: PortableSystem | null; local: PortableSystem }[]
+  }
+  import: { exists: false } | { exists: true; error: string } | {
+    exists: true; sha256: string; conflicts: number; importable: number; safe: boolean
+    items: (KnowledgeDigest & { kind: 'new' | 'identical' | 'changed' | 'duplicate'; against?: string; evidenceStale: boolean; provenance?: string
+      changes: { field: string; current: unknown; incoming: unknown }[] })[]
+  }
+}
+
 const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
 
 export interface DesignContext {
@@ -592,6 +630,15 @@ export const api = {
     request<unknown>(`/projects/${projectId}/systems/${encodeURIComponent(into)}/merge`, { method: 'POST', body: JSON.stringify({ from }) }),
   splitSystem: (projectId: string, id: string, body: { name: string; terms?: string[]; files?: string[] }) =>
     request<{ id: string }>(`/projects/${projectId}/systems/${encodeURIComponent(id)}/split`, { method: 'POST', body: JSON.stringify(body) }),
+  getKnowledge: (projectId: string, worktree?: string, revision?: string) =>
+    request<KnowledgeReconciliation>(`/projects/${projectId}/systems/knowledge?${wt(worktree)}${revision ? `&revision=${encodeURIComponent(revision)}` : ''}`),
+  getKnowledgePlan: (projectId: string) => request<KnowledgePlan>(`/projects/${projectId}/systems/knowledge/plan`),
+  exportKnowledge: (projectId: string) =>
+    request<{ sha256: string | null }>(`/projects/${projectId}/systems/knowledge/export`, { method: 'POST' }),
+  updateKnowledge: (projectId: string, body: { expectedSha256: string; systemIds: string[]; takeLocal: string[] }) =>
+    request<{ updated: string[]; unchanged: string[]; sha256: string }>(`/projects/${projectId}/systems/knowledge/update`, { method: 'POST', body: JSON.stringify(body) }),
+  importKnowledge: (projectId: string, expectedSha256: string) =>
+    request<{ added: number }>(`/projects/${projectId}/systems/knowledge/import`, { method: 'POST', body: JSON.stringify({ expectedSha256 }) }),
   createSystem: (projectId: string, body: { name: string; summary?: string; terms?: string[]; files?: string[] }) =>
     request<{ id: string }>(`/projects/${projectId}/systems`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud

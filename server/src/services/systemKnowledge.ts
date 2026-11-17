@@ -55,7 +55,9 @@ export interface Reconciliation {
   project: string;
   checkout: { root: string; isCanonical: boolean; branch?: string; head?: string; dirty: boolean | null };
   revision: { requested: string; commit: string; examinedWorkingTree: boolean };
-  file: { state: FileState; reason?: string; revisionSha256?: string; workingSha256?: string; expectedSha256?: string };
+  file: { state: FileState; reason?: string; revisionSha256?: string; workingSha256?: string; expectedSha256?: string;
+    /** Worktrees only: how this checkout's committed file compares with the main checkout's HEAD. */
+    integration?: 'same' | 'differs' | 'absent-in-main' };
   systems: ReconciledSystem[];
   limitations: string[];
 }
@@ -202,17 +204,37 @@ export async function reconcile(project: { id: string; path: string }, opts: { w
       sys.evidenceStale = sys.evidence.some(e => e.state === 'stale' || e.state === 'missing');
     }
   }
+  let integration: Reconciliation['file']['integration'];
+  if (!isCanonical) {
+    const main = await showBlob(project.path, 'HEAD', FILE);
+    integration = !main ? 'absent-in-main' : committed && sha(main) === sha(committed) ? 'same' : 'differs';
+  }
   return {
     project: project.id,
     checkout: { root, isCanonical, branch: branch?.trim(), head: head?.trim(), dirty },
     revision: { requested, commit, examinedWorkingTree: !explicitRevision },
     file: { state: fileState, reason, revisionSha256: committed ? sha(committed) : undefined, workingSha256: workingSha,
-      expectedSha256: workingSha ?? (committed ? sha(committed) : undefined) },
+      expectedSha256: workingSha ?? (committed ? sha(committed) : undefined), integration },
     systems, limitations,
   };
 }
 
 // ---- explicit, guarded update of the existing portable file ---------------------------------------------
+
+export type UpdateAction = 'add' | 'update' | 'unchanged' | 'needs-choice';
+/** Single source of truth for what an update does to each system; the preview and the write both use it. */
+function planUpdate(file: Portable[], stored: catalog.StoredSystem[], take: Set<string>) {
+  return stored.map(s => {
+    const next = portableSystem(s);
+    const cur = file.find(x => x.id === s.id);
+    let action: UpdateAction;
+    if (!cur) action = 'add';
+    else if (JSON.stringify(cur) === JSON.stringify(next)) action = 'unchanged';
+    else if (next.updatedAt > cur.updatedAt || take.has(s.id)) action = 'update';
+    else action = 'needs-choice';
+    return { id: s.id, name: next.name, action, next, current: cur ?? null, changes: cur ? diff(cur, next) : [] };
+  });
+}
 
 let publishChain: Promise<unknown> = Promise.resolve();
 const serialized = <T,>(fn: () => Promise<T>): Promise<T> => { const n = publishChain.then(fn, fn); publishChain = n.catch(() => undefined); return n; };
@@ -245,18 +267,18 @@ export async function updatePortable(project: { id: string; path: string }, opts
     const doc = portableSchema.parse(JSON.parse(raw.toString('utf8')));
     if (JSON.stringify(doc.gitRoots) !== JSON.stringify(await catalog.portableGitRoot(project.path))) throw new Error('Portable catalog belongs to a different Git history');
 
-    const wanted = new Set(opts.systemIds ?? []);
-    const take = new Set(opts.takeLocal ?? []);
-    const stored = (await catalog.listStored(project.id, true)).filter(s => !opts.systemIds || wanted.has(s.id));
+    const stored = (await catalog.listStored(project.id, true)).filter(s => !opts.systemIds || new Set(opts.systemIds).has(s.id));
+    const plan = planUpdate(doc.systems, stored, new Set(opts.takeLocal ?? []));
     const systems = [...doc.systems];
     const updated: string[] = [], unchanged: string[] = [], conflicts: string[] = [];
-    for (const s of stored) {
-      const next = portableSystem(s);
-      const i = systems.findIndex(x => x.id === s.id);
-      if (i < 0) { systems.push(next); updated.push(s.id); continue; }
-      if (JSON.stringify(systems[i]) === JSON.stringify(next)) { unchanged.push(s.id); continue; }
-      if (!(next.updatedAt > systems[i].updatedAt) && !take.has(s.id)) { conflicts.push(s.id); continue; }
-      systems[i] = next; updated.push(s.id);
+    for (const row of plan) {
+      if (row.action === 'unchanged') unchanged.push(row.id);
+      else if (row.action === 'needs-choice') conflicts.push(row.id);
+      else {
+        const i = systems.findIndex(x => x.id === row.id);
+        if (i < 0) systems.push(row.next); else systems[i] = row.next;
+        updated.push(row.id);
+      }
     }
     if (conflicts.length) throw new Error(`Divergent systems need an explicit choice (takeLocal): ${conflicts.join(', ')}`);
     const out = portableSchema.parse({ version: 1, gitRoots: doc.gitRoots, systems });
@@ -269,3 +291,87 @@ export async function updatePortable(project: { id: string; path: string }, opts
     return { updated, unchanged, sha256: sha(await fs.readFile(file)) };
   });
 }
+
+// ---- previews: what an explicit export / update / import would do, computed without writing anything ------
+
+export interface SystemDigest { id: string; name: string; status: string; origin: string; areas: number; relations: number; proposedItems: number }
+const digest = (s: Portable): SystemDigest => ({
+  id: s.id, name: s.name, status: s.status, origin: s.origin, areas: s.areas?.length ?? 0, relations: s.relations?.length ?? 0,
+  proposedItems: [...(s.areas ?? []), ...(s.relations ?? [])].filter(x => x.status === 'proposed').length,
+});
+
+async function readExisting(project: { path: string }): Promise<{ raw: Buffer; systems: Portable[] } | { error: string } | null> {
+  const w = await readWorking(project.path);
+  if (w.symlink) return { error: 'Portable catalog cannot be a symlink' };
+  if (!w.raw) return null;
+  const parsed = await parseDoc(project.path, w.raw);
+  return parsed.doc ? { raw: w.raw, systems: parsed.doc } : { error: parsed.reason ?? 'Portable catalog is not usable' };
+}
+
+/** Initial export: only offered when the file does not exist. Never writes. */
+export async function previewExport(project: { id: string; path: string }) {
+  const target = FILE;
+  const existing = await readExisting(project);
+  if (existing) return { target, canExport: false as const, reason: 'The portable file already exists; use update or import instead.', systems: [] as SystemDigest[] };
+  try {
+    const systems = (await catalog.listStored(project.id, true)).map(portableSystem);
+    await catalog.portableGitRoot(project.path);
+    await catalog.checkPortablePaths(project.path, systems as any);
+    return { target, canExport: systems.length > 0, reason: systems.length ? undefined : 'There are no systems to publish yet.', systems: systems.map(digest) };
+  } catch (e: any) {
+    return { target, canExport: false as const, reason: String(e?.message ?? e).slice(0, 300), systems: [] as SystemDigest[] };
+  }
+}
+
+/** Update of the existing file: per-system action with field changes (`published` = value in the file). */
+export async function previewUpdate(project: { id: string; path: string }) {
+  const existing = await readExisting(project);
+  if (!existing) return { exists: false as const };
+  if ('error' in existing) return { exists: true as const, error: existing.error };
+  const stored = await catalog.listStored(project.id, true);
+  const rows = planUpdate(existing.systems, stored, new Set()).map(({ next, current, ...r }) => ({
+    ...r, status: next.status, origin: next.origin, file: current, local: next,
+  }));
+  const localIds = new Set(stored.map(s => s.id));
+  return {
+    exists: true as const, sha256: sha(existing.raw), rows,
+    fileOnly: existing.systems.filter(s => !localIds.has(s.id)).map(digest),
+  };
+}
+
+export interface ImportItem extends SystemDigest {
+  kind: catalog.ImportKind; against?: string; changes: { field: string; current: unknown; incoming: unknown }[]; evidenceStale: boolean;
+  /** A proposal stays a proposal on import; confirmed systems keep the provenance recorded in the file. */
+  provenance?: string;
+}
+
+/** Import preview: classifies every system of the file against the local catalog, with the importer's own rules. */
+export async function previewImport(project: { id: string; path: string }) {
+  const existing = await readExisting(project);
+  if (!existing) return { exists: false as const };
+  if ('error' in existing) return { exists: true as const, error: existing.error };
+  const stored = await catalog.listStored(project.id, true);
+  const read = async (p: string): Promise<string | null> => { try { return await fs.readFile(join(project.path, p), 'utf8'); } catch { return null; } };
+  const items: ImportItem[] = [];
+  for (const s of existing.systems) {
+    const c = catalog.classifyPortableImport(stored, s);
+    const against = c.against ? stored.find(x => x.id === c.against) : undefined;
+    const evidence = c.kind === 'new' ? await checkEvidence(read, s) : [];
+    items.push({
+      ...digest(s), kind: c.kind, against: c.against,
+      changes: c.kind === 'changed' && against ? diff(portableSystem(against), s).map(f => ({ field: f.field, current: f.published, incoming: f.local })) : [],
+      evidenceStale: evidence.some(e => e.state === 'stale' || e.state === 'missing'),
+      provenance: s.confirmedAt ? `confirmed ${s.confirmedAt.slice(0, 10)}${s.confirmedVia ? ' via UI' : ''}` : undefined,
+    });
+  }
+  const conflicts = items.filter(i => i.kind === 'changed' || i.kind === 'duplicate').length;
+  return {
+    exists: true as const, sha256: sha(existing.raw), items, conflicts,
+    importable: items.filter(i => i.kind === 'new').length, safe: conflicts === 0,
+  };
+}
+
+export const portableSha256 = async (project: { path: string }): Promise<string | null> => {
+  const w = await readWorking(project.path);
+  return w.raw ? sha(w.raw) : null;
+};
