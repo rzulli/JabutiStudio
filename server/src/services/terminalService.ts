@@ -1026,6 +1026,11 @@ function releaseOutputWatcher(id: string): void {
   const session = sessions.get(id);
   if (!session) return;
   session.watchHold = false;
+  // Only Claude Code reports its turn (hooks, title, screen). Another CLI shows
+  // nothing this watcher can read, so a prompt landing says nothing about a
+  // turn, and 'busy' would never be corrected: the tab blocks Accept/Integrate
+  // (`session-active`) for as long as the terminal stays open.
+  if (session.agent && session.agent !== DEFAULT_AGENT_ID) return;
   session.working = true;
   setSessionState(id, 'busy');
 }
