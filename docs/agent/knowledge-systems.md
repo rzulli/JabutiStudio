@@ -232,3 +232,9 @@
   se qualquer id diverge ou duplica nome/termo, faz backup do arquivo ativo e grava manifesto em
   `<data>/catalog-backups/<projectId>/`. A origem nunca e alterada. Teste: `server/test/catalogSources.test.ts` (nao esta no script
   `test` de package.json por la haver edicao alheia pendente; rode com `node --import tsx --test test/catalogSources.test.ts`).
+
+## propose_system: alvo explicito e tres operacoes (MCP-TARGET)
+
+- **Causa provada**: `systemCatalog.propose` (descoberta/UI) acha o "dono" por `id === sys-<nome>` **ou por qualquer termo em comum**. A tool MCP passava por ele, entao uma proposta "Character Locomotion" com o termo `traversal` foi gravada em "Building Traversal". Regressao: `server/test/systemProposeTarget.test.ts`.
+- O MCP agora usa `agentPropose` e **nunca escolhe sistema por nome ou termo**. `operation`: `create` (novo; sem `systemId`; erro `already-exists` se o nome ja existe; `similar` so informa), `extend` (so soma ancoras/responsabilidades/areas/relacoes; nunca sobrescreve o resumo; contra sistema confirmado vira `suggestion`), `correct` (substitui resumo/responsabilidades e remove conteudo via `remove.{terms,files,decisions,related,responsibilities,areas,relations}`; recusa sistema confirmado e o que uma pessoa escreveu: `origin: user`, itens `confirmed`). `extend`/`correct` exigem `systemId` exato; id desconhecido = erro `not-found` e **nada e gravado**. Sem `operation`: com `systemId` = extend, sem = create.
+- Prompts (`terminalDispatch.ts`: `systemTargetRules`, `systemBasisKind`): todo pedido por sistema leva o id exato e a base (`code-derived` = candidato agrupado por nomes de arquivo, `design-first` = concebido antes do codigo; falta de codigo nao prova erro).

@@ -298,7 +298,7 @@ test('MCP: propose_system accepts areas and relations; there is no confirm/appro
   assert.ok(t.inputSchema.properties.areas && t.inputSchema.properties.relations && t.inputSchema.properties.kind)
   assert.ok(mcp.MCP_TOOLS.find(x => x.name === 'get_system')!.inputSchema.properties.areaId)
   assert.ok(!mcp.MCP_TOOLS.some(x => /confirm|approve/i.test(x.name)))
-  const out: any = await mcp.proposeSystem('hum', { name: 'Humus', areas: [{ name: 'Telemetry', files: ['scripts/telemetry/HumusFlowTelemetry.gd'] }] } as any)
+  const out: any = await mcp.proposeSystem('hum', { systemId: 'sys-humus', areas: [{ name: 'Telemetry', files: ['scripts/telemetry/HumusFlowTelemetry.gd'] }] } as any)
   assert.ok(!out.isError)
   const brief: any = await mcp.getSystem('hum', 'sys-humus', undefined, 'acquisition')
   assert.match(brief.content[0].text, /Selected responsibility/)

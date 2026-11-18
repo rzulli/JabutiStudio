@@ -375,11 +375,14 @@ export async function getSystem(projectId: string, systemId: string, taskId?: st
   return { content: [{ type: 'text', text: systemCatalog.brief(v, undefined, areaId) }] };
 }
 
-export async function proposeSystem(projectId: string, input: systemCatalog.ProposalInput): Promise<McpToolResult> {
+export async function proposeSystem(projectId: string, input: any): Promise<McpToolResult> {
   const project = (await getProjects()).find(p => p.id === projectId);
   if (!project) return { content: [{ type: 'text', text: `Project "${projectId}" not found` }], isError: true };
-  if (!input?.name?.trim()) return { content: [{ type: 'text', text: 'name is required' }], isError: true };
-  const res = await systemCatalog.propose(projectId, input, 'agent');
+  // Never inferred: an explicit systemId means change THAT system (extend unless told to correct); no systemId means create.
+  const op = input?.operation ?? (input?.systemId ? 'extend' : 'create');
+  if (!['create', 'extend', 'correct'].includes(op)) return { content: [{ type: 'text', text: `operation must be create, extend or correct (got "${op}")` }], isError: true };
+  const res = await systemCatalog.agentPropose(projectId, { ...input, operation: op });
+  if (!res.ok) return { content: [{ type: 'text', text: compact({ ...res, written: false }) }], isError: true };
   return { content: [{ type: 'text', text: compact({ ...res, note: 'Recorded as a PROPOSAL. Only a person can confirm it, in the JabutiStudio UI; a confirmed system is never rewritten by a proposal.' }) }] };
 }
 
@@ -1014,11 +1017,19 @@ export const MCP_TOOLS = [
   },
   {
     name: 'propose_system',
-    description: 'Propose (never confirm) a system or extend an existing one. Anchors say what it is about: terms (words that appear in file names/code), files (project-relative), decisions (DK ids). Do not invent rules or approvals; describe only what you verified in code, docs or DK. A person confirms it in the UI.',
+    description: 'Propose (never confirm) a system. THREE distinct operations, always explicit: "create" = a NEW system (name; fails if one with that name exists). "extend" = ADD anchors/responsibilities/areas/relations to an existing system (systemId required; never overwrites its summary). "correct" = REPLACE the summary/responsibilities or REMOVE wrong content (remove.*) from an existing system that is not confirmed and not written by a person (systemId required). The target is chosen ONLY by exact systemId from list_systems: never by name or shared terms, and an unknown id is an error that writes nothing. Do not invent rules or approvals; describe only what you verified in code, docs or DK. A person confirms in the UI.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        projectId: PROJECT_ID, name: { type: 'string' }, summary: { type: 'string', description: 'One or two sentences: what the system is responsible for' },
+        projectId: PROJECT_ID,
+        operation: { type: 'string', enum: ['create', 'extend', 'correct'], description: 'Default: "extend" when systemId is given, otherwise "create".' },
+        systemId: { type: 'string', description: 'Exact id (e.g. sys-character-locomotion) of the system to extend/correct. Required for extend/correct; not allowed for create.' },
+        name: { type: 'string', description: 'Required for create only.' },
+        remove: { type: 'object', description: 'operation "correct" only: wrong content to retire. Areas/relations only if they were proposed (not confirmed, not written by a person).', properties: {
+          terms: { type: 'array', items: { type: 'string' } }, files: { type: 'array', items: { type: 'string' } }, decisions: { type: 'array', items: { type: 'string' } },
+          related: { type: 'array', items: { type: 'string' } }, responsibilities: { type: 'array', items: { type: 'string' } },
+          areas: { type: 'array', items: { type: 'string' }, description: 'area ids' }, relations: { type: 'array', items: { type: 'string' }, description: 'relation ids' } } },
+        summary: { type: 'string', description: 'One or two sentences: what the system is responsible for' },
         responsibilities: { type: 'array', items: { type: 'string' } },
         terms: { type: 'array', items: { type: 'string' } }, files: { type: 'array', items: { type: 'string' } },
         decisions: { type: 'array', items: { type: 'string' } }, related: { type: 'array', items: { type: 'string' }, description: 'ids of related systems' },
@@ -1034,7 +1045,7 @@ export const MCP_TOOLS = [
           evidence: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, needle: { type: 'string' }, note: { type: 'string' } }, required: ['path'] } },
         }, required: ['kind', 'from', 'to'] } },
       },
-      required: ['projectId', 'name'],
+      required: ['projectId'],
     },
   },
   {

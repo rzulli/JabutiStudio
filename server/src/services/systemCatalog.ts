@@ -1122,6 +1122,122 @@ export function propose(projectId: string, input: ProposalInput, origin: Origin)
   });
 }
 
+// ---- agent proposals with an explicit target (MCP propose_system) ----------------------------------------
+//
+// The term-sharing rule in `propose` is for discovery and for people. An agent that says "Character Locomotion" must
+// never end up writing into "Building Traversal" because both mention a word: the MCP path never matches by similarity.
+
+export type AgentOperation = 'create' | 'extend' | 'correct';
+export interface AgentRemove { terms?: string[]; files?: string[]; decisions?: string[]; related?: string[]; responsibilities?: string[]; areas?: string[]; relations?: string[] }
+export interface AgentProposalInput extends Omit<ProposalInput, 'name' | 'createOnly'> {
+  operation: AgentOperation; systemId?: string; name?: string; remove?: AgentRemove;
+}
+export type AgentProposalResult =
+  | { ok: true; id: string; name: string; outcome: 'created' | 'extended' | 'corrected' | 'suggestion-recorded'; applied: string[]; refused: string[]; similar?: { id: string; name: string; sharedTerms: string[] }[] }
+  | { ok: false; code: 'name-required' | 'id-required' | 'id-not-allowed' | 'not-found' | 'already-exists' | 'merged' | 'dismissed' | 'confirmed' | 'nothing-to-do'; error: string; candidates?: { id: string; name: string; status: string }[] };
+
+export function agentPropose(projectId: string, input: AgentProposalInput): Promise<AgentProposalResult> {
+  return mutate(projectId, (store): AgentProposalResult => {
+    const live = store.systems.filter(s => s.status !== 'dismissed' && s.status !== 'merged');
+    const list = (xs: StoredSystem[]) => xs.map(s => ({ id: s.id, name: s.name, status: s.status }));
+    const terms = uniq(input.terms ?? []), files = uniq((input.files ?? []).map(posix)), decisions = uniq(input.decisions ?? []);
+    const areas = toAreas(input.areas, 'agent'), relations = toRelations(input.relations, 'agent');
+    const applied: string[] = [], refused: string[] = [];
+
+    if (input.operation === 'create') {
+      if (input.systemId) return { ok: false, code: 'id-not-allowed', error: `operation "create" makes a NEW system and takes no systemId. To change "${input.systemId}" use operation "extend" or "correct" with that systemId.` };
+      if (!input.name?.trim()) return { ok: false, code: 'name-required', error: 'name is required to create a system.' };
+      const wanted = slug(input.name);
+      const dup = live.find(s => s.id === `sys-${wanted}` || s.name.trim().toLowerCase() === input.name!.trim().toLowerCase());
+      if (dup) return { ok: false, code: 'already-exists', error: `A system named "${dup.name}" already exists (${dup.id}). Nothing was written. To change it, call propose_system with operation "extend" or "correct" and systemId "${dup.id}".`, candidates: list([dup]) };
+      const id = `sys-${wanted || 'system'}`;
+      const created: StoredSystem = {
+        id: store.systems.some(s => s.id === id) ? `${id}-${Date.now().toString(36)}` : id,
+        name: input.name.trim(), summary: input.summary ?? '', responsibilities: input.responsibilities ?? [],
+        status: 'proposed', origin: 'agent', createdAt: now(), updatedAt: now(),
+        anchors: { terms, files, decisions }, related: uniq(input.related ?? []),
+        ...(input.kind ? { kind: input.kind } : {}), ...(input.planned ? { planned: true } : {}), areas, relations: [],
+      };
+      created.relations = relations.filter(r => { const p = problemOf(created, r, store.systems); if (p) refused.push(`relation ${r.id}: ${p}`); return !p; });
+      store.systems.push(created);
+      const similar = live.map(s => ({ id: s.id, name: s.name, sharedTerms: s.anchors.terms.filter(t => terms.some(x => x.toLowerCase() === t.toLowerCase())) })).filter(x => x.sharedTerms.length);
+      return { ok: true, id: created.id, name: created.name, outcome: 'created', applied: ['created as a new proposed system'], refused, ...(similar.length ? { similar } : {}) };
+    }
+
+    // extend / correct: the target is named, never inferred
+    if (!input.systemId?.trim()) return { ok: false, code: 'id-required', error: `operation "${input.operation}" changes an existing system and needs its exact systemId (see list_systems). Nothing was written; no system is chosen by name or shared terms.`, candidates: list(live) };
+    const s = store.systems.find(x => x.id === input.systemId!.trim());
+    if (!s) return { ok: false, code: 'not-found', error: `No system with id "${input.systemId}". Nothing was created or changed. Use list_systems for the exact id, or operation "create" for a new system.`, candidates: list(live) };
+    if (s.status === 'merged') return { ok: false, code: 'merged', error: `${s.id} was merged into ${s.mergedInto ?? 'another system'}. Use that id if it is the one you mean.` };
+    if (s.status === 'dismissed') return { ok: false, code: 'dismissed', error: `${s.id} was dismissed by a person. Nothing was written.` };
+
+    if (s.status === 'confirmed') {
+      if (input.operation === 'correct') return { ok: false, code: 'confirmed', error: `${s.id} is confirmed by a person: an agent cannot rewrite or remove anything in it. Use operation "extend" to leave a suggestion for them.` };
+      (s.suggestions ??= []).push({ at: now(), origin: 'agent', summary: input.summary, anchors: { terms, files, decisions }, areas: areas.length, relations: relations.length, payload: { areas, relations } });
+      s.updatedAt = now();
+      return { ok: true, id: s.id, name: s.name, outcome: 'suggestion-recorded', applied: ['suggestion recorded for a person to review'], refused };
+    }
+
+    if (input.operation === 'extend') {
+      s.anchors = { terms: uniq([...s.anchors.terms, ...terms]), files: uniq([...s.anchors.files, ...files]), decisions: uniq([...s.anchors.decisions, ...decisions]) };
+      if (terms.length || files.length || decisions.length) applied.push('anchors added');
+      if (input.summary) { if (!s.summary.trim()) { s.summary = input.summary; applied.push('summary set'); } else refused.push('summary kept: extend never overwrites an existing summary (use operation "correct")'); }
+      if (input.responsibilities?.length) { s.responsibilities = uniq([...s.responsibilities, ...input.responsibilities.map(x => x.trim()).filter(Boolean)]); applied.push('responsibilities added'); }
+      if (input.related?.length) s.related = uniq([...s.related, ...input.related]);
+      if (input.kind && !s.kind) s.kind = input.kind;
+      const probe = { ...s, areas: [...(s.areas ?? []), ...areas] };
+      const ok = relations.filter(r => { const p = problemOf(probe, r, store.systems); if (p) refused.push(`relation ${r.id}: ${p}`); return !p; });
+      const skipped = mergeAreas(s, areas, ok, 'agent');
+      if (areas.length || ok.length) applied.push(`${areas.length} area(s) and ${ok.length} relation(s) merged`);
+      if (skipped) refused.push(`${skipped} confirmed area(s)/relation(s) left untouched`);
+      if (!applied.length) return { ok: false, code: 'nothing-to-do', error: 'The proposal added nothing.' };
+      if (s.origin === 'discovery') s.origin = 'agent';
+      s.updatedAt = now();
+      return { ok: true, id: s.id, name: s.name, outcome: 'extended', applied, refused };
+    }
+
+    // correct: replace/remove what is wrong, but only what an agent may touch (never a person's own text)
+    const rewritable = s.origin !== 'user';
+    if (input.summary !== undefined) { if (rewritable) { s.summary = input.summary; applied.push('summary replaced'); } else refused.push('summary: this system was written by a person; an agent cannot replace it'); }
+    if (input.responsibilities) { if (rewritable) { s.responsibilities = uniq(input.responsibilities.map(x => x.trim()).filter(Boolean)); applied.push('responsibilities replaced'); } else refused.push('responsibilities: written by a person'); }
+    if (input.kind) { if (rewritable) s.kind = input.kind; else refused.push('kind: written by a person'); }
+    const rm = input.remove ?? {};
+    const drop = (label: string, have: string[], gone?: string[], ci = false) => {
+      if (!gone?.length) return have;
+      const k = (x: string) => (ci ? x.toLowerCase() : x);
+      const set = new Set(gone.map(k)); const keep = have.filter(x => !set.has(k(x)));
+      const missing = gone.filter(x => !have.some(h => k(h) === k(x)));
+      if (!rewritable) { refused.push(`${label}: written by a person`); return have; }
+      if (keep.length !== have.length) applied.push(`${label} removed: ${have.filter(x => set.has(k(x))).join(', ')}`);
+      if (missing.length) refused.push(`${label} not present: ${missing.join(', ')}`);
+      return keep;
+    };
+    s.anchors = { terms: drop('terms', s.anchors.terms, rm.terms, true), files: drop('files', s.anchors.files, rm.files?.map(posix)), decisions: drop('decisions', s.anchors.decisions, rm.decisions) };
+    s.responsibilities = drop('responsibilities', s.responsibilities, rm.responsibilities);
+    s.related = drop('related', s.related, rm.related);
+    for (const [label, key] of [['area', 'areas'], ['relation', 'relations']] as const) {
+      for (const id of rm[key] ?? []) {
+        const arr = (s[key] ??= []) as { id: string; status: string; origin: Origin }[];
+        const cur = arr.find(x => x.id === id);
+        if (!cur) refused.push(`${label} ${id}: not found in ${s.id}`);
+        else if (cur.status === 'confirmed') refused.push(`${label} ${id}: confirmed by a person`);
+        else if (cur.origin === 'user') refused.push(`${label} ${id}: written by a person`);
+        else { (s as any)[key] = arr.filter(x => x !== cur); applied.push(`${label} ${id} removed`); }
+      }
+    }
+    // additions in a correction are limited to the same rules as extend (never over confirmed items)
+    if (terms.length || files.length || decisions.length) { s.anchors = { terms: uniq([...s.anchors.terms, ...terms]), files: uniq([...s.anchors.files, ...files]), decisions: uniq([...s.anchors.decisions, ...decisions]) }; applied.push('anchors added'); }
+    if (areas.length || relations.length) {
+      const probe = { ...s, areas: [...(s.areas ?? []), ...areas] };
+      const ok = relations.filter(r => !problemOf(probe, r, store.systems));
+      mergeAreas(s, areas, ok, 'agent'); applied.push(`${areas.length} area(s) and ${ok.length} relation(s) merged`);
+    }
+    if (!applied.length) return { ok: false, code: 'nothing-to-do', error: `Nothing was changed. ${refused.join('; ')}`.trim() };
+    s.updatedAt = now();
+    return { ok: true, id: s.id, name: s.name, outcome: 'corrected', applied, refused };
+  });
+}
+
 export type Edit = Partial<Pick<StoredSystem, 'name' | 'summary' | 'responsibilities' | 'kind'>> & {
   status?: 'confirmed' | 'proposed' | 'dismissed'; anchors?: Partial<Anchors>; related?: string[]; ackVanished?: boolean; clearSuggestions?: boolean;
   /** a person's decisions about responsibilities and gameplay relations */

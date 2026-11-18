@@ -15,7 +15,7 @@ import { KnowledgePanel } from './system/KnowledgePanel'
 import { CatalogSourceBanner, useCatalogSource } from './system/CatalogSourcePanel'
 import { EditSystemDialog, type EditStep, type Focus } from './system/EditSystemDialog'
 import { NewSystemDialog, type Mode } from './system/NewSystemDialog'
-import { openAgentSession } from '@/lib/terminalDispatch'
+import { openAgentSession, systemBasisKind, systemTargetRules } from '@/lib/terminalDispatch'
 import { MergeDialog, SplitDialog } from './system/StructureDialogs'
 import { AskMenu } from './system/AskMenu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -106,7 +106,9 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
       : 'Explain how this system works today in the examined checkout, what is confirmed and what is not, and where design and implementation diverge. Read the real code before answering. Do not change anything until I ask.')
     const label = agent === 'codex' ? 'Codex' : 'Claude'
     try {
-      const b = await api.getSystemBrief(projectId, sys.id, worktree || undefined, goal, areaId)
+      const b = await api.getSystemBrief(projectId, sys.id, worktree || undefined, `${goal}
+
+${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: sys.planned, files: sys.tierCounts?.core })}`, areaId)
       const r = await openAgentSession({ projectId, agent: agent === 'codex' ? 'codex' : 'claude', prompt: b.text })
       if (r.ok) toast.success(`${label} session opened with “${sys.name}${areaId ? ` / ${areaId}` : ''}” (${b.head ?? 'no HEAD'}). Its answer is in the terminal tab; nothing changes here until you act on it.`)
       else toast.error(`Could not open ${label}: ${r.error}`)
@@ -126,9 +128,10 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
     const open = systems.filter(s => s.status === 'proposed')
     const prompt = [
       `Describe and refine the candidate systems of this project (${projectId}).`,
-      'The candidates were grouped only by shared words in file names. For each one you can verify, call the MCP tool propose_system with a one or two sentence summary of what the system is responsible for, its responsibilities, the terms/files that belong to it and any DK decision ids. Use get_system, get_design_context and the real code to check.',
+      'Each entry below carries its exact id and its basis. For each one you can verify, call the MCP tool propose_system with operation "extend" (or "correct" to replace/remove wrong content) and systemId set to THAT entry exact id, with a one or two sentence summary, its responsibilities, the terms/files that belong to it and any DK decision ids. Never create a system to refine an existing one, never use the id of another entry, and never rely on shared terms or similar names to choose the target: similar is not the same. If propose_system answers not-found or confirmed, skip that entry and say so. Use get_system, get_design_context and the real code to check.',
+      'Basis matters: "code-derived" entries were only grouped from file names, so verify them against the code; "design-first" entries were conceived before the implementation, so missing code is not evidence the design is wrong.',
       'Rules: you may only PROPOSE. Do not invent design rules or approvals, do not resolve conflicts between decisions, do not mark anything confirmed (only the user can, in the UI). Say what you could not verify.',
-      '', 'Candidates:', ...open.slice(0, 40).map(s => `- ${s.id}: ${s.name} — ${s.files} files`),
+      '', 'Candidates:', ...open.slice(0, 40).map(s => `- id ${s.id} | ${s.name} | ${s.files} files | ${systemBasisKind({ id: s.id, name: s.name, origin: s.origin, planned: s.planned, files: s.files })}`),
     ].join('\n')
     const r = await openAgentSession({ projectId, agent: 'claude', prompt })
     if (r.ok) toast.success('Claude session opened with the candidates. Its refinements arrive as proposals on those systems; the terminal tab shows its progress.')
