@@ -13,6 +13,7 @@ import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
 import * as catalogSources from './catalogSources.js';
+import * as diag from './systemDiagnostics.js';
 import { canonicalPath } from './pathIdentity.js';
 
 const run = promisify(execFile);
@@ -333,13 +334,18 @@ export interface SystemView {
   maintenance: {
     graph: { built: boolean; builtAt?: number; describesCheckout: string; installed?: boolean };
     changedMembers: string[]; needsReanalysis: boolean;
-    vanished: Vanished[]; unresolvedAnchors: { path: string; state: 'gone' }[];
+    vanished: Vanished[]; unresolvedAnchors: { path: string; state: 'gone'; source?: string }[];
     graphAgainstCheckout: string;
+    /** analysis state, kept apart from reference integrity and from the proposal classification */
+    analysis: diag.AnalysisSummary;
+    diagnostics: diag.Diagnostic[];
   };
   limitations: string[];
 }
 
 const viewCache = new Map<string, { at: number; value: SystemView }>();
+/** Drop derived views (e.g. right after a Graphify build) so the next read reflects the new analysis. */
+export const invalidateViews = () => { viewCache.clear(); };
 const VIEW_TTL = 4000;
 
 /** Short-lived memo with in-flight dedupe: systems of one checkout share a single git listing/status. */
@@ -553,12 +559,12 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     const moved = files.filter(f => basename(f) === basename(p));
     return moved.length === 1 ? { path: moved[0], movedFrom: p } : null;
   };
-  const unresolved: { path: string; state: 'gone' }[] = [];
+  const unresolved: { path: string; state: 'gone'; source: string }[] = [];
   for (const a of sys.anchors.files) {
     const p = posix(a);
     const r = resolvePath(p);
     if (r) add(r.path, { kind: 'anchor', detail: r.movedFrom ? `named by the system (moved from ${p})` : 'named by the system' }, 100, true, r.movedFrom);
-    else unresolved.push({ path: p, state: 'gone' });
+    else unresolved.push({ path: p, state: 'gone', source: 'system anchor' });
   }
   const areaAnchorPaths = new Map<string, { path: string; line?: number }[]>();
   for (const area of areasStored) {
@@ -566,7 +572,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     for (const raw of area.anchors.files) {
       const [pp, symbol] = posix(raw).split('#');
       const r = resolvePath(pp);
-      if (!r) { unresolved.push({ path: pp, state: 'gone' }); continue; }
+      if (!r) { unresolved.push({ path: pp, state: 'gone', source: `area "${area.name}"` }); continue; }
       add(r.path, { kind: 'anchor', detail: `anchor of "${area.name}"${r.movedFrom ? ` (moved from ${pp})` : ''}` }, 90, true, r.movedFrom);
       list.push({ path: r.path, line: await locate(root, r.path, symbol) });
     }
@@ -864,6 +870,19 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   if (unresolved.length) limitations.push(`${unresolved.length} file anchor(s) no longer exist in this checkout.`);
   if (relViews.some(r => r.basis === 'stale')) limitations.push('Some documented relations have evidence that no longer holds in this checkout.');
 
+  // ---- diagnostics: explain each state and its next action (derived, read-only) ----
+  const analysisIn = { checkout: info, graph: { built: !!g, builtAt: g?.builtAt, installed: !!graphify.graphifyPython(), building: graphify.isBuilding(project.id) }, changedMembers };
+  let projectFiles: Set<string> | null = null;
+  if (unresolved.length && !info.isCanonical) {
+    const canon = await designKnowledge.resolveRoot(project);
+    if (typeof canon === 'string') projectFiles = new Set(await memo(`files|${canon}`, VIEW_TTL, () => listFiles(canon)));
+  }
+  const byFile = g ? nodesByFile(g) : null;
+  const diagnostics = diag.buildDiagnostics({
+    status: sys.status, origin: sys.origin, checkout: info, graph: analysisIn.graph, changedMembers, vanished,
+    unresolved: unresolved.map(u => ({ path: u.path, source: u.source, inProjectCheckout: !!projectFiles?.has(u.path), graphKnows: !!byFile?.has(u.path) })),
+  });
+
   const value: SystemView = {
     id: sys.id, name: sys.name, summary: sys.summary, responsibilities: sys.responsibilities,
     kind: sys.kind ?? 'system', planned: !!sys.planned, areas: areaViews, relations: relViews, technical, comparisons,
@@ -877,6 +896,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
       graph: { built: !!g, builtAt: g?.builtAt, describesCheckout: 'integrated checkout', installed: !!graphify.graphifyPython() },
       changedMembers, needsReanalysis: changedMembers.length > 0, vanished, unresolvedAnchors: unresolved,
       graphAgainstCheckout: info.isCanonical ? 'same checkout' : 'different checkout (worktree)',
+      analysis: diag.summarizeAnalysis(analysisIn), diagnostics,
     },
     limitations,
   };

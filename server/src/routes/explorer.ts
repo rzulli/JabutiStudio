@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import * as projectDiscovery from '../services/projectDiscovery.js';
 import * as graphify from '../services/graphifyAdapter.js';
+import { invalidateViews } from '../services/systemCatalog.js';
 
 export async function explorerRoutes(app: FastifyInstance) {
   async function resolve(id: string) {
@@ -22,7 +23,9 @@ export async function explorerRoutes(app: FastifyInstance) {
     if (!project) return reply.status(404).send({ error: 'Project not found' });
     if (!(await graphify.isGodotProject(project.path))) return reply.status(400).send({ error: 'Not a Godot project' });
     try {
-      return await graphify.buildGraph(project.id, project.path);
+      const built = await graphify.buildGraph(project.id, project.path);
+      invalidateViews(); // system views were derived from the previous analysis
+      return built;
     } catch (err: any) {
       return reply.status(500).send({ error: err.message || 'Graphify failed' });
     }
