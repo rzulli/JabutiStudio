@@ -4,6 +4,8 @@ import * as gitService from './gitService.js';
 import { canonicalPath } from './pathIdentity.js';
 import * as taskStore from './taskStore.js';
 import { getProjects } from './projectDiscovery.js';
+import { withLink } from './worktreeLinks.js';
+import * as lifecycleStore from './taskLifecycleStore.js';
 import { getSettings, saveSettings } from './settingsStore.js';
 import { DATA_DIR } from './dataDir.js';
 import * as log from './logService.js';
@@ -125,21 +127,19 @@ export function isCheckoutUnavailable(e: unknown): e is CheckoutUnavailableError
 export type CheckoutMode = 'direct' | 'isolated' | 'legacy';
 
 /**
- * The task's own checkout mode. A worktree it owns makes it isolated; otherwise the mode stamped when it was created
- * (`checkoutMode`, set once). A task with neither is legacy: unknown, never decided by the current setting alone.
+ * The task's own checkout mode, from what it recorded and never from the global setting:
+ *  - a worktree it owns (or a trusted manual link, resolved with `withLink` before calling) makes it isolated;
+ *  - otherwise the mode recorded on the task (`checkoutMode`, set once by its creation or by a person's choice);
+ *  - otherwise it is legacy: unknown, and it waits for an explicit choice in Review, with worktrees on or off.
  */
 export function checkoutModeOf(task: Task): CheckoutMode {
   if (task.worktreePath) return 'isolated';
   return task.checkoutMode ?? 'legacy';
 }
 
-/**
- * The task must run in its own worktree. Isolated tasks always do. A legacy task only gets one while the setting is
- * on (that is what it was started under); it is never sent to the project folder by the setting.
- */
+/** Only an isolated task must run in its own worktree. Direct and legacy tasks never get one from the setting. */
 export function requiresWorktree(task: Task): boolean {
-  const mode = checkoutModeOf(task);
-  return mode === 'isolated' || (mode === 'legacy' && getConfig().enabled);
+  return checkoutModeOf(task) === 'isolated';
 }
 
 /** Worktree folders that other tasks of the project still record: a missing one must keep its git record. */
@@ -154,7 +154,11 @@ async function otherTaskWorktrees(projectId: string, taskId: string): Promise<st
  * Throws otherwise; the caller must not spawn.
  */
 export function assertLaunchCheckout(task: Task, cwd: string): void {
-  if (!requiresWorktree(task)) return;
+  const mode = checkoutModeOf(task);
+  if (mode === 'direct') return;
+  if (mode === 'legacy') {
+    throw new CheckoutUnavailableError('checkout-unknown', 'This task has no recorded checkout mode. Nothing was started. Choose its checkout in Review.');
+  }
   if (!task.worktreePath || canonicalPath(cwd) !== canonicalPath(task.worktreePath)) {
     throw new CheckoutUnavailableError('checkout-mismatch', `The session would start in ${cwd}, which is not this task's worktree. Nothing was started.`);
   }
@@ -173,7 +177,7 @@ function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /** A folder that Git itself links as a worktree has a `.git` file, not a directory. */
-async function isLinkedWorktree(path: string): Promise<boolean> {
+export async function isLinkedWorktree(path: string): Promise<boolean> {
   try { return (await stat(join(path, '.git'))).isFile(); } catch { return false; }
 }
 
@@ -197,11 +201,14 @@ export interface EnsureOptions {
 export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOptions = {}): Promise<EnsureResult> {
   return serialize(`${project.id}:${task.id}`, async (): Promise<EnsureResult> => {
     const config = getConfig();
-    const fresh = (await taskStore.getTask(task.projectId, task.id)) ?? task;
+    // A trusted manual link (a worktree a person pointed the task at) counts as the task's own worktree.
+    const fresh = await withLink((await taskStore.getTask(task.projectId, task.id)) ?? task);
     const mode = checkoutModeOf(fresh);
     if (mode === 'direct') return { path: project.path, created: false, reason: 'disabled' };
-    if (mode === 'legacy' && !config.enabled) {
-      throw new CheckoutUnavailableError('checkout-unknown', 'This task has no recorded checkout mode (it was created before the mode was kept) and worktrees are off now, so the project folder was not used. Nothing was started. Choose the main checkout explicitly in Review if that is what you want.');
+    // A legacy task is ambiguous whatever the setting says: no worktree is created for it and it is not sent to the
+    // project folder. The person chooses its checkout in Review, and that choice is recorded on the task.
+    if (mode === 'legacy') {
+      throw new CheckoutUnavailableError('checkout-unknown', 'This task has no recorded checkout mode (it was created before the mode was kept). Nothing was started and no worktree was created. Choose its checkout in Review: Direct Checkout (project folder) or its own worktree.');
     }
     if (!project.isGitRepo) {
       throw new CheckoutUnavailableError('not-git', 'The project is not a git repository, so this task cannot get a worktree. Nothing was started.');
@@ -244,6 +251,46 @@ export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOpt
     log.info('git', `Worktree created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
     return { path: dest, branch, created: true };
   });
+}
+
+// -- Recording a checkout choice -------------------------------------------
+
+export type CheckoutChoice = 'direct' | 'isolated';
+
+export type CheckoutChoiceOutcome =
+  | { ok: true; checkoutMode: CheckoutChoice; changed: boolean }
+  | { ok: false; code: 'task-not-found' | 'already-recorded' | 'has-worktree' | 'not-git'; message: string };
+
+/**
+ * A person's explicit choice for a legacy task (no recorded mode): Direct Checkout or its own worktree. It is written
+ * to the task once and kept there, so the choice is not asked again on every run, and a later change of the global
+ * setting never rewrites it. Refusals leave the task untouched.
+ *  - a task with a worktree (its own or a trusted link) can only be isolated: it is never converted to Direct;
+ *  - an isolated worktree needs a git project.
+ * Every recorded choice is written to the task's lifecycle history, with who decided and on what evidence.
+ */
+export async function recordCheckoutChoice(
+  project: Project, taskId: string, choice: CheckoutChoice, by: 'ui' | 'migration' = 'ui', evidence?: string,
+): Promise<CheckoutChoiceOutcome> {
+  const raw = await taskStore.getTask(project.id, taskId);
+  if (!raw) return { ok: false, code: 'task-not-found', message: 'Task not found in this project.' };
+  if (raw.checkoutMode) {
+    if (raw.checkoutMode === choice) return { ok: true, checkoutMode: choice, changed: false };
+    return { ok: false, code: 'already-recorded', message: `This task already runs as ${raw.checkoutMode === 'direct' ? 'Direct Checkout' : 'an isolated worktree'}; the recorded mode is kept.` };
+  }
+  const effective = await withLink(raw);
+  if (choice === 'direct' && effective.worktreePath) {
+    return { ok: false, code: 'has-worktree', message: `This task owns a worktree (${effective.worktreePath}). It can only run isolated; it is never converted to Direct Checkout.` };
+  }
+  if (choice === 'isolated' && !project.isGitRepo) {
+    return { ok: false, code: 'not-git', message: 'The project is not a git repository, so a task cannot get its own worktree.' };
+  }
+  await taskStore.updateTask(project.id, taskId, { checkoutMode: choice });
+  await lifecycleStore.mutate(project.id, taskId, entry => {
+    entry.history.push({ at: new Date().toISOString(), event: 'checkout-mode-recorded', detail: { checkoutMode: choice, by, ...(evidence ? { evidence } : {}) } });
+  });
+  log.info('git', `Checkout mode recorded for task #${raw.number ?? raw.id}: ${choice}`, `by ${by}${evidence ? ` (${evidence})` : ''}`, project.id);
+  return { ok: true, checkoutMode: choice, changed: true };
 }
 
 // -- Removing -------------------------------------------------------------

@@ -4,6 +4,8 @@ import { getProjects } from '../services/projectDiscovery.js';
 import * as lifecycle from '../services/taskLifecycle.js';
 import * as closer from '../services/worktreeClose.js';
 import { withLink } from '../services/worktreeLinks.js';
+import { recordCheckoutChoice } from '../services/worktreeService.js';
+import { planCheckoutMigration, applyCheckoutMigration } from '../services/checkoutMigration.js';
 import { invalidateInventory } from '../services/worktreeInventory.js';
 import { fromAppUi } from './design.js';
 import { triggerAutoSync } from '../services/sync/syncEngine.js';
@@ -44,6 +46,35 @@ export async function taskLifecycleRoutes(app: FastifyInstance) {
     return false;
   };
   const status = (code: string) => (code === 'not-accepted' || code === 'target-required' || code === 'head-required' || code === 'token-required' ? 400 : 409);
+
+  // A person records the checkout of a legacy task (Direct Checkout or its own worktree). Written once, kept on the task.
+  app.post<{ Params: { id: string; taskId: string }; Body: { checkoutMode?: string } }>(
+    '/api/projects/:id/tasks/:taskId/checkout-mode',
+    async (request, reply) => {
+      if (!uiOnly(request, reply)) return;
+      const { project, task } = await load(request.params.id, request.params.taskId);
+      if (!project || !task) return reply.status(404).send({ error: 'Task not found' });
+      const choice = request.body?.checkoutMode;
+      if (choice !== 'direct' && choice !== 'isolated') return reply.status(400).send({ ok: false, code: 'bad-choice', message: 'checkoutMode must be "direct" or "isolated"' });
+      const r = await recordCheckoutChoice(project, task.id, choice, 'ui');
+      if (!r.ok) return reply.status(409).send({ ok: false, code: r.code, message: r.message });
+      return { ok: true, checkoutMode: r.checkoutMode, changed: r.changed };
+    },
+  );
+
+  // The migration of legacy tasks: the plan only reads; apply records the evidence-backed decisions (UI only).
+  app.get<{ Params: { id: string } }>('/api/projects/:id/checkout-modes/migration', async (request, reply) => {
+    const project = (await getProjects()).find(p => p.id === request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    return planCheckoutMigration(project);
+  });
+  app.post<{ Params: { id: string }; Body: { taskIds?: string[] } }>('/api/projects/:id/checkout-modes/migration', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = (await getProjects()).find(p => p.id === request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const ids = Array.isArray(request.body?.taskIds) ? request.body!.taskIds!.filter(x => typeof x === 'string') : undefined;
+    return applyCheckoutMigration(project, ids);
+  });
 
   app.get<{ Params: { id: string; taskId: string }; Querystring: { target?: string } }>(
     '/api/projects/:id/tasks/:taskId/lifecycle',

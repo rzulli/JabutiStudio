@@ -27,7 +27,8 @@ export interface LaunchResult {
   ok: true; kind: 'editor' | 'play'; context: GodotContext; godot: string; version: string | null; pid: number | null; args: string[]
   openedPath: string; scene?: string; note?: string; warnings: string[]; sessions: SessionInCheckout[]
 }
-export interface GodotRefusal { ok: false; code: string; message: string; options?: { checkout: 'main' | 'task'; label: string }[] }
+/** `checkout` picks this run's checkout; `checkoutMode` records the task's checkout (kept on the task, asked once). */
+export interface GodotRefusal { ok: false; code: string; message: string; options?: { checkout?: 'main' | 'task'; checkoutMode?: 'direct' | 'isolated'; label: string }[] }
 
 export interface Related { rel: string; res: string; verified: boolean; reason: string }
 export interface GodotClassification {
@@ -89,6 +90,9 @@ const qs = (s: Record<string, string | undefined>) => {
 
 export const godotApi = {
   status: (projectId: string) => call<GodotStatus>(`/projects/${projectId}/godot/status`),
+  /** Records a legacy task's checkout once (Direct Checkout or its own worktree). A person's click only. */
+  recordCheckoutMode: (projectId: string, taskId: string, checkoutMode: 'direct' | 'isolated') =>
+    call<{ ok: true; checkoutMode: 'direct' | 'isolated'; changed: boolean }>(`/projects/${projectId}/tasks/${taskId}/checkout-mode`, { method: 'POST', body: JSON.stringify({ checkoutMode }) }),
   context: (projectId: string, s: GodotSelection) =>
     call<{ context: GodotContext | GodotRefusal; classification?: GodotClassification | null; mainScene?: string | null; tests?: string[]; testScripts?: string[]; sessions?: SessionInCheckout[]; warnings?: string[] }>(`/projects/${projectId}/godot/context${qs({ ...s })}`),
   open: (projectId: string, s: GodotSelection) =>

@@ -79,7 +79,10 @@ test('assertLaunchCheckout: a required task may only launch in the worktree it r
   await wt.saveConfig({ enabled: true, basePath: join(parent, 'wt') })
   assert.throws(() => wt.assertLaunchCheckout(base, join(parent, 'some-main')), (e: any) => wt.isCheckoutUnavailable(e) && e.code === 'checkout-mismatch')
   assert.doesNotThrow(() => wt.assertLaunchCheckout(base, join(parent, 'wt-a')))
-  const noRecord = { id: 't2', projectId: 'p', title: 'y' } as any
   await wt.saveConfig({ enabled: false, basePath: join(parent, 'wt') })
-  assert.doesNotThrow(() => wt.assertLaunchCheckout(noRecord, join(parent, 'anything')), 'Direct Checkout is unaffected')
+  const direct = { id: 't2', projectId: 'p', title: 'y', checkoutMode: 'direct' } as any
+  assert.doesNotThrow(() => wt.assertLaunchCheckout(direct, join(parent, 'anything')), 'Direct Checkout is unaffected')
+  // A legacy task (no recorded mode) is refused whatever the setting says: it must be recorded first.
+  const legacy = { id: 't3', projectId: 'p', title: 'z' } as any
+  assert.throws(() => wt.assertLaunchCheckout(legacy, join(parent, 'anything')), (e: any) => wt.isCheckoutUnavailable(e) && e.code === 'checkout-unknown')
 })

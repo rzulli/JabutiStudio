@@ -18,6 +18,7 @@ import { getProjects, updateProject } from '../services/projectDiscovery.js';
 import { findOpenConversation, forgetConversation, listConversations } from '../services/claudeConversations.js';
 import * as taskStore from '../services/taskStore.js';
 import * as worktreeService from '../services/worktreeService.js';
+import { withLink } from '../services/worktreeLinks.js';
 import { triggerAutoSync } from '../services/sync/syncEngine.js';
 import * as log from '../services/logService.js';
 import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises';
@@ -266,7 +267,7 @@ export async function terminalWsRoutes(app: FastifyInstance) {
           try {
             const worktree = await worktreeService.ensureTaskWorktree(project, task, { recover: recoverWorktree === true });
             cwd = worktree.path;
-            worktreeService.assertLaunchCheckout((await taskStore.getTask(projectId, taskId)) ?? task, cwd);
+            worktreeService.assertLaunchCheckout(await withLink((await taskStore.getTask(projectId, taskId)) ?? task), cwd);
           } catch (err: any) {
             if (worktreeService.isCheckoutUnavailable(err)) return reply.status(409).send({ error: err.message, code: err.code });
             throw err;

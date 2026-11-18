@@ -80,7 +80,8 @@ export interface Refusal {
   code: RefusalCode;
   message: string;
   /** Explicit choices that would make the request unambiguous. */
-  options?: { checkout: 'main' | 'task'; label: string }[];
+  /** Choices the person can take. `checkout` selects this run's checkout; `checkoutMode` records the task's checkout (persisted). */
+  options?: { checkout?: 'main' | 'task'; checkoutMode?: 'direct' | 'isolated'; label: string }[];
 }
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
@@ -149,13 +150,19 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
       reason = `${label} is a Direct Checkout task: it runs in the project folder.`;
     } else if (!task.worktreePath) {
       // Isolated but not created yet, or legacy with no recorded mode. Never guess the checkout: the person must choose.
+      // Legacy: the worktree setting never decides it. The person records the checkout once, here or in Review.
       const legacy = checkoutModeOf(task) === 'legacy';
+      const choices: NonNullable<Refusal['options']> = [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }];
+      if (legacy) {
+        choices.push({ checkoutMode: 'direct', label: 'This task was worked directly: record Direct Checkout (project folder)' });
+        if (project.isGitRepo) choices.push({ checkoutMode: 'isolated', label: 'Give this task its own worktree' });
+      }
       return {
         ok: false, code: 'task-without-worktree',
         message: legacy
-          ? `${label} has no recorded checkout mode (created before it was kept), so there is no task checkout to run in. Nothing was run. Choose the main checkout explicitly if that is what you want.`
+          ? `${label} has no recorded checkout mode (created before it was kept). Nothing was run and no worktree was created. Record its checkout: Direct Checkout, or its own worktree.`
           : `${label} is an isolated task with no worktree yet. Nothing was run. Choose the main checkout explicitly if that is what you want.`,
-        options: [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }],
+        options: choices,
       };
     } else {
       if (!(await exists(task.worktreePath))) {

@@ -88,7 +88,7 @@ export interface Task {
   /**
    * Checkout mode, decided once when the task is created from the setting then in force and never reclassified
    * when that setting changes. Absent = legacy task created before this field: its mode is unknown, so it is
-   * refused unless the person chooses the main checkout explicitly.
+   * refused, whatever the worktree setting, until the person records its checkout (Direct Checkout or its own worktree).
    */
   checkoutMode?: 'direct' | 'isolated';
 }
