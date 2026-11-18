@@ -13,10 +13,13 @@ import type { Task } from '@/hooks/useTasks'
  */
 export function useAiResolve() {
   const queryClient = useQueryClient()
-  return useCallback(async (task: Task, options?: { feedback?: string; agent?: string }) => {
+  return useCallback(async (task: Task, options?: { feedback?: string; agent?: string; model?: string; effort?: string }) => {
     try {
       const { prompt } = await api.getAiResolvePrompt(task.projectId, task.id, options?.feedback)
       const agent = options?.agent || task.agent
+      // The dialog always states model and effort (undefined = harness default); a straight run uses the task's own.
+      const model = options && 'model' in options ? options.model : task.agentModel
+      const effort = options && 'effort' in options ? options.effort : task.agentEffort
       window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
         detail: {
           projectId: task.projectId,
@@ -25,6 +28,8 @@ export function useAiResolve() {
           taskNumber: task.number,
           prompt,
           ...(agent ? { agent } : {}),
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
         },
       }))
       toast.success('AI resolution started')

@@ -6,7 +6,8 @@ import {
   Search, RefreshCw, FileCode2, Zap, Box, CircleDashed, Braces, ArrowLeft,
   Code2, Sparkles, TextSearch, ArrowRight, ArrowLeftFromLine, Loader2, PanelRight, AlertTriangle,
 } from 'lucide-react'
-import { api, type ExplorerNode, type ExplorerNeighbor, type ExplorerNodeDetail, type ExplorerKind } from '@/lib/api'
+import { RunConfigSelect, readRunChoice, saveRunChoice } from '@/components/tasks/RunConfigSelect'
+import { api, type AgentRunChoice, type ExplorerNode, type ExplorerNeighbor, type ExplorerNodeDetail, type ExplorerKind } from '@/lib/api'
 import {
   type Filter, KIND_LABEL, FILTER_LABEL, cleanLabel as clean, listState, listStateMessage,
   stalenessLabel, buildAgentPrompt, extensionOf,
@@ -134,13 +135,13 @@ export function ProjectExplorer({ projectId, compact = false, focusFile }: { pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followNode?.id])
 
-  const askAgent = (d: ExplorerNodeDetail, agent?: 'codex') => {
+  const askAgent = (d: ExplorerNodeDetail, run: AgentRunChoice) => {
     const n = d.node
     const prompt = buildAgentPrompt(d, { projectId, root: statusQ.data && statusQ.data.godot ? statusQ.data.root : undefined })
     window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
-      detail: { projectId, type: 'claude', prompt, ...(agent ? { agent } : {}) },
+      detail: { projectId, type: 'claude', prompt, ...(run.agent ? { agent: run.agent } : {}), ...(run.model ? { model: run.model } : {}), ...(run.effort ? { effort: run.effort } : {}) },
     }))
-    toast.success(`Sent ${clean(n.label)} to ${agent === 'codex' ? 'Codex' : 'Claude'}`)
+    toast.success(`Sent ${clean(n.label)} to ${run.agent || 'the default agent'}`)
   }
 
   if (statusQ.isLoading) return <Centered>Loading…</Centered>
@@ -439,13 +440,16 @@ function RelationGraph({ detail, onSelect, onOpen, canBack, onBack, compact, fol
   )
 }
 
+const EXPLORER_RUN_KEY = 'shipyard:explorer-ask-run'
+
 function Inspector({ projectId, detail, onSelect, onOpen, onAsk }: {
   projectId: string
   detail: ExplorerNodeDetail
   onSelect: (id: string) => void
   onOpen: (file: string, line?: number) => void
-  onAsk: (d: ExplorerNodeDetail, agent?: 'codex') => void
+  onAsk: (d: ExplorerNodeDetail, run: AgentRunChoice) => void
 }) {
+  const [run, setRun] = useState<AgentRunChoice>(() => readRunChoice(EXPLORER_RUN_KEY))
   const { node } = detail
   const canOpen = !!node.file
   const Row = ({ nb, other }: { nb: ExplorerNeighbor; other: 'from' | 'to' }) => {
@@ -493,12 +497,10 @@ function Inspector({ projectId, detail, onSelect, onOpen, onAsk }: {
           <button disabled={!canOpen} onClick={() => onOpen(node.file, node.line || undefined)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40" data-testid="open-in-editor">
             <Code2 className="h-3 w-3" /> Open in editor
           </button>
-          <button onClick={() => onAsk(detail)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent" data-testid="ask-claude">
-            <Sparkles className="h-3 w-3" /> Ask Claude
+          <button onClick={() => onAsk(detail, run)} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent" data-testid="ask-claude">
+            <Sparkles className="h-3 w-3" /> Ask agent
           </button>
-          <button onClick={() => onAsk(detail, 'codex')} className="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-accent">
-            <Sparkles className="h-3 w-3" /> Ask Codex
-          </button>
+          <RunConfigSelect value={run} onChange={v => { setRun(v); saveRunChoice(EXPLORER_RUN_KEY, v) }} className="h-6 text-[11px]" />
         </div>
       </div>
 

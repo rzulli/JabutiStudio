@@ -1011,10 +1011,10 @@ export function TaskBoard({ projectId, projectName, projectPath, milestoneId, on
         task={aiResolveTask}
         open={aiResolveTask !== null}
         onOpenChange={(open) => { if (!open) setAiResolveTask(null) }}
-        onRun={(feedback, agentId) => {
+        onRun={(feedback, run) => {
           const task = aiResolveTask
           setAiResolveTask(null)
-          if (task) runAiResolve(task, { feedback: feedback || undefined, agent: agentId || undefined })
+          if (task) runAiResolve(task, { feedback: feedback || undefined, agent: run.agent || undefined, model: run.model, effort: run.effort })
         }}
       />
 

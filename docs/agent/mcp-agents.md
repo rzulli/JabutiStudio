@@ -166,3 +166,9 @@
   `shipyard:open-terminal` → `POST /api/terminal/sessions` → `createSession`
 - A aba do terminal leva o nome do agente quando nao e o default
 - Nao criar um segundo lugar que decida comando de agente: passe pelo registry
+
+## Modelo e effort por execucao
+
+- `agentRegistry.AGENT_CAPABILITIES` diz, por harness, a flag de modelo e de effort (claude: `--model`/`--effort`; codex: `-m`/`-c model_reasoning_effort=`; gemini/aider/opencode/cursor so modelo). Harness fora da lista (custom) nao recebe flag.
+- `runOptionArgs` valida (effort na lista do harness; modelo por regex, ja que vai para a linha do shell) e `createSession` injeta no `extraArgs`. `POST /api/terminal/sessions` aceita `model` e `effort`; `GET /api/agents` devolve `models`/`efforts` por agente.
+- Client: `RunConfigSelect` (popover) / `RunConfigFields` (inline) = seletor unico de harness + modelo + effort. Use-o em todo lugar que dispara um agente (Run with AI, Ask agent, novo sistema). Evento `shipyard:open-terminal` carrega `agent`, `model`, `effort`.

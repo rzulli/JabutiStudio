@@ -2,7 +2,7 @@ import { platform } from 'os';
 import { nanoid } from 'nanoid';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { resolveAgent, buildAgentLaunch, quote, DEFAULT_AGENT_ID } from './agentRegistry.js';
+import { resolveAgent, buildAgentLaunch, quote, runOptionArgs, DEFAULT_AGENT_ID, type AgentRunOptions } from './agentRegistry.js';
 import { agentMcpConfigFile } from './agentMcp.js';
 import { aiTitlesEnabled, cleanTerminalOutput, summarizeTerminal } from './terminalSummary.js';
 import { endsWithQuestion, removeHookSettings, writeHookSettings } from './claudeHooks.js';
@@ -191,6 +191,8 @@ export async function createSession(
   task?: { title?: string; number?: number },
   /** Claude Code conversation to pick up (`claude --resume <id>`), and its title */
   resume?: { id: string; title?: string },
+  /** Model and effort for this run only. */
+  runOptions?: AgentRunOptions,
 ): Promise<string | null> {
   if (!nodePty) return null;
 
@@ -231,14 +233,21 @@ export async function createSession(
   } else if (usesBareClaudeTab(type, agentId, prompt)) {
     // Plain Claude tab from the project menu — permissions prompt intact.
     env['CLAUDECODE'] = '';
+    delete env['CLAUDE_CODE_CHILD_SESSION'];
     initialCommand = ['claude', resumeArgs, await hookArgs(id), await claudeMcpArgs()].filter(Boolean).join(' ');
     runsClaude = true;
   } else if (AGENT_SESSION_TYPES.has(type)) {
     agent = resolveAgent(agentIdForSession(type, agentId));
     runsClaude = agent.id === DEFAULT_AGENT_ID;
-    if (runsClaude) env['CLAUDECODE'] = '';
+    if (runsClaude) {
+      env['CLAUDECODE'] = '';
+      delete env['CLAUDE_CODE_CHILD_SESSION'];
+    }
     yolo = runsClaude && (agent.args || '').includes('--dangerously-skip-permissions');
-    const extraArgs = runsClaude ? [resumeArgs, await hookArgs(id), await claudeMcpArgs()].filter(Boolean).join(' ') : '';
+    const extraArgs = [
+      runOptionArgs(agent.id, runOptions),
+      ...(runsClaude ? [resumeArgs, await hookArgs(id), await claudeMcpArgs()] : []),
+    ].filter(Boolean).join(' ');
     const launch = await buildAgentLaunch(agent, { cwd: workdir, prompt: resume ? undefined : prompt, extraArgs });
     initialCommand = launch.command;
     injectPrompt = launch.injectsPrompt;
@@ -757,6 +766,18 @@ export function injectPromptWhenReady(sessionId: string, prompt: string, onInjec
   function doInject() {
     const s = sessions.get(sessionId);
     if (!s) return;
+    // The CLI exited (bad flag, missing binary): the screen ends in a bare
+    // shell prompt. Typing the task now would run it line by line as commands.
+    const lastLine = accumulatedOutput
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+      .split(/\r?\n/)
+      .map(l => l.trimEnd())
+      .filter(Boolean)
+      .pop() || '';
+    if (/^(?:PS )?[A-Za-z]:\\[^>]*>$/.test(lastLine)) {
+      onInjected?.();
+      return;
+    }
     s.injecting = true;
     sendPromptWithRetry(sessionId, prompt, 0, () => {
       const s2 = sessions.get(sessionId);

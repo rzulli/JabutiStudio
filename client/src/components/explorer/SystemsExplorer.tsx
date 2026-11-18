@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, Pencil, Wand2, BookUp, Database, MoreHorizontal, Merge, Scissors, EyeOff, Plus } from 'lucide-react'
-import { api, type SystemView, type SystemSummary } from '@/lib/api'
+import { api, type SystemView, type SystemSummary, type AgentRunChoice } from '@/lib/api'
+import { useAgents, agentLabel } from '@/hooks/useAgents'
 import { cn } from '@/lib/utils'
 import { extensionOf } from '@/lib/explorerView'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
@@ -17,7 +18,8 @@ import { EditSystemDialog, type EditStep, type Focus } from './system/EditSystem
 import { NewSystemDialog, type Mode } from './system/NewSystemDialog'
 import { openAgentSession, systemBasisKind, systemTargetRules } from '@/lib/terminalDispatch'
 import { MergeDialog, SplitDialog } from './system/StructureDialogs'
-import { AskMenu } from './system/AskMenu'
+import { AskMenu, ASSIST_RUN_KEY } from './system/AskMenu'
+import { readRunChoice } from '@/components/tasks/RunConfigSelect'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
 /**
@@ -100,16 +102,21 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
     window.dispatchEvent(new CustomEvent(EXPLORER_EDITOR_EVENT, { detail: { open: true } }))
   }, [editor])
 
-  const ask = async (agent: AskAgent, sys: SystemView, areaId?: string, extra?: string) => {
-    const goal = extra ?? (agent === 'design'
+  const agentsQ = useAgents()
+  const ask = async (askKind: AskAgent, sys: SystemView, areaId?: string, extra?: string, run?: AgentRunChoice) => {
+    // 'design' picks the brief, not the harness; a chosen harness wins over the kind's default.
+    // One-click buttons carry no choice of their own: they use the one picked in the Ask menu.
+    run = run ?? readRunChoice(ASSIST_RUN_KEY)
+    const agent = run.agent || (askKind === 'codex' ? 'codex' : 'claude')
+    const goal = extra ?? (askKind === 'design'
       ? 'Propose a design change for this system as a written proposal: what to change, why, which decisions/files are affected, what is still unknown. Do not edit code, do not record approvals, do not pick a side in an unresolved conflict.'
       : 'Explain how this system works today in the examined checkout, what is confirmed and what is not, and where design and implementation diverge. Read the real code before answering. Do not change anything until I ask.')
-    const label = agent === 'codex' ? 'Codex' : 'Claude'
+    const label = agentLabel(agentsQ.data?.agents, agent)
     try {
       const b = await api.getSystemBrief(projectId, sys.id, worktree || undefined, `${goal}
 
 ${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: sys.planned, files: sys.tierCounts?.core })}`, areaId)
-      const r = await openAgentSession({ projectId, agent: agent === 'codex' ? 'codex' : 'claude', prompt: b.text })
+      const r = await openAgentSession({ projectId, agent, model: run.model, effort: run.effort, prompt: b.text })
       if (r.ok) toast.success(`${label} session opened with “${sys.name}${areaId ? ` / ${areaId}` : ''}” (${b.head ?? 'no HEAD'}). Its answer is in the terminal tab; nothing changes here until you act on it.`)
       else toast.error(`Could not open ${label}: ${r.error}`)
     } catch (e: any) { toast.error(e.message || 'Could not build the brief') }
@@ -133,9 +140,10 @@ ${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: s
       'Rules: you may only PROPOSE. Do not invent design rules or approvals, do not resolve conflicts between decisions, do not mark anything confirmed (only the user can, in the UI). Say what you could not verify.',
       '', 'Candidates:', ...open.slice(0, 40).map(s => `- id ${s.id} | ${s.name} | ${s.files} files | ${systemBasisKind({ id: s.id, name: s.name, origin: s.origin, planned: s.planned, files: s.files })}`),
     ].join('\n')
-    const r = await openAgentSession({ projectId, agent: 'claude', prompt })
-    if (r.ok) toast.success('Claude session opened with the candidates. Its refinements arrive as proposals on those systems; the terminal tab shows its progress.')
-    else toast.error(`Could not open Claude: ${r.error}`)
+    const run = readRunChoice(ASSIST_RUN_KEY)
+    const r = await openAgentSession({ projectId, agent: run.agent || 'claude', model: run.model, effort: run.effort, prompt })
+    if (r.ok) toast.success('Agent session opened with the candidates. Its refinements arrive as proposals on those systems; the terminal tab shows its progress.')
+    else toast.error(`Could not open the agent: ${r.error}`)
   }
 
   const checkouts = checkoutsQ.data?.checkouts ?? []
@@ -231,7 +239,7 @@ ${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: s
         ) : (
           <SystemDetail
             v={v} projectId={projectId} allSystems={systems}
-            onOpen={openFile} onGraph={onOpenInGraph} onAsk={(a, area, goal) => ask(a, v, area, goal)} onChanged={refresh}
+            onOpen={openFile} onGraph={onOpenInGraph} onAsk={(a, area, goal, run) => ask(a, v, area, goal, run)} onChanged={refresh}
             onPick={pick} refreshing={detailQ.isFetching}
           />
         )}
@@ -295,7 +303,7 @@ const TABS = [['overview', 'Overview'], ['map', 'Map'], ['rules', 'Rules & decis
 function SystemDetail({ v, projectId, allSystems, onOpen, onGraph, onAsk, onChanged, onPick, refreshing }: {
   v: SystemView; projectId: string; allSystems: SystemSummary[]
   onOpen: (file: string, line?: number) => void; onGraph: (file: string) => void
-  onAsk: (a: AskAgent, area?: string, goal?: string) => void; onChanged: () => void; onPick: (id: string) => void; refreshing: boolean
+  onAsk: (a: AskAgent, area?: string, goal?: string, run?: AgentRunChoice) => void; onChanged: () => void; onPick: (id: string) => void; refreshing: boolean
 }) {
   const tabKey = `shipyard:system-tab:${projectId}`
   const [tab, setTabState] = useState<string>(() => { try { return localStorage.getItem(tabKey) || 'overview' } catch { return 'overview' } })

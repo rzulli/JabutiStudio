@@ -16,7 +16,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { TaskAttachments } from '@/components/tasks/TaskAttachments'
 import { TaskComments } from '@/components/tasks/TaskComments'
-import { AgentSelect } from '@/components/tasks/AgentSelect'
+import { RunConfigSelect } from '@/components/tasks/RunConfigSelect'
+import type { AgentRunChoice } from '@/lib/api'
 import { TaskReviewPanel } from '@/components/tasks/TaskReviewPanel'
 import { TaskOutcomeCard } from '@/components/tasks/TaskOutcomeCard'
 import { TaskHistory } from '@/components/tasks/TaskHistory'
@@ -150,8 +151,9 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
     }
   }
 
-  const handleAgentChange = (agentId: string) => {
-    updateTask.mutate({ projectId: task.projectId, taskId: task.id, agent: agentId })
+  const handleRunChange = (run: AgentRunChoice) => {
+    // '' (not undefined) so a cleared model or effort actually reaches the server.
+    updateTask.mutate({ projectId: task.projectId, taskId: task.id, agent: run.agent, agentModel: run.model ?? '', agentEffort: run.effort ?? '' })
   }
 
   const handleStatusChange = (status: Task['status']) => {
@@ -244,7 +246,7 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
       <aside aria-label="Properties" className="space-y-4 sm:border-l sm:pl-5 text-xs">
         <div className="space-y-1.5">
           <h3 className="font-medium text-muted-foreground uppercase tracking-wider">Agent</h3>
-          <AgentSelect value={task.agent} onChange={handleAgentChange} />
+          <RunConfigSelect value={{ agent: task.agent, model: task.agentModel || undefined, effort: task.agentEffort || undefined }} onChange={handleRunChange} />
           <p className="text-muted-foreground/80 leading-snug">Runs this task when you pick Run with AI.</p>
         </div>
 

@@ -8,8 +8,10 @@ export type TabResult = { ok: true; sessionId: string } | { ok: false; error: st
 
 export interface OpenAgentSessionRequest {
   projectId: string
-  /** Agent that answers. Claude is the default; Codex is the other option. */
-  agent: 'claude' | 'codex'
+  /** Harness that answers (an agent id: claude, codex, ...). */
+  agent: string
+  model?: string
+  effort?: string
   prompt: string
 }
 
@@ -20,7 +22,7 @@ export const OPEN_SESSION_TIMEOUT_MS = 15_000
  * Ask the terminal panel to open a session that starts with `prompt`. Resolves once with the outcome; a late answer
  * after the timeout is ignored, so the caller sees one result and never a second one.
  */
-export function openAgentSession({ projectId, agent, prompt }: OpenAgentSessionRequest): Promise<TabResult> {
+export function openAgentSession({ projectId, agent, model, effort, prompt }: OpenAgentSessionRequest): Promise<TabResult> {
   return new Promise<TabResult>(resolve => {
     let settled = false
     const finish = (r: TabResult) => {
@@ -34,7 +36,7 @@ export function openAgentSession({ projectId, agent, prompt }: OpenAgentSessionR
       OPEN_SESSION_TIMEOUT_MS,
     )
     window.dispatchEvent(new CustomEvent('shipyard:open-terminal', {
-      detail: { projectId, type: 'claude', agent, prompt, onResult: finish },
+      detail: { projectId, type: 'claude', agent, prompt, ...(model ? { model } : {}), ...(effort ? { effort } : {}), onResult: finish },
     }))
   })
 }

@@ -47,6 +47,8 @@ export interface Task {
   context?: string
   /** Which CLI runs this task — see useAgents(). Unset means Claude Code. */
   agent?: string
+  agentModel?: string
+  agentEffort?: string
   /** Done bug or problem: why it happened. */
   rootCause?: string
   /** Done task: what was done to solve it. */

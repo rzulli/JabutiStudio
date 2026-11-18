@@ -1,5 +1,5 @@
 import { CheckCircle2, CircleDashed } from 'lucide-react'
-import type { EvidenceBasis, SystemEvidence, SystemStatus } from '@/lib/api'
+import type { AgentRunChoice, EvidenceBasis, SystemEvidence, SystemStatus } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { Focus } from './EditSteps'
 
@@ -8,7 +8,7 @@ export interface SystemActions {
   onOpen: (file: string, line?: number) => void
   onGraph: (file: string) => void
   /** agent, optional selected area, optional extra instruction */
-  onAsk: (agent: AskAgent, areaId?: string, goal?: string) => void
+  onAsk: (agent: AskAgent, areaId?: string, goal?: string, run?: AgentRunChoice) => void
   onPickSystem?: (id: string) => void
   /** open the dedicated editor at a step */
   onEdit?: (step: 'identity' | 'responsibilities' | 'members' | 'relations' | 'review') => void

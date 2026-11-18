@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { listAgents, agentAvailability, saveCustomAgents, saveDefaultAgent, DEFAULT_AGENT_ID } from '../services/agentRegistry.js';
+import { listAgents, agentAvailability, saveCustomAgents, saveDefaultAgent, agentCapabilities, DEFAULT_AGENT_ID } from '../services/agentRegistry.js';
 import { getSettings } from '../services/settingsStore.js';
 
 export async function agentRoutes(app: FastifyInstance) {
@@ -7,7 +7,7 @@ export async function agentRoutes(app: FastifyInstance) {
   app.get('/api/agents', async () => {
     const [agents, available] = await Promise.all([listAgents(), agentAvailability()]);
     return {
-      agents: agents.map(a => ({ ...a, available: available[a.id] ?? false })),
+      agents: agents.map(a => ({ ...a, available: available[a.id] ?? false, ...agentCapabilities(a.id) })),
       defaultAgent: getSettings().defaultAgent || DEFAULT_AGENT_ID,
     };
   });
@@ -23,7 +23,7 @@ export async function agentRoutes(app: FastifyInstance) {
       }
       const available = await agentAvailability();
       return {
-        agents: listAgents().map(a => ({ ...a, available: available[a.id] ?? false })),
+        agents: listAgents().map(a => ({ ...a, available: available[a.id] ?? false, ...agentCapabilities(a.id) })),
         defaultAgent: getSettings().defaultAgent || DEFAULT_AGENT_ID,
       };
     }

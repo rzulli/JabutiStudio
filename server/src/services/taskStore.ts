@@ -463,6 +463,8 @@ export function replaceTasks(projectId: string, incoming: Partial<Task>[], miles
         needsReview: t.needsReview ?? existing?.needsReview,
         followUpAt: t.followUpAt ?? existing?.followUpAt,
         agent: t.agent ?? existing?.agent,
+        agentModel: t.agentModel ?? existing?.agentModel,
+        agentEffort: t.agentEffort ?? existing?.agentEffort,
         context: t.context ?? existing?.context,
         rootCause: t.rootCause ?? existing?.rootCause,
         resolution: t.resolution ?? existing?.resolution,

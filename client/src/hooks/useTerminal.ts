@@ -34,8 +34,8 @@ export function useRenameTerminalSession() {
 export function useCreateTerminalSession() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ projectId, type, cols, rows, taskId, prompt, agent, resume }: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; resume?: { id: string; title?: string } }) =>
-      api.createTerminalSession(projectId, type, cols, rows, taskId, prompt, agent, resume),
+    mutationFn: ({ projectId, type, cols, rows, taskId, prompt, agent, model, effort, resume }: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; model?: string; effort?: string; resume?: { id: string; title?: string } }) =>
+      api.createTerminalSession(projectId, type, cols, rows, taskId, prompt, agent, resume, { model, effort }),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['terminal', 'sessions', variables.projectId] })
       if (variables.resume) queryClient.invalidateQueries({ queryKey: ['terminal', 'conversations'] })

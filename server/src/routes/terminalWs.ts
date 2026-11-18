@@ -235,14 +235,14 @@ export async function terminalWsRoutes(app: FastifyInstance) {
   );
 
   // REST: Create a new terminal session
-  app.post<{ Body: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; resume?: string; resumeTitle?: string } }>(
+  app.post<{ Body: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; model?: string; effort?: string; resume?: string; resumeTitle?: string } }>(
     '/api/terminal/sessions',
     async (request, reply) => {
       if (!isAvailable()) {
         return reply.status(503).send({ error: 'Integrated terminal not available (node-pty not installed)' });
       }
 
-      const { projectId, type = 'shell', cols = 80, rows = 24, taskId, prompt, agent, resume, resumeTitle } = request.body;
+      const { projectId, type = 'shell', cols = 80, rows = 24, taskId, prompt, agent, model, effort, resume, resumeTitle } = request.body;
       const projects = await getProjects();
       const project = projects.find(p => p.id === projectId);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
@@ -272,6 +272,7 @@ export async function terminalWsRoutes(app: FastifyInstance) {
       const sessionId = await createSession(
         projectId, project.path, type, cols, rows, project.name, taskId, prompt, agent, cwd, taskLabel,
         resume ? { id: resume, title: resumeTitle } : undefined,
+        { model, effort },
       );
       if (!sessionId) {
         log.error('terminal', 'Failed to create terminal session', `type=${type}`, projectId);

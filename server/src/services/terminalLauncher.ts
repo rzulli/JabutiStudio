@@ -147,18 +147,18 @@ export async function launchTerminal(projectPath: string, type: TerminalType, pr
 
   if (os === 'linux') {
     // Linux: prefix claude commands with env clear
-    if (type === 'claude') command = 'unset CLAUDECODE && claude';
-    else if (type === 'claude-yolo') command = 'unset CLAUDECODE && claude --dangerously-skip-permissions';
+    if (type === 'claude') command = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION && claude';
+    else if (type === 'claude-yolo') command = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION && claude --dangerously-skip-permissions';
     launchLinuxTerminal(projectPath, title, command);
   } else if (os === 'darwin') {
     // macOS: prefix claude commands with env clear
-    if (type === 'claude') command = 'unset CLAUDECODE && claude';
-    else if (type === 'claude-yolo') command = 'unset CLAUDECODE && claude --dangerously-skip-permissions';
+    if (type === 'claude') command = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION && claude';
+    else if (type === 'claude-yolo') command = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION && claude --dangerously-skip-permissions';
     launchMacTerminal(projectPath, title, command);
   } else {
     // Windows: prefix claude commands with env clear
-    if (type === 'claude') command = 'set CLAUDECODE= && claude';
-    else if (type === 'claude-yolo') command = 'set CLAUDECODE= && claude --dangerously-skip-permissions';
+    if (type === 'claude') command = 'set CLAUDECODE= && set CLAUDE_CODE_CHILD_SESSION= && claude';
+    else if (type === 'claude-yolo') command = 'set CLAUDECODE= && set CLAUDE_CODE_CHILD_SESSION= && claude --dangerously-skip-permissions';
     launchWindowsTerminal(projectPath, title, command);
   }
 }

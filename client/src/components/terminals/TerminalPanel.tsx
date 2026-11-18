@@ -651,7 +651,7 @@ export function TerminalPanel() {
   }, [panelHeight])
 
   // Create a new terminal tab for a given project (or active project)
-  const handleNewTab = useCallback(async (type = 'shell', forProjectId?: string, taskId?: string, prompt?: string, taskNumber?: number, agent?: string, resume?: { id: string; title?: string }): Promise<TabResult> => {
+  const handleNewTab = useCallback(async (type = 'shell', forProjectId?: string, taskId?: string, prompt?: string, taskNumber?: number, agent?: string, resume?: { id: string; title?: string }, run?: { model?: string; effort?: string }): Promise<TabResult> => {
     if (!status?.available) {
       toast.error('Integrated terminal not available')
       return { ok: false, error: 'Integrated terminal not available' }
@@ -673,6 +673,8 @@ export function TerminalPanel() {
         projectId: targetProject, type, cols: 80, rows: 24, taskId,
         ...(prompt ? { prompt } : {}),
         ...(agent ? { agent } : {}),
+        ...(run?.model ? { model: run.model } : {}),
+        ...(run?.effort ? { effort: run.effort } : {}),
         ...(resume ? { resume } : {}),
       })
       const tab: GlobalTab = {
@@ -1147,9 +1149,9 @@ export function TerminalPanel() {
 
   // Listen for shipyard:open-terminal events (from TerminalLauncher) for ANY project
   useEffect(() => {
-    const handler = (e: CustomEvent<{ projectId: string; type: string; taskId?: string; taskNumber?: number; prompt?: string; agent?: string; resume?: { id: string; title?: string }; onResult?: (r: TabResult) => void }>) => {
+    const handler = (e: CustomEvent<{ projectId: string; type: string; taskId?: string; taskNumber?: number; prompt?: string; agent?: string; model?: string; effort?: string; resume?: { id: string; title?: string }; onResult?: (r: TabResult) => void }>) => {
       // A caller that sent a prompt wants to know whether the session took it.
-      handleNewTab(e.detail.type, e.detail.projectId, e.detail.taskId, e.detail.prompt, e.detail.taskNumber, e.detail.agent, e.detail.resume)
+      handleNewTab(e.detail.type, e.detail.projectId, e.detail.taskId, e.detail.prompt, e.detail.taskNumber, e.detail.agent, e.detail.resume, { model: e.detail.model, effort: e.detail.effort })
         .then(r => e.detail.onResult?.(r))
     }
     window.addEventListener('shipyard:open-terminal' as any, handler as any)

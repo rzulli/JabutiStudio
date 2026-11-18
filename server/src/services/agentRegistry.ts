@@ -24,7 +24,9 @@ export const DEFAULT_AGENT_ID = 'claude';
 export const BUILTIN_AGENTS: AgentDefinition[] = [
   // No permission flag: task runs ask for approval like a normal Claude Code session.
   { id: 'claude', name: 'Claude Code', command: 'claude', args: '', builtin: true },
-  { id: 'codex', name: 'Codex CLI', command: 'codex', args: '--full-auto', builtin: true },
+  // --approve-for-me: approvals go through Codex's automatic review inside the workspace-write sandbox (the
+  // current replacement for the removed --full-auto). The startup self-update (npm install) exits the CLI before the task can be typed, hence the check_for_update flag.
+  { id: 'codex', name: 'Codex CLI', command: 'codex', args: '-c check_for_update_on_startup=false --approve-for-me', builtin: true },
   { id: 'aider', name: 'Aider', command: 'aider', args: '--yes-always', builtin: true },
   { id: 'gemini', name: 'Gemini CLI', command: 'gemini', args: '--yolo', builtin: true },
   { id: 'opencode', name: 'OpenCode', command: 'opencode', args: '', builtin: true },
@@ -32,6 +34,83 @@ export const BUILTIN_AGENTS: AgentDefinition[] = [
 ];
 
 const BUILTIN_IDS = new Set(BUILTIN_AGENTS.map(a => a.id));
+
+// ── Model and effort per run ─────────────────────────────────────────────
+
+/** What one run may override on top of the harness: the model and the reasoning effort. */
+export interface AgentRunOptions {
+  model?: string;
+  effort?: string;
+}
+
+interface AgentCapability {
+  models: { id: string; name: string }[];
+  efforts: string[];
+  modelFlag: string;
+  /** Builds the flag for an effort level; absent when the CLI has none. */
+  effortArgs?: (effort: string) => string;
+}
+
+/**
+ * Which harnesses take a model and an effort, and the flag for each. A harness
+ * not listed (custom agents included) runs with whatever it is configured to:
+ * there is no flag to guess at. `models` are suggestions — any id the CLI
+ * accepts can be passed.
+ */
+export const AGENT_CAPABILITIES: Record<string, AgentCapability> = {
+  claude: {
+    models: [
+      { id: 'opus', name: 'Opus' },
+      { id: 'sonnet', name: 'Sonnet' },
+      { id: 'haiku', name: 'Haiku' },
+    ],
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    modelFlag: '--model',
+    effortArgs: e => `--effort ${e}`,
+  },
+  codex: {
+    // The models Codex CLI lists as selectable (its model catalog, visibility "list", client 0.169.1).
+    // Suggestions only: the field accepts any id the CLI knows.
+    models: [
+      { id: 'gpt-6.2-sol', name: 'GPT-6.2-Sol' },
+      { id: 'gpt-6.2-astra', name: 'GPT-6.2-Astra' },
+      { id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' },
+      { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
+      { id: 'gpt-6-sol', name: 'GPT-6-Sol' },
+      { id: 'gpt-6-astra', name: 'GPT-6-Astra' },
+      { id: 'gpt-6-luna', name: 'GPT-6-Luna' },
+      { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' },
+      { id: 'gpt-5.6-terra', name: 'GPT-5.6-Terra' },
+      { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
+    ],
+    // Union of the levels the catalog lists; per model they differ (e.g. GPT-6-Luna has no "ultra").
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    modelFlag: '-m',
+    effortArgs: e => `-c model_reasoning_effort=${e}`,
+  },
+  gemini: { models: [], efforts: [], modelFlag: '-m' },
+  aider: { models: [], efforts: [], modelFlag: '--model' },
+  opencode: { models: [], efforts: [], modelFlag: '-m' },
+  cursor: { models: [], efforts: [], modelFlag: '--model' },
+};
+
+// A model id ends up on a shell line: letters, digits and the separators model ids use, nothing else.
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,79}$/;
+
+/** Flags that apply the chosen model and effort, or '' when there is nothing valid to apply. */
+export function runOptionArgs(agentId: string, opts?: AgentRunOptions): string {
+  const cap = AGENT_CAPABILITIES[agentId];
+  if (!cap || !opts) return '';
+  const parts: string[] = [];
+  if (opts.model && MODEL_RE.test(opts.model)) parts.push(`${cap.modelFlag} ${quote(opts.model)}`);
+  if (opts.effort && cap.effortArgs && cap.efforts.includes(opts.effort)) parts.push(cap.effortArgs(opts.effort));
+  return parts.join(' ');
+}
+
+export function agentCapabilities(agentId: string): { models: { id: string; name: string }[]; efforts: string[] } {
+  const cap = AGENT_CAPABILITIES[agentId];
+  return { models: cap?.models ?? [], efforts: cap?.efforts ?? [] };
+}
 
 export function getCustomAgents(): AgentDefinition[] {
   return (getSettings().customAgents || []).map(a => ({ ...a, builtin: false }));

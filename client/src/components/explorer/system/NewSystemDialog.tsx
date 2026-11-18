@@ -2,12 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { FileSearch, PenLine, Sparkles } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import type { SystemSummary, SystemView } from '@/lib/api'
+import type { AgentRunChoice, SystemSummary, SystemView } from '@/lib/api'
+import { RunConfigSelect, readRunChoice, saveRunChoice } from '@/components/tasks/RunConfigSelect'
+import { useAgents } from '@/hooks/useAgents'
 import { buildSystemProposalPrompt, openAgentSession } from '@/lib/terminalDispatch'
 import { useMcpStatus } from '@/hooks/useMcp'
 import { cn } from '@/lib/utils'
 import { EditSystemDialog, blankView } from './EditSystemDialog'
 import { FilePicker, TermChips, field, KIND_HELP, Label } from './EditSteps'
+
+const RUN_KEY = 'shipyard:systems-assist-run'
 
 export type Mode = 'manual' | 'project' | 'agent'
 type Kind = SystemView['kind']
@@ -36,7 +40,10 @@ export function NewSystemDialog({ projectId, allSystems, open, initialMode = 'ma
   const [terms, setTerms] = useState<string[]>([])
   const [cands, setCands] = useState<string[]>([])
   const [ask, setAsk] = useState('')
-  const [agent, setAgent] = useState<'claude' | 'codex'>('claude')
+  const [run, setRun] = useState<AgentRunChoice>(() => readRunChoice(RUN_KEY))
+  const agent = run.agent || 'claude'
+  const { data: agentData } = useAgents()
+  const agentName = agentData?.agents.find(a => a.id === agent)?.name || agent
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
   // The agent reaches Knowledge only through the MCP server: say so here, before a prompt is sent.
@@ -62,10 +69,10 @@ export function NewSystemDialog({ projectId, allSystems, open, initialMode = 'ma
     if (!description) { toast.error('Describe the system first'); return }
     if (sendingRef.current) return
     if (knowledge !== 'ready') { toast.error('The Knowledge tools are not ready. See the note above the button.'); return }
-    const label = agent === 'codex' ? 'Codex' : 'Claude'
+    const label = agentName
     sendingRef.current = true
     setSending(true)
-    const r = await openAgentSession({ projectId, agent, prompt: buildSystemProposalPrompt(projectId, description) })
+    const r = await openAgentSession({ projectId, agent, model: run.model, effort: run.effort, prompt: buildSystemProposalPrompt(projectId, description) })
     sendingRef.current = false
     setSending(false)
     if (r.ok) {
@@ -133,8 +140,8 @@ export function NewSystemDialog({ projectId, allSystems, open, initialMode = 'ma
             <div className="space-y-3">
               <div><Label hint="in game terms; mention what is planned and what already exists">What should the system be?</Label>
                 <textarea className={field} rows={5} value={ask} onChange={e => setAsk(e.target.value)} aria-label="describe the system" data-testid="new-ask" placeholder="e.g. A system that manages the currency the player earns and spends…" /></div>
-              <p className="flex items-center gap-1 text-[11px]">Agent:
-                {(['claude', 'codex'] as const).map(a => <button key={a} onClick={() => setAgent(a)} className={cn('rounded border px-1.5 py-0.5', agent === a && 'bg-accent')}>{a === 'claude' ? 'Claude' : 'Codex'}</button>)}
+              <p className="flex items-center gap-1.5 text-[11px]">Run with:
+                <RunConfigSelect value={run} onChange={v => { setRun(v); saveRunChoice(RUN_KEY, v) }} />
               </p>
               <KnowledgeNote state={knowledge} endpoint={mcp.data?.endpoint} />
               <p className="rounded-md bg-accent/50 p-2 text-[10px] text-muted-foreground">The agent proposes through propose_system. Its answer arrives as a system “proposed by an agent” that you open, edit and confirm here. It cannot confirm anything.</p>
@@ -144,7 +151,7 @@ export function NewSystemDialog({ projectId, allSystems, open, initialMode = 'ma
           <div className="flex justify-end gap-2">
             <button onClick={() => onOpenChange(false)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent">Cancel</button>
             {mode === 'agent'
-              ? <button onClick={sendToAgent} disabled={sending || knowledge !== 'ready'} data-testid="new-send-agent" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-60">{sending ? 'Sending…' : `Send to ${agent === 'codex' ? 'Codex' : 'Claude'}`}</button>
+              ? <button onClick={sendToAgent} disabled={sending || knowledge !== 'ready'} data-testid="new-send-agent" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-60">{sending ? 'Sending…' : `Send to ${agentName}`}</button>
               : <button onClick={continueToEditor} data-testid="new-continue" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground">Continue to the editor</button>}
           </div>
         </DialogContent>

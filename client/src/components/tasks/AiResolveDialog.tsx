@@ -4,24 +4,36 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { Task } from '@/hooks/useTasks'
-import { AgentSelect } from '@/components/tasks/AgentSelect'
+import { RunConfigSelect, readRunChoice, saveRunChoice } from '@/components/tasks/RunConfigSelect'
+import type { AgentRunChoice } from '@/lib/api'
+
+const RUN_KEY = 'shipyard:ai-resolve-run'
 
 interface AiResolveDialogProps {
   task: Task | null
   open: boolean
   onOpenChange: (open: boolean) => void
-  onRun: (feedback: string, agentId: string) => void
+  onRun: (feedback: string, run: AgentRunChoice) => void
 }
 
 export function AiResolveDialog({ task, open, onOpenChange, onRun }: AiResolveDialogProps) {
   const [feedback, setFeedback] = useState('')
-  const [agent, setAgent] = useState<string | undefined>(task?.agent)
+  const [run, setRun] = useState<AgentRunChoice>({ agent: task?.agent })
 
-  // Start from the task's own agent every time the dialog opens — a switch
-  // made for one run should not stick to the next task.
+  // The harness starts from the task's own agent every time the dialog opens — a
+  // switch made for one run should not stick to the next task. Model and effort
+  // are remembered, since they follow the person's habit, not the task.
   useEffect(() => {
-    if (open) setAgent(task?.agent)
-  }, [open, task?.id, task?.agent])
+    if (!open) return
+    const last = readRunChoice(RUN_KEY)
+    const agent = task?.agent
+    const same = !agent || agent === last.agent
+    setRun({
+      agent,
+      model: task?.agentModel || (same ? last.model : undefined),
+      effort: task?.agentEffort || (same ? last.effort : undefined),
+    })
+  }, [open, task?.id, task?.agent, task?.agentModel, task?.agentEffort])
 
   const handleClose = (nextOpen: boolean) => {
     if (!nextOpen) setFeedback('')
@@ -31,7 +43,8 @@ export function AiResolveDialog({ task, open, onOpenChange, onRun }: AiResolveDi
   const handleRun = () => {
     const value = feedback.trim()
     setFeedback('')
-    onRun(value, agent || '')
+    saveRunChoice(RUN_KEY, run)
+    onRun(value, run)
   }
 
   if (!task) return null
@@ -69,7 +82,7 @@ export function AiResolveDialog({ task, open, onOpenChange, onRun }: AiResolveDi
           </p>
         </div>
         <DialogFooter className="sm:justify-between items-center gap-2">
-          <AgentSelect value={agent} onChange={setAgent} />
+          <RunConfigSelect value={run} onChange={setRun} />
           <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" className="text-xs" onClick={() => handleClose(false)}>
             Cancel

@@ -37,10 +37,10 @@ export function AiResolveHost() {
       task={task}
       open={task !== null}
       onOpenChange={(open) => { if (!open) setTask(null) }}
-      onRun={(feedback, agentId) => {
+      onRun={(feedback, run) => {
         const target = task
         setTask(null)
-        if (target) runAiResolve(target, { feedback: feedback || undefined, agent: agentId || undefined })
+        if (target) runAiResolve(target, { feedback: feedback || undefined, agent: run.agent || undefined, model: run.model, effort: run.effort })
       }}
     />
   )
