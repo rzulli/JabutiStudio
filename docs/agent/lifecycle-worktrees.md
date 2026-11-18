@@ -141,7 +141,9 @@
   sessao viva...) **a task fica** (409 `worktree-pending` com o motivo; no bulk, `blocked[]`).
   A task e o unico registro de por que a worktree existe: nunca se apaga uma sem a outra, e
   nada e forcado nem removido para permitir a exclusao. `cleanupWorktrees` e a varredura de 6h (`startWorktreeCleanup`) so rodam `git worktree
-  prune` (esquece registro de pasta que ja sumiu); a varredura por idade, a limpeza
+  prune` (esquece registro de pasta que ja sumiu), mas nunca quando algum registro ausente ainda pertence a uma task
+  (pasta movida ou sumida temporariamente: o registro e o que permite restaurar com historico e vinculo; `pruneWorktrees(path, keep)`);
+  a varredura por idade, a limpeza
   `all: true` e o `rm -rf` de pastas orfas foram removidos, e `gitService.removeWorktree`
   / `deleteBranch` (force, `-D`) deixaram de existir. O cartao "Task worktrees" em Settings
   nao tem mais botao de limpar: aponta para a aba Review / o badge de worktrees
