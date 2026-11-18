@@ -1,6 +1,7 @@
-import { join, resolve, isAbsolute } from 'path';
+import { join, resolve, isAbsolute, dirname } from 'path';
 import { mkdir, stat } from 'fs/promises';
 import * as gitService from './gitService.js';
+import { canonicalPath } from './pathIdentity.js';
 import * as taskStore from './taskStore.js';
 import { getProjects } from './projectDiscovery.js';
 import { getSettings, saveSettings } from './settingsStore.js';
@@ -104,50 +105,119 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * The directory an agent working on this task should run in: its worktree if
- * one exists on disk, the project folder otherwise. Never throws — a missing
- * worktree falls back instead of blocking the launch.
+ * A task that requires a worktree (the setting is on, or it already owns one) is never started anywhere else.
+ * Creating or resolving it either yields a worktree path or throws CheckoutUnavailableError; the project folder is
+ * never handed back as a substitute. Only a task with no worktree and the setting off keeps the project folder
+ * (Direct Checkout), unchanged.
  */
-export async function resolveTaskCwd(project: Project, task?: Task | null): Promise<string> {
-  if (!task?.worktreePath) return project.path;
-  return (await exists(task.worktreePath)) ? task.worktreePath : project.path;
+
+/** A task whose worktree is required cannot be started: the reason is final and nothing was launched. */
+export class CheckoutUnavailableError extends Error {
+  constructor(readonly code: 'not-git' | 'worktree-missing' | 'create-failed' | 'checkout-mismatch', message: string) {
+    super(message);
+    this.name = 'CheckoutUnavailableError';
+  }
+}
+export function isCheckoutUnavailable(e: unknown): e is CheckoutUnavailableError {
+  return e instanceof CheckoutUnavailableError;
+}
+
+/** The task must run in its own worktree: the setting is on, or the task already owns one. */
+export function requiresWorktree(task: Task): boolean {
+  return getConfig().enabled || !!task.worktreePath;
+}
+
+/**
+ * Last check before a process is spawned. A task that requires a worktree may only start in the worktree it records.
+ * Throws otherwise; the caller must not spawn.
+ */
+export function assertLaunchCheckout(task: Task, cwd: string): void {
+  if (!requiresWorktree(task)) return;
+  if (!task.worktreePath || canonicalPath(cwd) !== canonicalPath(task.worktreePath)) {
+    throw new CheckoutUnavailableError('checkout-mismatch', `The session would start in ${cwd}, which is not this task's worktree. Nothing was started.`);
+  }
+}
+
+// One ensure at a time per task. A second launch of the same task waits and then reads the worktree the first one
+// recorded, instead of creating a second one from a stale copy of the task.
+const queues = new Map<string, Promise<unknown>>();
+function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  queues.set(key, tail);
+  void tail.then(() => { if (queues.get(key) === tail) queues.delete(key); });
+  return run;
+}
+
+/** A folder that Git itself links as a worktree has a `.git` file, not a directory. */
+async function isLinkedWorktree(path: string): Promise<boolean> {
+  try { return (await stat(join(path, '.git'))).isFile(); } catch { return false; }
 }
 
 export interface EnsureResult {
   path: string;
   branch?: string;
   created: boolean;
-  /** Why the task kept the project path, when it did. */
+  /** Why the task kept the project path (Direct Checkout only). */
   reason?: string;
+  /** The worktree was re-created after an explicit recovery request. */
+  recovered?: boolean;
+  /** What the recovery did and did not bring back. */
+  recoveryNote?: string;
 }
 
-/**
- * Give the task a worktree, or hand back the project path with the reason it
- * did not get one. Repeat calls on the same task reuse what is already there.
- */
-export async function ensureTaskWorktree(project: Project, task: Task): Promise<EnsureResult> {
-  const config = getConfig();
-  if (!config.enabled) return { path: project.path, created: false, reason: 'disabled' };
-  if (!project.isGitRepo) return { path: project.path, created: false, reason: 'not a git repository' };
+export interface EnsureOptions {
+  /** Re-create a recorded worktree whose folder has gone, from its branch. Only when a person asked for it. */
+  recover?: boolean;
+}
 
-  if (task.worktreePath && (await exists(task.worktreePath))) {
-    return { path: task.worktreePath, branch: task.worktreeBranch, created: false };
-  }
+export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  return serialize(`${project.id}:${task.id}`, async (): Promise<EnsureResult> => {
+    const config = getConfig();
+    const fresh = (await taskStore.getTask(task.projectId, task.id)) ?? task;
+    if (!requiresWorktree(fresh)) return { path: project.path, created: false, reason: 'disabled' };
+    if (!project.isGitRepo) {
+      throw new CheckoutUnavailableError('not-git', 'The project is not a git repository, so this task cannot get a worktree. Nothing was started.');
+    }
 
-  const branch = task.worktreeBranch || branchNameFor(task);
-  const dest = task.worktreePath || join(config.basePath, dirNameFor(project.id, task));
+    if (fresh.worktreePath) {
+      if (await isLinkedWorktree(fresh.worktreePath)) {
+        return { path: fresh.worktreePath, branch: fresh.worktreeBranch, created: false };
+      }
+      if (!opts.recover) {
+        throw new CheckoutUnavailableError('worktree-missing', `The worktree recorded for this task (${fresh.worktreePath}) is no longer there. Nothing was started, and the project folder was not used. Recover it explicitly to re-create it from its branch.`);
+      }
+      const branch = fresh.worktreeBranch || branchNameFor(fresh);
+      const dest = fresh.worktreePath;
+      try {
+        await mkdir(dirname(dest), { recursive: true });
+        await gitService.createWorktree(project.path, branch, dest);
+      } catch (err: any) {
+        log.error('git', 'Failed to recover task worktree', err?.message || String(err), project.id);
+        throw new CheckoutUnavailableError('create-failed', `The worktree could not be re-created (${err?.message || 'git worktree add failed'}). Nothing was started.`);
+      }
+      await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch });
+      log.info('git', `Worktree re-created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
+      return {
+        path: dest, branch, created: true, recovered: true,
+        recoveryNote: `Re-created from branch ${branch}. Only commits on that branch are back; uncommitted changes that were in the deleted folder are not recovered.`,
+      };
+    }
 
-  try {
-    await mkdir(config.basePath, { recursive: true });
-    await gitService.createWorktree(project.path, branch, dest);
-  } catch (err: any) {
-    log.error('git', 'Failed to create task worktree', err?.message || String(err), project.id);
-    return { path: project.path, created: false, reason: err?.message || 'git worktree add failed' };
-  }
-
-  await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch });
-  log.info('git', `Worktree created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
-  return { path: dest, branch, created: true };
+    const branch = fresh.worktreeBranch || branchNameFor(fresh);
+    const dest = join(config.basePath, dirNameFor(project.id, fresh));
+    try {
+      await mkdir(config.basePath, { recursive: true });
+      await gitService.createWorktree(project.path, branch, dest);
+    } catch (err: any) {
+      log.error('git', 'Failed to create task worktree', err?.message || String(err), project.id);
+      throw new CheckoutUnavailableError('create-failed', `The worktree could not be created (${err?.message || 'git worktree add failed'}). Nothing was started, and the project folder was not used.`);
+    }
+    await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch });
+    log.info('git', `Worktree created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
+    return { path: dest, branch, created: true };
+  });
 }
 
 // -- Removing -------------------------------------------------------------
