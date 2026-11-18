@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, MoreHorizontal, Eye, Pencil, Trash2, FolderOpen, Loader2, Copy, PenLine, FilePlus, FolderPlus, ClipboardPaste, Files, Scissors } from 'lucide-react'
+import { ChevronDown, ChevronRight, MoreHorizontal, Eye, EyeOff, Pencil, Trash2, FolderOpen, Loader2, Copy, PenLine, FilePlus, FolderPlus, ClipboardPaste, Files, Scissors } from 'lucide-react'
+import { readShowSidecars, writeShowSidecars } from '@/lib/sidecarPref'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -45,11 +46,12 @@ interface TreeNodeProps {
   creating: CreatingState | null
   onFinishCreate: (parentPath: string, type: 'file' | 'dir', name: string) => void
   onCancelCreate: () => void
+  showSidecars: boolean
 }
 
-function TreeNode({ entry, projectId, depth, expanded, onToggle, onPreview, onContextAction, onOpenInEditor, renamingPath, onStartRename, onFinishRename, onCancelRename, activeFilePath, hasClipboard, creating, onFinishCreate, onCancelCreate }: TreeNodeProps) {
+function TreeNode({ entry, projectId, depth, expanded, onToggle, onPreview, onContextAction, onOpenInEditor, renamingPath, onStartRename, onFinishRename, onCancelRename, activeFilePath, hasClipboard, creating, onFinishCreate, onCancelCreate, showSidecars }: TreeNodeProps) {
   const isOpen = expanded.has(entry.path)
-  const { data, isLoading } = useFileTree(projectId, entry.path, entry.type === 'dir' && isOpen)
+  const { data, isLoading } = useFileTree(projectId, entry.path, entry.type === 'dir' && isOpen, showSidecars)
   const [contextOpen, setContextOpen] = useState(false)
   const isRenaming = renamingPath === entry.path
   const [renameValue, setRenameValue] = useState(entry.name)
@@ -85,7 +87,7 @@ function TreeNode({ entry, projectId, depth, expanded, onToggle, onPreview, onCo
   const handleClick = () => {
     if (entry.type === 'dir') {
       onToggle(entry.path)
-    } else if (onOpenInEditor && entry.mimeHint !== 'application/octet-stream' && !entry.mimeHint?.startsWith('image/')) {
+    } else if (onOpenInEditor && !entry.readOnly && entry.mimeHint !== 'application/octet-stream' && !entry.mimeHint?.startsWith('image/')) {
       onOpenInEditor(entry.path, entry.name, entry.extension || '')
     } else {
       onPreview(entry.path)
@@ -155,7 +157,7 @@ function TreeNode({ entry, projectId, depth, expanded, onToggle, onPreview, onCo
             </button>
           </PopoverTrigger>
           <PopoverContent className="w-44 p-1" side="right" align="start">
-            {entry.type === 'file' && onOpenInEditor && entry.mimeHint !== 'application/octet-stream' && !entry.mimeHint?.startsWith('image/') && (
+            {entry.type === 'file' && onOpenInEditor && !entry.readOnly && entry.mimeHint !== 'application/octet-stream' && !entry.mimeHint?.startsWith('image/') && (
               <button
                 className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors"
                 onClick={() => { setContextOpen(false); onOpenInEditor(entry.path, entry.name, entry.extension || '') }}
@@ -281,6 +283,7 @@ function TreeNode({ entry, projectId, depth, expanded, onToggle, onPreview, onCo
                 creating={creating}
                 onFinishCreate={onFinishCreate}
                 onCancelCreate={onCancelCreate}
+                showSidecars={showSidecars}
               />
             ))
           )}
@@ -332,8 +335,10 @@ export function FileExplorer({ projectId, projectPath: _projectPath, onOpenInEdi
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [creating, setCreating] = useState<CreatingState | null>(null)
   const [clipboard, setClipboard] = useState<{ path: string; name: string; op: 'copy' | 'cut' } | null>(null)
+  const [showSidecars, setShowSidecars] = useState<boolean>(readShowSidecars)
+  const toggleSidecars = () => setShowSidecars(prev => { writeShowSidecars(!prev); return !prev })
 
-  const { data, isLoading } = useFileTree(projectId, '', true)
+  const { data, isLoading } = useFileTree(projectId, '', true, showSidecars)
   const deleteFile = useDeleteFile()
   const openFileFolder = useOpenFileFolder()
   const renameFile = useRenameFile()
@@ -482,6 +487,17 @@ export function FileExplorer({ projectId, projectPath: _projectPath, onOpenInEdi
       {/* Toolbar */}
       <div className="flex items-center justify-end gap-0.5 pb-1 shrink-0">
         <button
+          title={showSidecars ? 'Hide sidecar files (*.gd.uid, *.gdshader.uid)' : 'Show sidecar files (*.gd.uid, *.gdshader.uid)'}
+          aria-label="Show sidecar files"
+          aria-pressed={showSidecars}
+          className={cn('h-6 w-6 flex items-center justify-center rounded hover:bg-accent transition-colors', showSidecars && 'bg-accent')}
+          onClick={toggleSidecars}
+        >
+          {showSidecars
+            ? <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+            : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />}
+        </button>
+        <button
           title="New File"
           className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent transition-colors"
           onClick={() => setCreating({ parentPath: '', type: 'file' })}
@@ -544,6 +560,7 @@ export function FileExplorer({ projectId, projectPath: _projectPath, onOpenInEdi
                 creating={creating}
                 onFinishCreate={handleFinishCreate}
                 onCancelCreate={() => setCreating(null)}
+                showSidecars={showSidecars}
               />
             ))}
           </div>

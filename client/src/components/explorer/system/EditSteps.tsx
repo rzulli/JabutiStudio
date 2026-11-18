@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, ExternalLink, FileCode2, Plus, Trash2, X } from 'lucide-react'
+import { readShowSidecars } from '@/lib/sidecarPref'
 import { api, type SystemEvidence, type SystemSummary, type SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { GROUPS, RELATION_RULES, relLabel, slug, type ThingKind } from '@/lib/relationRules'
@@ -58,7 +59,7 @@ export function FilePicker({ projectId, value, onChange, label, single, symbols,
     if (!q.trim()) { setHits([]); return }
     const t = setTimeout(() => {
       seq.current?.abort(); const ac = new AbortController(); seq.current = ac
-      api.searchFiles(q, { projectId, signal: ac.signal }).then(r => setHits(r.results.filter(x => x.type === 'file').slice(0, 8).map(x => x.path.replace(/\\/g, '/')))).catch(() => { /* aborted */ })
+      api.searchFiles(q, { projectId, includeSidecars: readShowSidecars(), signal: ac.signal }).then(r => setHits(r.results.filter(x => x.type === 'file').slice(0, 8).map(x => x.path.replace(/\\/g, '/')))).catch(() => { /* aborted */ })
     }, 150)
     return () => clearTimeout(t)
   }, [q, projectId])

@@ -7,6 +7,7 @@ import * as log from '../services/logService.js';
 import { listWorktrees } from '../services/gitService.js';
 import { isInside } from '../services/worktreeClose.js';
 import { searchFileNames, searchContent, buildMatcher, invalidateFileIndex, SEARCH_EXCLUDED_DIRS } from '../services/fileSearch.js';
+import { isSidecarFile } from '../services/sidecarFiles.js';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
 
@@ -66,6 +67,8 @@ const TEXT_EXTENSIONS = new Set([
   // Godot: all plain text (project.godot is INI-like; .tscn/.tres are section+property files)
   '.gd', '.godot', '.tscn', '.tres', '.gdshader', '.gdshaderinc', '.gdextension', '.import',
   '.lock', // package-lock, yarn.lock etc
+  // Godot UID sidecars (`foo.gd.uid`): a one-line text file holding the resource UID.
+  '.uid',
 ]);
 
 export function getMimeHint(ext: string, name: string): string {
@@ -112,17 +115,20 @@ export interface FileEntry {
   size?: number;
   extension?: string;
   mimeHint?: string;
+  /** Sidecars are listed read-only: the app previews them but never writes them. */
+  readOnly?: boolean;
 }
 
 export async function fileRoutes(app: FastifyInstance) {
   // List directory contents
-  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
+  app.get<{ Params: { projectId: string }; Querystring: { path?: string; sidecars?: string } }>(
     '/api/projects/:projectId/files/tree',
     async (request, reply) => {
       const projectPath = await getProjectPath(request.params.projectId);
       if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
 
       const relPath = request.query.path || '';
+      const showSidecars = request.query.sidecars === 'show';
       let targetPath: string;
       try {
         targetPath = validatePath(projectPath, relPath);
@@ -137,6 +143,7 @@ export async function fileRoutes(app: FastifyInstance) {
         for (const entry of entries) {
           if (IGNORE_NAMES.has(entry.name)) continue;
           if (entry.name.startsWith('.') && !isVisibleDotfile(entry.name)) continue;
+          if (!showSidecars && entry.isFile() && isSidecarFile(entry.name)) continue;
 
           const entryRelPath = relPath ? `${relPath}/${entry.name}` : entry.name;
 
@@ -157,6 +164,7 @@ export async function fileRoutes(app: FastifyInstance) {
                 size: st.size,
                 extension: ext || undefined,
                 mimeHint: getMimeHint(ext, entry.name),
+                ...(isSidecarFile(entry.name) ? { readOnly: true } : {}),
               });
             } catch {
               // Skip files we can't stat
@@ -299,6 +307,9 @@ export async function fileRoutes(app: FastifyInstance) {
       const name = targetPath.split(/[/\\]/).pop() || '';
       const mimeHint = getMimeHint(ext, name);
 
+      if (isSidecarFile(name)) {
+        return reply.status(403).send({ error: 'Godot sidecar files are read-only in the app' });
+      }
       if (mimeHint === 'application/octet-stream' || IMAGE_TYPES[ext]) {
         return reply.status(400).send({ error: 'Cannot write binary files' });
       }
@@ -322,7 +333,7 @@ export async function fileRoutes(app: FastifyInstance) {
 
   // Search files across projects by filename. `prefer` is the open project:
   // it and the rest of its client rank first.
-  app.get<{ Querystring: { q: string; projectId?: string; prefer?: string; limit?: string } }>(
+  app.get<{ Querystring: { q: string; projectId?: string; prefer?: string; limit?: string; sidecars?: string } }>(
     '/api/search/files',
     async (request) => {
       const query = (request.query.q || '').trim();
@@ -337,10 +348,12 @@ export async function fileRoutes(app: FastifyInstance) {
         ? projects.filter(p => p.id === filterProjectId)
         : projects;
 
+      // Same rule as the tree: sidecars stay out of the palettes unless shown.
       const results = await searchFileNames(targetProjects, query, {
         limit,
         preferId: request.query.prefer || filterProjectId,
         filter: { ignore: SEARCH_EXCLUDED_DIRS, isVisibleDotfile },
+        includeSidecars: request.query.sidecars === 'show',
       });
       return { results };
     }
