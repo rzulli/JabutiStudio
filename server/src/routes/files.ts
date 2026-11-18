@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { readdir, stat, readFile, writeFile, unlink, rm, rename, mkdir, copyFile } from 'fs/promises';
 import { join, resolve, extname, relative, sep, dirname, basename } from 'path';
 import { getProjects } from '../services/projectDiscovery.js';
+import { resolveForProject } from '../services/godot/context.js';
 import { openFolder } from '../services/terminalLauncher.js';
 import * as log from '../services/logService.js';
 import { listWorktrees } from '../services/gitService.js';
@@ -92,11 +93,25 @@ export function getMimeHint(ext: string, name: string): string {
   return 'application/octet-stream';
 }
 
-async function getProjectPath(projectId: string): Promise<string | null> {
+/**
+ * The folder a file request works in. No task = the project folder (unchanged). A task = that task's worktree, resolved
+ * by the Execution Context: a missing or unregistered worktree is refused, never replaced by the main checkout.
+ */
+async function resolveRoot(projectId: string, taskId?: string): Promise<{ ok: true; root: string } | { ok: false; status: number; error: string; code: string }> {
   const projects = await getProjects();
   const project = projects.find(p => p.id === projectId);
-  return project?.path || null;
+  if (!project) return { ok: false, status: 404, error: 'Project not found', code: 'project-not-found' };
+  if (!taskId) return { ok: true, root: project.path };
+  const ctx = await resolveForProject(project, { projectId, taskId, checkout: 'task', origin: 'editor', requireGodot: false });
+  if (!ctx.ok) return { ok: false, status: 409, error: ctx.message, code: ctx.code };
+  return { ok: true, root: ctx.checkoutPath };
 }
+
+/** taskId travels in the query of reads and in the body of writes. */
+const taskIdOf = (request: { query?: any; body?: any }): string | undefined => {
+  const v = request.query?.taskId ?? request.body?.taskId;
+  return typeof v === 'string' && v ? v : undefined;
+};
 
 function validatePath(projectPath: string, relPath: string): string {
   const resolved = resolve(join(projectPath, relPath));
@@ -124,8 +139,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string; sidecars?: string } }>(
     '/api/projects/:projectId/files/tree',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const relPath = request.query.path || '';
       const showSidecars = request.query.sidecars === 'show';
@@ -185,12 +201,32 @@ export async function fileRoutes(app: FastifyInstance) {
     }
   );
 
+  // Identity of the checkout a file request would use (project folder or a task's worktree): branch, commit, dirty.
+  // Same Execution Context resolver as Godot; a missing worktree is a refusal, never a silent main checkout.
+  app.get<{ Params: { projectId: string }; Querystring: { taskId?: string } }>(
+    '/api/projects/:projectId/files/checkout',
+    async (request, reply) => {
+      const projects = await getProjects();
+      const project = projects.find(p => p.id === request.params.projectId);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+      const taskId = taskIdOf(request);
+      const ctx = await resolveForProject(project, { projectId: project.id, taskId, checkout: taskId ? 'task' : 'main', origin: 'editor', requireGodot: false });
+      if (!ctx.ok) return reply.status(409).send({ error: ctx.message, code: ctx.code });
+      return {
+        projectName: ctx.projectName, isMainCheckout: ctx.isMainCheckout, checkoutPath: ctx.checkoutPath, reason: ctx.reason,
+        taskId: ctx.taskId ?? null, taskNumber: ctx.taskNumber ?? null, taskTitle: ctx.taskTitle ?? null,
+        branch: ctx.branch, head: ctx.head, detached: ctx.detached, dirty: ctx.dirty,
+      };
+    }
+  );
+
   // Read file content
   app.get<{ Params: { projectId: string }; Querystring: { path: string } }>(
     '/api/projects/:projectId/files/content',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const relPath = request.query.path;
       if (!relPath) return reply.status(400).send({ error: 'path query parameter required' });
@@ -244,8 +280,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.delete<{ Params: { projectId: string }; Querystring: { path: string } }>(
     '/api/projects/:projectId/files',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const relPath = request.query.path;
       if (!relPath) return reply.status(400).send({ error: 'path query parameter required' });
@@ -289,8 +326,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.put<{ Params: { projectId: string }; Body: { path: string; content: string } }>(
     '/api/projects/:projectId/files/content',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const { path: relPath, content } = request.body || {};
       if (!relPath) return reply.status(400).send({ error: 'path is required' });
@@ -404,8 +442,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string }; Body: { path: string; newName: string } }>(
     '/api/projects/:projectId/files/rename',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const { path: relPath, newName } = request.body || {};
       if (!relPath) return reply.status(400).send({ error: 'path is required' });
@@ -470,8 +509,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string }; Body: { parentPath?: string; name: string; type: 'file' | 'dir' } }>(
     '/api/projects/:projectId/files/create',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const { parentPath = '', name, type } = request.body || {} as any;
       if (!name || !name.trim()) return reply.status(400).send({ error: 'name is required' });
@@ -528,8 +568,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string }; Body: { sourcePath: string; destParentPath?: string; newName?: string } }>(
     '/api/projects/:projectId/files/copy',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const { sourcePath, destParentPath, newName } = request.body || {} as any;
       if (!sourcePath) return reply.status(400).send({ error: 'sourcePath is required' });
@@ -629,8 +670,9 @@ export async function fileRoutes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string }; Body: { path: string } }>(
     '/api/projects/:projectId/files/open-folder',
     async (request, reply) => {
-      const projectPath = await getProjectPath(request.params.projectId);
-      if (!projectPath) return reply.status(404).send({ error: 'Project not found' });
+      const rootRes = await resolveRoot(request.params.projectId, taskIdOf(request));
+      if (!rootRes.ok) return reply.status(rootRes.status).send({ error: rootRes.error, code: rootRes.code });
+      const projectPath = rootRes.root;
 
       const relPath = request.body.path || '';
       let targetPath: string;

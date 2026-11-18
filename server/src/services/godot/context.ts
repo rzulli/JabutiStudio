@@ -28,6 +28,8 @@ export interface ContextRequest {
   checkout?: 'main' | 'task';
   /** Project-relative path (or res://). */
   file?: string;
+  /** Files of a non-Godot project only need the checkout, not a Godot project at its root. */
+  requireGodot?: boolean;
   origin?: Origin;
 }
 
@@ -163,7 +165,7 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
     reason = 'No task selected: the project\'s main checkout.';
   }
 
-  if (!(await exists(join(checkoutPath, 'project.godot')))) {
+  if (req.requireGodot !== false && !(await exists(join(checkoutPath, 'project.godot')))) {
     return { ok: false, code: 'not-godot-project', message: `No project.godot at the root of ${checkoutPath}; this is not a Godot project checkout.` };
   }
 

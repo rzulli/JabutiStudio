@@ -21,7 +21,7 @@ export function OutcomeChip({ outcome, label }: { outcome: Outcome; label?: stri
   )
 }
 
-const when = (iso: string) => { try { return new Date(iso).toLocaleString() } catch { return iso } }
+export const when = (iso: string) => { try { return new Date(iso).toLocaleString() } catch { return iso } }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -78,7 +78,7 @@ function EvidenceViewer({ projectId, view }: { projectId: string; view: RunView 
   )
 }
 
-function RunDetail({ projectId, runId, rerunLabel, onRerun }: { projectId: string; runId: string; rerunLabel: string; onRerun: (r: RunRecord) => void }) {
+export function RunDetail({ projectId, runId, rerunLabel, onRerun }: { projectId: string; runId: string; rerunLabel: string; onRerun: (r: RunRecord) => void }) {
   const qc = useQueryClient()
   const { data: view, error } = useGodotRun(projectId, runId)
   const [cancelling, setCancelling] = useState(false)

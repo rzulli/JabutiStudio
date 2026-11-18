@@ -43,9 +43,19 @@ Rotas (`routes/godot.ts`): leitura aberta (`status`, `context`, `runs`, `runs/:i
 `components/tasks/TaskGodotReview.tsx` (Open Editor / Play Game / Run Test / View Results no Review),
 `DirectDeliveryPicker.tsx` (atribuicao de entrega direta; ver `lifecycle-worktrees.md`).
 
+## Testing (RC2)
+Aba `Testing` do Workspace (`components/testing/TestingPanel.tsx`), mesma fonte do Editor e do Review: contexto
+(`/godot/context`), runs (`/godot/runs`, sem arquivo = projeto inteiro, com `taskId` = task), recibo (`RunDetail` de
+`GodotResults.tsx`, exportado). Nada novo no servidor alem de `testScripts` no `/godot/context`: `.gd` em `tests/` que
+nenhuma cena de teste anexa (`listUnattachedTestScripts`), so como candidato, nunca executavel. "Run All" nao existe
+(o projeto nao declara suite). "Open in Editor" so no checkout principal (o Editor so le o checkout do projeto).
+Seletor de checkout proprio da aba (`shipyard:testing-checkout:<id>`), independente do da barra do Editor.
+
 ## Limitacoes
 - Cena que nao imprime o marker nao pode dar PASS (NO_ASSERTIONS/FAIL/TIMEOUT). `project.godot` precisa estar na raiz.
 - Reiniciar o servidor perde o rastreio de runs vivas (o receipt ainda e lido; senao NO_RECEIPT) e das janelas GUI.
 - Godot aberto a mao nao e visto pelo guard de instancias.
 - No dev server (Vite 5421) escritas da UI podem dar 403 por origem; use Electron/porta servida.
 - Verificacao manual Electron: ver relatorio da entrega do RC1.
+- Testing mostra so as ultimas 30 runs do projeto: "ultimo resultado" por teste sai dessa janela.
+- Explorer ainda nao oferece acoes Godot (RC2 nao integrou o Explorer).

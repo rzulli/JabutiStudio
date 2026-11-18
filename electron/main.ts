@@ -86,9 +86,12 @@ const ICON_PATH = isDev
   : resolve(process.resourcesPath, 'icon.png');
 
 // Data directory: use AppData in production, project root in dev
-const DATA_DIR = isDev
-  ? resolve(ROOT_DIR, 'data')
-  : resolve(app.getPath('userData'), 'data');
+// SHIPYARD_DATA_DIR overrides it (isolated runs and tests); SHIPYARD_DEV_PORT moves the dev backend off 5420.
+const DATA_DIR = process.env.SHIPYARD_DATA_DIR
+  ? resolve(process.env.SHIPYARD_DATA_DIR)
+  : isDev
+    ? resolve(ROOT_DIR, 'data')
+    : resolve(app.getPath('userData'), 'data');
 
 // Ensure data directory exists
 mkdirSync(DATA_DIR, { recursive: true });
@@ -97,7 +100,7 @@ mkdirSync(join(DATA_DIR, 'tasks'), { recursive: true });
 // ── Server process ─────────────────────────────────────────────────
 
 // Use different port than dev server (5420) to avoid conflicts
-const PORT = isDev ? 5420 : 5430;
+const PORT = isDev ? (Number(process.env.SHIPYARD_DEV_PORT) || 5420) : 5430;
 let serverProcess: ChildProcess | null = null;
 /** The backend this window uses: its own child process, or one that was already running (never stopped). */
 let backend: BackendHandle | null = null;
