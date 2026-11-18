@@ -11,6 +11,7 @@ import { classifyChanges, type ChangeReport } from './worktreeChanges.js';
 import { canonicalPath } from './pathIdentity.js';
 import * as log from './logService.js';
 import type { Blocker, SessionLite } from './taskLifecycle.js';
+import type { GodotProcesses } from './godot/activity.js';
 import type { Project, Task } from '../types/index.js';
 
 /**
@@ -181,6 +182,21 @@ export async function previewClose(
   // 8-10: nothing is using it.
   const holding = mode === 'worktree' ? sessionsHolding(all, task.id, wtPath) : sessionsHolding(all, task.id, null);
   add('no-sessions', holding.length === 0, holding.length === 0 ? 'No known session uses this task or folder' : `${holding.length} terminal/agent session${holding.length === 1 ? '' : 's'} still open (${holding.map(s => s.state || s.type || 'open').join(', ')}). Close the tab first`);
+  // 8b: Godot windows and Harness runs this server knows about in the folder. Running ones block (nothing is stopped
+  // here); unfinished records with no recorded exit need an explicit acknowledgement, because they are not provably over.
+  let procs: GodotProcesses | null = null;
+  if (mode === 'worktree' && wtPath) {
+    const { godotProcessesIn } = await import('./godot/activity.js');
+    procs = await godotProcessesIn(wtPath, task.projectId);
+    const n = procs.running.length;
+    add('no-processes', n === 0, n === 0
+      ? 'No Godot window or Harness run tracked by Shipyard is running in this folder. Godot opened by hand and windows started before a server restart are not tracked, so this is not proof that none is open'
+      : `${n} Godot/Harness process${n === 1 ? '' : 'es'} still running in this folder (${procs.running.map(p => p.kind).join(', ')}). Close ${n === 1 ? 'it' : 'them'} first; Shipyard does not stop processes`);
+    const u = procs.unknown.length;
+    add('process-unknown', u === 0, u === 0
+      ? 'No unfinished Harness run is recorded for this folder'
+      : `${u} Harness run${u === 1 ? '' : 's'} recorded for this folder ${u === 1 ? 'has' : 'have'} no receipt and no recorded exit: ${u === 1 ? 'it may' : 'they may'} still be running (the server may have restarted). Acknowledge to close`, true);
+  }
   if (mode === 'worktree' && exists) {
     const op = (await git.operationInProgress(wtPath!)) || (await git.operationInProgress(project.path));
     const idx = await git.isIndexLocked(wtPath!);
@@ -216,6 +232,7 @@ export async function previewClose(
   const token = sha({
     t: task.id, p: wtPath ? canonicalPath(wtPath) : null, b: branch, bh: branchHead, wh: reg?.head ?? null, a: acceptedSha, ih: integrated?.headSha ?? null,
     tn: targetName, d: changes?.digest ?? null, s: holding.map(s => [s.id, s.state]).sort(), l: !!reg?.locked, m: mode,
+    pr: procs ? [procs.running.map(p => [p.kind, p.pid ?? null, p.runId ?? null]), procs.unknown.map(p => p.runId ?? null)] : null,
   });
 
   return {
@@ -236,7 +253,7 @@ export type CloseOutcome =
 
 export async function closeTask(
   project: Project, rawTask: Task,
-  req: { expectedToken?: string; acknowledgeIgnored?: boolean; sessions?: (SessionLite & { taskId?: string })[] },
+  req: { expectedToken?: string; acknowledgeIgnored?: boolean; acknowledgeUnknownProcesses?: boolean; sessions?: (SessionLite & { taskId?: string })[] },
 ): Promise<CloseOutcome> {
   const task = await withLink(rawTask);
   const refuse = async (code: string, message: string, preview?: ClosePreview): Promise<CloseOutcome> => {
@@ -251,7 +268,17 @@ export async function closeTask(
   if (preview.token !== req.expectedToken) return refuse('state-changed', 'The worktree, branch, files or sessions changed since you reviewed them. Review again', preview);
   const hard = preview.checks.filter(c => !c.ok && !c.acknowledgeable);
   if (hard.length) return refuse('blocked', hard.map(c => c.message).join('; '), preview);
-  if (preview.needsAcknowledgement && !req.acknowledgeIgnored) return refuse('ignored-files', 'Ignored files are in the folder. Acknowledge that they are deleted with it, or keep the worktree', preview);
+  // Each acknowledgement covers only its own check: ignored files do not excuse an unknown process, nor the reverse.
+  for (const c of preview.checks) {
+    if (c.ok || !c.acknowledgeable) continue;
+    if (c.code === 'ignored-files') {
+      if (!req.acknowledgeIgnored) return refuse('ignored-files', 'Ignored files are in the folder. Acknowledge that they are deleted with it, or keep the worktree', preview);
+    } else if (c.code === 'process-unknown') {
+      if (!req.acknowledgeUnknownProcesses) return refuse('process-unknown', c.message, preview);
+    } else {
+      return refuse(c.code, c.message, preview);
+    }
+  }
 
   const cwd = project.path;
   const wtPath = preview.worktree.path;

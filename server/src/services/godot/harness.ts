@@ -104,14 +104,14 @@ export function buildRunArgs(h: HarnessLocation, s: RunSpec): string[] {
   return a;
 }
 
-export interface LiveRun { child: ReturnType<typeof spawn>; stderr: string; stdout: string; exited: boolean; exitCode: number | null; error?: string }
+export interface LiveRun { child: ReturnType<typeof spawn>; stderr: string; stdout: string; exited: boolean; exitCode: number | null; error?: string; /** Checkout the runner works in: a close must see that a run still uses it. */ projectRoot: string }
 export const live = new Map<string, LiveRun>();
 
 /** Start the runner for one run. Returns immediately; `onExit` fires with the runner's own exit facts. */
 export function startRun(d: Doctor, spec: RunSpec, onExit: (r: { exitCode: number | null; stderrTail: string; stdoutTail: string; error?: string }) => void): { pid: number | null; command: string[] } {
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...buildRunArgs(d.harness, spec)];
   const child = spawn(d.pwsh, args, { cwd: d.harness.dir, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-  const entry: LiveRun = { child, stderr: '', stdout: '', exited: false, exitCode: null };
+  const entry: LiveRun = { child, stderr: '', stdout: '', exited: false, exitCode: null, projectRoot: spec.projectRoot };
   live.set(spec.runId, entry);
   child.stdout?.on('data', x => { entry.stdout = (entry.stdout + x).slice(-20_000); });
   child.stderr?.on('data', x => { entry.stderr = (entry.stderr + x).slice(-20_000); });

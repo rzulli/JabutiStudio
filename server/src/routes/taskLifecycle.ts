@@ -12,8 +12,11 @@ import * as log from '../services/logService.js';
 async function sessionsFor(projectId: string, taskId: string): Promise<lifecycle.SessionLite[]> {
   try {
     const { listSessions } = await import('../services/terminalService.js');
+    // A session counts for the task when it is tied to it, or when it works inside the task's worktree folder
+    // (an agent started by hand there is still writing to the task's branch).
+    const wtPath = (await taskStore.getTask(projectId, taskId))?.worktreePath;
     return listSessions(projectId)
-      .filter(s => s.taskId === taskId)
+      .filter(s => s.taskId === taskId || (!!wtPath && !!s.cwd && closer.isInside(s.cwd, wtPath)))
       .map(s => ({ id: s.id, taskId: s.taskId, agent: s.agent, type: s.type, state: s.state ?? null, cwd: s.cwd, claudeSessionId: s.claudeSessionId }));
   } catch {
     return []; // terminal layer unavailable: no live sessions to report
@@ -141,13 +144,17 @@ export async function taskLifecycleRoutes(app: FastifyInstance) {
   );
 
   // Remove the worktree and, if proven integrated, the branch. UI-only; every precondition is re-read from Git.
-  app.post<{ Params: { id: string; taskId: string }; Body: { expectedToken?: string; acknowledgeIgnored?: boolean } }>(
+  app.post<{ Params: { id: string; taskId: string }; Body: { expectedToken?: string; acknowledgeIgnored?: boolean; acknowledgeUnknownProcesses?: boolean } }>(
     '/api/projects/:id/tasks/:taskId/lifecycle/close',
     async (request, reply) => {
       if (!uiOnly(request, reply)) return;
       const { project, raw } = await load(request.params.id, request.params.taskId);
       if (!project || !raw) return reply.status(404).send({ error: 'Task not found' });
-      const res = await closer.closeTask(project, raw, { expectedToken: request.body?.expectedToken, acknowledgeIgnored: request.body?.acknowledgeIgnored === true });
+      const res = await closer.closeTask(project, raw, {
+        expectedToken: request.body?.expectedToken,
+        acknowledgeIgnored: request.body?.acknowledgeIgnored === true,
+        acknowledgeUnknownProcesses: request.body?.acknowledgeUnknownProcesses === true,
+      });
       invalidateInventory(project.id);
       if (!res.ok) return reply.status(status(res.code)).send(res);
       log.info('git', `Task #${raw.number ?? raw.id} closed (${res.complete ? 'complete' : 'partial'})`, JSON.stringify(res.result), project.id);
