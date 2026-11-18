@@ -7,6 +7,7 @@ import * as log from '../services/logService.js';
 import { triggerAutoSync } from '../services/sync/syncEngine.js';
 import { buildTaskForecast } from '../services/taskForecast.js';
 import * as worktreeService from '../services/worktreeService.js';
+import * as lifecycleStore from '../services/taskLifecycleStore.js';
 
 let forecastHistoryCache: { tasks: Awaited<ReturnType<typeof taskStore.getAllTasks>>; expiresAt: number } | null = null;
 
@@ -193,11 +194,15 @@ export async function taskRoutes(app: FastifyInstance) {
   // Append a dated note to the prompt, optionally moving the task at the same
   // time. Backs the Review tab's "Needs changes" action; same shape the MCP
   // log_task_progress tool writes.
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { note: string; status?: string } }>(
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { note: string; status?: string; reviewedHeadSha?: string } }>(
     '/api/projects/:projectId/tasks/:taskId/note',
     async (request, reply) => {
       const note = (request.body?.note || '').trim();
       if (!note) return reply.status(400).send({ error: 'note is required' });
+      // The commit the reviewer looked at, when the note asks for changes. Recorded in the lifecycle history, so the next
+      // session and the Review tab can name exactly which delivery was sent back.
+      const reviewedHeadSha = request.body?.reviewedHeadSha?.trim();
+      if (reviewedHeadSha && !/^[0-9a-f]{7,40}$/i.test(reviewedHeadSha)) return reply.status(400).send({ error: 'reviewedHeadSha must be a commit id' });
 
       const existing = await taskStore.getTask(request.params.projectId, request.params.taskId);
       if (!existing) return reply.status(404).send({ error: 'Task not found' });
@@ -210,6 +215,12 @@ export async function taskRoutes(app: FastifyInstance) {
 
       const task = await taskStore.updateTask(request.params.projectId, request.params.taskId, updates);
       if (!task) return reply.status(404).send({ error: 'Task not found' });
+      if (reviewedHeadSha) {
+        // Only the history grows: acceptance, integration and the delivery itself are untouched.
+        await lifecycleStore.mutate(request.params.projectId, request.params.taskId, e => {
+          e.history.push({ at: new Date().toISOString(), event: 'changes-requested', detail: { headSha: reviewedHeadSha, note: note.slice(0, 2000) } });
+        });
+      }
       log.info('tasks', `Note added to "${task.title}"`, undefined, request.params.projectId);
       afterTaskMutation(request.params.projectId);
       return task;

@@ -137,12 +137,16 @@ export function TaskReviewPanel({ task, onDone, extraSections }: TaskReviewPanel
   const handleNeedsChanges = async () => {
     const text = reason.trim()
     if (!text) return
+    // The delivery being sent back is named in the note, so the next session knows which commit it is correcting.
+    const head = lc?.delivery.head ?? undefined
+    const delivery = head ? `\n\nDelivery sent back: ${head.slice(0, 7)} (${commits.length} commit${commits.length === 1 ? '' : 's'}).` : ''
     try {
       await addNote.mutateAsync({
         projectId: task.projectId,
         taskId: task.id,
-        note: `Needs changes: ${text}`,
+        note: `Needs changes: ${text}${delivery}`,
         status: 'in_progress',
+        reviewedHeadSha: head,
       })
       toast.success('Sent back to In Progress')
       onDone()

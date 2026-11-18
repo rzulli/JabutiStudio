@@ -63,3 +63,17 @@ test('switching off again removes the file from new sessions', async () => {
   await m.mcpConfig.saveMcpConfig({ enabled: false, requireAuth: true })
   assert.equal(await m.agentMcp.agentMcpConfigFile(), null)
 })
+
+test('the brief names the Knowledge state the agent will see, in each of the three states', async () => {
+  assert.match(m.agentMcp.knowledgePreamble(), /State: disabled/)
+  await m.mcpConfig.saveMcpConfig({ enabled: true, requireAuth: true })
+  await m.mcpAuth.registerClient('Second client', ['http://127.0.0.1:9/cb'])
+  const ready = m.agentMcp.knowledgePreamble()
+  assert.match(ready, /State: ready/)
+  assert.match(ready, /get_system/)
+  assert.doesNotMatch(ready, /State: needs/)
+})
+
+test('the brief never names a token or secret', async () => {
+  assert.doesNotMatch(m.agentMcp.knowledgePreamble(), /bearer|token|secret/i)
+})
