@@ -67,13 +67,19 @@ function LastResult({ projectId, rel, checkoutPath, head, dirty }: { projectId: 
   const movedSha = !!head && !!ranAt && head !== ranAt
   const dirtyThen = last.record.checkout.dirtyAtStart?.count ?? null
   const dirtyChanged = dirty !== null && dirtyThen !== null && dirty !== dirtyThen
+  // The same SHA is not enough to call a run reproducible: uncommitted changes make the commit alone insufficient.
+  const sameCommitLabel = (() => {
+    if (dirty === null || dirtyThen === null) return <span className="text-warning">same commit, but the uncommitted state of this checkout is unknown: not confirmed reproducible</span>
+    if (dirty > 0 || dirtyThen > 0) return <span className="text-warning">same commit, but {dirty} uncommitted change(s) now: the commit alone does not reproduce this run</span>
+    return <span className="text-muted-foreground">same commit as now</span>
+  })()
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <OutcomeChip outcome={last.verdict.outcome} label={last.verdict.headline} />
       <span className="text-muted-foreground">{when(last.record.startedAt)}</span>
       {movedSha && <span className="text-warning">ran at {shortSha(ranAt)}, checkout is now at {shortSha(head)}</span>}
       {!movedSha && dirtyChanged && <span className="text-warning">uncommitted changes differ from that run ({dirtyThen} then, {dirty} now)</span>}
-      {!movedSha && !dirtyChanged && <span className="text-muted-foreground">same commit as now</span>}
+      {!movedSha && !dirtyChanged && sameCommitLabel}
     </span>
   )
 }
@@ -206,7 +212,16 @@ export function TestingPanel({ projectId }: { projectId: string }) {
             <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
             <div className="min-w-0">
               <div className="break-words">{refusalNow.message}</div>
-              {refusalNow.options?.map(o => <button key={o.checkout} onClick={() => choose('main')} className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10">{o.label}</button>)}
+              {refusalNow.options?.map(o => (
+                <button
+                  key={o.checkout}
+                  onClick={() => { choose('main'); setRefusal({ code: 'main-selected', message: 'Now set to the MAIN checkout (project folder). Nothing has run yet: press Run Test to run there.' }) }}
+                  className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10"
+                  title="Switches the picker to the main checkout. Nothing runs until you press Run Test."
+                >
+                  Switch to the main checkout (nothing runs yet)
+                </button>
+              ))}
             </div>
           </div>
         )}
