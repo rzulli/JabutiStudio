@@ -5,18 +5,20 @@
  *
  * Three different things are kept apart on purpose:
  *   classification  — `proposed` is a design state, not a defect
- *   analysis        — the code graph is older than the files (fixed by re-analyzing)
+ *   analysis        — the code graph is older than the files, or a file lies outside what the index covers
  *   integrity       — a reference points at a file this checkout does not have (fixed by a person, never by inference)
  */
 
 export type DiagnosticCode =
   | 'proposal' | 'graph-not-built' | 'graph-stale' | 'graph-other-checkout'
-  | 'files-missing' | 'references-vanished'
+  | 'files-missing' | 'files-not-indexed' | 'files-unverifiable' | 'references-vanished'
 
 export type RefState =
-  | 'absent'                 // not in this checkout, and the graph never knew it
-  | 'absent-since-analysis'  // not in this checkout, but the graph still lists it: the analysis predates the deletion
-  | 'other-checkout'         // not in this worktree, but present in the project checkout
+  | 'absent'                 // not on disk in this checkout, and the graph never knew it
+  | 'absent-since-analysis'  // not on disk in this checkout, but the graph still lists it: the analysis predates the deletion
+  | 'other-checkout'         // not on disk in this worktree, but present in the project checkout
+  | 'not-indexed'            // on disk here; only outside the catalog's Godot file index (e.g. a .md)
+  | 'unknown'                // could not be checked (not a relative path inside the checkout, or unreadable)
 
 export interface DiagnosticRef { path: string; source: string; state: RefState }
 
@@ -25,7 +27,7 @@ export interface DiagnosticAction {
   kind: ActionKind
   label: string
   available: boolean
-  /** Why nothing can be done from here (set exactly when `available` is false). */
+  /** Why nothing can be done from here (set when `available` is false). */
   blockedReason?: string
 }
 
@@ -49,15 +51,26 @@ export interface Diagnostic {
 export type AnalysisState = 'not-built' | 'current' | 'stale' | 'other-checkout'
 export interface AnalysisSummary { state: AnalysisState; label: string; builtAt?: number; describes: string }
 
+export interface UnresolvedRef {
+  path: string
+  source: string
+  /** probed on disk in the examined checkout, not looked up in the Godot-only file index */
+  physical: 'present' | 'absent' | 'unknown'
+  /** why it could not be checked, when physical is 'unknown' */
+  note?: string
+  /** physically present in the project checkout (only probed when examining a worktree) */
+  inProjectCheckout: boolean
+  graphKnows: boolean
+}
+
 export interface DiagnosticsInput {
   status: 'proposed' | 'confirmed' | 'dismissed' | 'merged'
   origin: 'discovery' | 'agent' | 'user'
   checkout: { isCanonical: boolean; branch?: string; head?: string }
   graph: { built: boolean; builtAt?: number; installed: boolean; building: boolean }
   changedMembers: string[]
-  unresolved: { path: string; source: string; inProjectCheckout: boolean; graphKnows: boolean }[]
+  unresolved: UnresolvedRef[]
   vanished: { key: string; since: string }[]
-  pendingSuggestions?: number
 }
 
 const where = (c: DiagnosticsInput['checkout']) =>
@@ -65,6 +78,7 @@ const where = (c: DiagnosticsInput['checkout']) =>
 const when = (ms?: number) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'an unknown time')
 const list = (xs: string[], n = 5) => xs.slice(0, n).join(', ') + (xs.length > n ? ` +${xs.length - n} more` : '')
 const base = (p: string) => p.slice(p.lastIndexOf('/') + 1)
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 
 export const ANALYSIS_DESCRIBES = 'the project checkout'
 
@@ -81,6 +95,14 @@ export function summarizeAnalysis(i: Pick<DiagnosticsInput, 'checkout' | 'graph'
   if (!i.checkout.isCanonical) return { state: 'other-checkout', label: 'code graph: describes the project checkout', builtAt: i.graph.builtAt, describes: ANALYSIS_DESCRIBES }
   if (i.changedMembers.length) return { state: 'stale', label: `code graph: ${i.changedMembers.length} file${i.changedMembers.length > 1 ? 's' : ''} changed since analysis`, builtAt: i.graph.builtAt, describes: ANALYSIS_DESCRIBES }
   return { state: 'current', label: 'code graph: current', builtAt: i.graph.builtAt, describes: ANALYSIS_DESCRIBES }
+}
+
+/** One reference, classified from a disk probe. Never proposes a replacement path. */
+export function classifyRef(u: UnresolvedRef, isCanonical: boolean): RefState {
+  if (u.physical === 'unknown') return 'unknown'
+  if (u.physical === 'present') return 'not-indexed'
+  if (!isCanonical && u.inProjectCheckout) return 'other-checkout'
+  return u.graphKnows ? 'absent-since-analysis' : 'absent'
 }
 
 export function buildDiagnostics(i: DiagnosticsInput): Diagnostic[] {
@@ -135,35 +157,60 @@ export function buildDiagnostics(i: DiagnosticsInput): Diagnostic[] {
     })
   }
 
-  // ---- integrity: references this checkout cannot resolve ----------------------------------------------------
-  if (i.unresolved.length) {
-    const refs: DiagnosticRef[] = i.unresolved.map(u => ({
-      path: u.path, source: u.source,
-      state: !i.checkout.isCanonical && u.inProjectCheckout ? 'other-checkout' : u.graphKnows ? 'absent-since-analysis' : 'absent',
-    }))
-    const n = (s: RefState) => refs.filter(r => r.state === s).length
+  // ---- references the file index could not resolve: each one is probed on disk, never guessed ----------------
+  const refs: DiagnosticRef[] = i.unresolved.map(u => ({ path: u.path, source: u.source, state: classifyRef(u, i.checkout.isCanonical) }))
+  const of = (...st: RefState[]) => refs.filter(r => st.includes(r.state))
+  const count = (s: RefState) => of(s).length
+  const missing = of('absent', 'absent-since-analysis', 'other-checkout')
+
+  if (missing.length) {
     const parts: string[] = []
-    if (n('absent')) parts.push(`${n('absent')} not in ${here} and unknown to the graph (deleted or never created)`)
-    if (n('absent-since-analysis')) parts.push(`${n('absent-since-analysis')} not in ${here} but still listed by an older analysis`)
-    if (n('other-checkout')) parts.push(`${n('other-checkout')} not in ${here} but present in the project checkout (this worktree's branch does not have them)`)
-    const onlyOther = n('other-checkout') === refs.length
+    if (count('absent')) parts.push(`${count('absent')} not on disk in ${here} and unknown to the graph (deleted or never created)`)
+    if (count('absent-since-analysis')) parts.push(`${count('absent-since-analysis')} not on disk in ${here} but still listed by an older analysis`)
+    if (count('other-checkout')) parts.push(`${count('other-checkout')} not on disk in ${here} but present in the project checkout (this worktree's branch does not have them)`)
     out.push({
       code: 'files-missing', kind: 'integrity', severity: 'warning',
-      title: `${refs.length} referenced file${refs.length > 1 ? 's' : ''} not found`,
-      meaning: 'A file this system points to cannot be found, even allowing for renames and a unique file of the same name.',
+      title: `${missing.length} referenced ${plural(missing.length, 'file', 'files')} not found`,
+      meaning: 'A file this system points to is not on disk, even allowing for renames and a unique file of the same name.',
       cause: `${parts.join('; ')}.`,
       effect: 'Those files are not counted as members, and evidence that depends on them cannot be verified here. The system itself is unchanged.',
-      action: onlyOther
-        ? { kind: 'none', label: 'No action', available: false, blockedReason: 'The references are correct in the project checkout. Integrate or rebase this worktree\'s branch, or switch to the project checkout; editing the system would break them there.' }
+      action: count('other-checkout') === missing.length
+        ? { kind: 'none', label: 'No action', available: false, blockedReason: "The references are correct in the project checkout. Integrate or rebase this worktree's branch, or switch to the project checkout; editing the system would break them there." }
         : { kind: 'edit-members', label: 'Fix references…', available: true },
-      refs, altersDesign: false,
+      refs: missing, altersDesign: false,
+    })
+  }
+
+  if (count('not-indexed')) {
+    const n = count('not-indexed')
+    out.push({
+      code: 'files-not-indexed', kind: 'analysis', severity: 'info',
+      title: `${n} referenced ${plural(n, 'file', 'files')} outside the code index`,
+      meaning: 'The file exists. The catalog and Graphify only index Godot project files (scripts, scenes, resources), so a document or asset like this is not listed as a member and has no symbols.',
+      cause: `${n} anchored ${plural(n, 'file is', 'files are')} present on disk in ${here} but absent from the catalog's file index (not a Godot file type, or ignored by Git).`,
+      effect: 'The reference is valid and stays on the system. It is just not shown among members or in the code graph.',
+      action: { kind: 'none', label: 'No action', available: false, blockedReason: 'Nothing is wrong; no fix is needed.' },
+      refs: of('not-indexed'), altersDesign: false,
+    })
+  }
+
+  if (count('unknown')) {
+    const n = count('unknown')
+    out.push({
+      code: 'files-unverifiable', kind: 'integrity', severity: 'warning',
+      title: `${n} ${plural(n, 'reference', 'references')} could not be checked`,
+      meaning: 'The catalog could not tell whether these files exist.',
+      cause: `${i.unresolved.filter(u => u.physical === 'unknown').map(u => `${u.path}: ${u.note ?? 'unreadable'}`).join('; ')}.`,
+      effect: 'Their state is unknown, so they are neither counted as members nor reported as deleted.',
+      action: { kind: 'edit-members', label: 'Review references…', available: true },
+      refs: of('unknown'), altersDesign: false,
     })
   }
 
   if (i.vanished.length) {
     out.push({
       code: 'references-vanished', kind: 'integrity', severity: 'warning',
-      title: `${i.vanished.length} reference${i.vanished.length > 1 ? 's' : ''} disappeared`,
+      title: `${i.vanished.length} ${plural(i.vanished.length, 'reference', 'references')} disappeared`,
       meaning: 'Files or symbols this system used to include are gone from the project checkout.',
       cause: `Seen earlier, no longer present: ${list(i.vanished.map(v => v.key.replace(/^(file|sym):/, '')), 6)}.`,
       effect: 'Nothing is lost from the design. This is a record of what changed in the code.',

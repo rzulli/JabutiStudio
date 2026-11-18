@@ -319,7 +319,7 @@ function SystemDetail({ v, projectId, allSystems, onOpen, onGraph, onAsk, onChan
   const m = v.maintenance
   // Analysis staleness and broken references are different problems with different fixes: shown separately.
   const stale = m.analysis.state === 'stale'
-  const integrity = m.unresolvedAnchors.length + m.vanished.length > 0
+  const integrity = m.diagnostics.some(d => d.kind === 'integrity')
   const conflicts = v.comparisons.length
   return (
     <div className="mx-auto max-w-4xl space-y-3 p-4">

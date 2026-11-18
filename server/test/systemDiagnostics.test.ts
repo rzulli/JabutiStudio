@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { buildDiagnostics, summarizeAnalysis, reanalyzeBlock, type DiagnosticsInput } from '../src/services/systemDiagnostics.js'
+import { buildDiagnostics, summarizeAnalysis, reanalyzeBlock, classifyRef, type DiagnosticsInput } from '../src/services/systemDiagnostics.js'
 
 const base = (over: Partial<DiagnosticsInput> = {}): DiagnosticsInput => ({
   status: 'confirmed', origin: 'user',
@@ -49,8 +49,8 @@ test('a stale graph names the analysis time, the checkout it describes and the c
 test('missing files: each reference keeps its path and origin, and the three situations are told apart', () => {
   const ds = buildDiagnostics(base({
     unresolved: [
-      { path: 'a/Gone.gd', source: 'system anchor', inProjectCheckout: false, graphKnows: false },
-      { path: 'a/Listed.gd', source: 'area "Storage"', inProjectCheckout: false, graphKnows: true },
+      { path: 'a/Gone.gd', source: 'system anchor', physical: 'absent', inProjectCheckout: false, graphKnows: false },
+      { path: 'a/Listed.gd', source: 'area "Storage"', physical: 'absent', inProjectCheckout: false, graphKnows: true },
     ],
   }))
   const d = ds.find(x => x.code === 'files-missing')!
@@ -66,7 +66,7 @@ test('in a worktree, a file that only the project checkout has is a checkout mis
   const [d] = buildDiagnostics(base({
     checkout: { isCanonical: false, branch: 'task-1', head: 'def5678' },
     graph: { built: false, installed: true, building: false },
-    unresolved: [{ path: 'scripts/Silo.gd', source: 'system anchor', inProjectCheckout: true, graphKnows: false }],
+    unresolved: [{ path: 'scripts/Silo.gd', source: 'system anchor', physical: 'absent', inProjectCheckout: true, graphKnows: false }],
   })).filter(x => x.code === 'files-missing')
   assert.equal(d.refs[0].state, 'other-checkout')
   assert.match(d.cause, /task-1@def5678/)
@@ -93,7 +93,7 @@ test('an unavailable action always says why: worktree, not installed, already ru
 test('every diagnostic is read-only: none claims to alter design, and the available-or-blocked contract holds', () => {
   const all = buildDiagnostics(base({
     status: 'proposed', changedMembers: ['x.gd'], vanished: [{ key: 'file:old.gd', since: 'now' }],
-    unresolved: [{ path: 'm.gd', source: 'system anchor', inProjectCheckout: false, graphKnows: false }],
+    unresolved: [{ path: 'm.gd', source: 'system anchor', physical: 'absent', inProjectCheckout: false, graphKnows: false }],
   }))
   assert.deepEqual(all.map(d => d.code).sort(), ['files-missing', 'graph-stale', 'proposal', 'references-vanished'])
   for (const d of all) {
@@ -231,4 +231,72 @@ test('D6: only the UI can confirm; no diagnostic, read or catalog row does it', 
   assert.equal(denied.statusCode, 403)
   const cat = (await app.inject({ method: 'GET', url: '/api/projects/game/systems' })).json()
   assert.equal(cat.systems.find((s: any) => s.id === 'sys-grain').status, 'proposed')
+})
+
+// ---- reference classification: probed on disk, not looked up in the Godot-only index ---------------------------
+
+test('classifyRef: the five situations are told apart and no replacement path is ever produced', () => {
+  const u = (o: Partial<import('../src/services/systemDiagnostics.js').UnresolvedRef>) =>
+    ({ path: 'docs/x.md', source: 'system anchor', physical: 'absent' as const, inProjectCheckout: false, graphKnows: false, ...o })
+  assert.equal(classifyRef(u({}), true), 'absent')
+  assert.equal(classifyRef(u({ graphKnows: true }), true), 'absent-since-analysis')
+  assert.equal(classifyRef(u({ physical: 'present' }), true), 'not-indexed')
+  assert.equal(classifyRef(u({ physical: 'unknown' }), true), 'unknown')
+  assert.equal(classifyRef(u({ inProjectCheckout: true }), false), 'other-checkout')
+  assert.equal(classifyRef(u({ inProjectCheckout: true }), true), 'absent', 'in the project checkout itself there is no "other" checkout')
+  const ds = buildDiagnostics(base({
+    unresolved: [u({ physical: 'present' }), u({ path: '../x.md', physical: 'unknown', note: 'not a relative path inside the checkout' })],
+  }))
+  assert.deepEqual(ds.map(d => d.code), ['files-not-indexed', 'files-unverifiable'])
+  assert.equal(ds[0].severity, 'info')
+  assert.match(ds[0].meaning, /exists/)
+  assert.equal(ds[0].action.kind, 'none')
+  assert.match(ds[1].cause, /\.\.\/x\.md: not a relative path/)
+  assert.equal(JSON.stringify(ds).includes('suggest'), false)
+})
+
+test('D7: an existing .md anchor is not "missing"; a physically absent one is; odd paths are "could not be checked"', async () => {
+  put(proj, 'docs/design/CONCEPT.md', '# Concept\n')
+  git(proj, 'add', '-A'); git(proj, 'commit', '-qm', 'concept doc')
+  const anchors = ['docs/design/CONCEPT.md', 'docs/design/GONE.md', '../outside.md', 'C:/Windows/win.ini']
+  const res = await app.inject({ method: 'PATCH', url: '/api/projects/game/systems/sys-grain', headers: UI, payload: { anchors: { files: anchors } } })
+  assert.equal(res.statusCode, 200)
+  const stored = await svc.getStored('game', 'sys-grain')
+  assert.deepEqual([...stored!.anchors.files].sort(), [...anchors].sort(), 'the test needs the anchors to be stored as written')
+  svc.resetCaches()
+  const v = await view()
+  const by = (code: string) => v.maintenance.diagnostics.find((x: any) => x.code === code)
+  const state = (d: any) => Object.fromEntries(d.refs.map((r: any) => [r.path, r.state]))
+  assert.deepEqual(state(by('files-not-indexed')), { 'docs/design/CONCEPT.md': 'not-indexed' })
+  assert.deepEqual(state(by('files-missing')), { 'docs/design/GONE.md': 'absent' })
+  assert.deepEqual(state(by('files-unverifiable')), { '../outside.md': 'unknown', 'C:/Windows/win.ini': 'unknown' })
+  assert.deepEqual(v.maintenance.unresolvedAnchors.map((a: any) => a.path), ['docs/design/GONE.md'], 'only a really absent file counts as missing')
+  const cat = (await app.inject({ method: 'GET', url: '/api/projects/game/systems' })).json()
+  assert.ok(cat.systems.find((s: any) => s.id === 'sys-grain').flags.includes('missing files'), 'GONE.md is genuinely missing')
+  assert.equal(v.limitations.some((l: string) => /not on disk/.test(l)), true)
+  // remove the genuinely absent / odd anchors: the existing .md alone raises no "missing files" at all
+  await app.inject({ method: 'PATCH', url: '/api/projects/game/systems/sys-grain', headers: UI, payload: { anchors: { files: ['docs/design/CONCEPT.md'] } } })
+  svc.resetCaches()
+  const ok = await view()
+  assert.equal(ok.maintenance.diagnostics.some((x: any) => x.code === 'files-missing'), false)
+  assert.deepEqual(ok.maintenance.unresolvedAnchors, [])
+  const cat2 = (await app.inject({ method: 'GET', url: '/api/projects/game/systems' })).json()
+  assert.equal(cat2.systems.find((s: any) => s.id === 'sys-grain').flags.includes('missing files'), false)
+  assert.deepEqual((await svc.getStored('game', 'sys-grain'))!.anchors.files, ['docs/design/CONCEPT.md'], 'the anchor is never rewritten')
+})
+
+test('D8: a .md present only in the project checkout is "other-checkout" from a worktree; present in the worktree it is only "not-indexed"', async () => {
+  put(proj, 'docs/design/ONLY_MAIN.md', '# only here\n')
+  git(proj, 'add', '-A'); git(proj, 'commit', '-qm', 'only main')
+  await app.inject({ method: 'PATCH', url: '/api/projects/game/systems/sys-grain', headers: UI, payload: { anchors: { files: ['docs/design/ONLY_MAIN.md'] } } })
+  svc.resetCaches()
+  const w = await view(`?worktree=${encodeURIComponent(wt)}`)
+  const d = w.maintenance.diagnostics.find((x: any) => x.code === 'files-missing')
+  assert.deepEqual(d.refs.map((r: any) => [r.path, r.state]), [['docs/design/ONLY_MAIN.md', 'other-checkout']])
+  assert.match(d.cause, /task-1@/)
+  put(wt, 'docs/design/ONLY_MAIN.md', '# also here now\n')
+  svc.resetCaches()
+  const w2 = await view(`?worktree=${encodeURIComponent(wt)}`)
+  assert.equal(w2.maintenance.diagnostics.some((x: any) => x.code === 'files-missing'), false)
+  assert.equal(w2.maintenance.diagnostics.find((x: any) => x.code === 'files-not-indexed').refs[0].state, 'not-indexed')
 })

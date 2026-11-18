@@ -658,9 +658,9 @@ export interface SystemDecision {
   evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[]
   files: string[]; tests: string[]
 }
-export type SystemDiagnosticRef = { path: string; source: string; state: 'absent' | 'absent-since-analysis' | 'other-checkout' }
+export type SystemDiagnosticRef = { path: string; source: string; state: 'absent' | 'absent-since-analysis' | 'other-checkout' | 'not-indexed' | 'unknown' }
 export interface SystemDiagnostic {
-  code: 'proposal' | 'graph-not-built' | 'graph-stale' | 'graph-other-checkout' | 'files-missing' | 'references-vanished'
+  code: 'proposal' | 'graph-not-built' | 'graph-stale' | 'graph-other-checkout' | 'files-missing' | 'files-not-indexed' | 'files-unverifiable' | 'references-vanished'
   kind: 'classification' | 'analysis' | 'integrity'; severity: 'info' | 'warning'
   title: string; meaning: string; cause: string; effect: string
   action: { kind: 'review' | 'reanalyze' | 'edit-members' | 'acknowledge' | 'none'; label: string; available: boolean; blockedReason?: string }

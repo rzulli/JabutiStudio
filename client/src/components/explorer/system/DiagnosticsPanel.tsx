@@ -6,9 +6,11 @@ import { api, type SystemDiagnostic, type SystemView } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const REF_STATE: Record<SystemDiagnostic['refs'][number]['state'], string> = {
-  absent: 'not in this checkout; unknown to the graph',
-  'absent-since-analysis': 'not in this checkout; an older analysis still lists it',
-  'other-checkout': 'present in the project checkout only',
+  absent: 'not on disk in this checkout; unknown to the graph',
+  'absent-since-analysis': 'not on disk in this checkout; an older analysis still lists it',
+  'other-checkout': 'not on disk here; present in the project checkout',
+  'not-indexed': 'exists on disk; outside the Godot file index',
+  unknown: 'could not be checked',
 }
 
 /**
