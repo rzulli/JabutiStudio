@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { MCP_TOOLS, handleToolCall } from '../services/mcpServer.js';
 import * as mcpAuth from '../services/mcpAuth.js';
 import { getMcpConfig, loadMcpConfig, saveMcpConfig } from '../services/mcpConfig.js';
-import { knowledgeState, mcpEndpoint } from '../services/agentMcp.js';
+import { knowledgeState, knowledgeDiagnosis, probeKnowledgeEndpoint, codexLoginCommand, mcpEndpoint } from '../services/agentMcp.js';
 import * as log from '../services/logService.js';
 
 // JSON-RPC helpers
@@ -31,6 +31,9 @@ export async function mcpRoutes(app: FastifyInstance) {
       enabled: getMcpConfig().enabled,
       requireAuth: getMcpConfig().requireAuth,
       state: knowledgeState(),
+      diagnosis: { claude: knowledgeDiagnosis('claude'), codex: knowledgeDiagnosis('codex') },
+      codexLoginCommand: codexLoginCommand(),
+      endpointProbe: await probeKnowledgeEndpoint(),
       endpoint: mcpEndpoint(),
       clients: mcpAuth.listClients().map(c => ({
         clientId: c.clientId,

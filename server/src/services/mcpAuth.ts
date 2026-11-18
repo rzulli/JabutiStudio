@@ -87,6 +87,16 @@ export function listClients(): OAuthClient[] {
   return authData.clients;
 }
 
+/**
+ * Clients that were actually approved: they hold a refresh token that has not expired. Registering a client (RFC 7591)
+ * happens before the person sees the consent page, so a registered client alone proves nothing.
+ */
+export function listAuthorizedClients(): OAuthClient[] {
+  const now = Date.now();
+  const live = new Set(authData.refreshTokens.filter(t => t.expiresAt > now).map(t => t.clientId));
+  return authData.clients.filter(c => live.has(c.clientId));
+}
+
 export async function revokeClient(clientId: string): Promise<boolean> {
   const idx = authData.clients.findIndex(c => c.clientId === clientId);
   if (idx === -1) return false;

@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { resolveAgent, buildAgentLaunch, quote, runOptionArgs, DEFAULT_AGENT_ID, type AgentRunOptions } from './agentRegistry.js';
-import { agentMcpConfigFile, knowledgePreamble, knowledgeState, mcpEndpoint, MCP_SERVER_NAME } from './agentMcp.js';
+import { agentMcpConfigFile, knowledgePreamble, probeKnowledgeEndpoint, knowledgeState, mcpEndpoint, MCP_SERVER_NAME } from './agentMcp.js';
 import { aiTitlesEnabled, cleanTerminalOutput, summarizeTerminal } from './terminalSummary.js';
 import { endsWithQuestion, removeHookSettings, writeHookSettings } from './claudeHooks.js';
 import { trackConversation } from './claudeConversations.js';
@@ -129,7 +129,7 @@ export function usesBareClaudeTab(type: string, agentId?: string, prompt?: strin
  * `--mcp-config` for a Claude session: the Knowledge tools, while the MCP server is on. Kept last on the command line
  * because the flag takes a list of files, and it would swallow what follows it.
  */
-async function claudeMcpArgs(): Promise<string> {
+export async function claudeMcpArgs(): Promise<string> {
   const file = await agentMcpConfigFile();
   return file ? `--mcp-config ${quote(file)}` : '';
 }
@@ -140,7 +140,7 @@ async function claudeMcpArgs(): Promise<string> {
  * raw string, so the bare URL needs no inner quotes. Only the endpoint goes here; the OAuth approval stays with the user
  * (`codex mcp login shipyard`), never on the command line.
  */
-function codexMcpArgs(): string {
+export function codexMcpArgs(): string {
   if (knowledgeState() === 'disabled') return '';
   return `-c mcp_servers.${MCP_SERVER_NAME}.url=${mcpEndpoint()}`;
 }
@@ -263,7 +263,8 @@ export async function createSession(
       ...(agent.id === 'codex' ? [codexMcpArgs()] : []),
     ].filter(Boolean).join(' ');
     // The Knowledge state goes at the top of the brief, so the agent knows what it can call before it starts.
-    brief = resume || !prompt ? undefined : knowledgePreamble() + prompt;
+    const knowledgeAgent = runsClaude ? 'claude' : agent.id === 'codex' ? 'codex' : undefined;
+    brief = resume || !prompt ? undefined : knowledgePreamble(knowledgeAgent, await probeKnowledgeEndpoint()) + prompt;
     const launch = await buildAgentLaunch(agent, { cwd: workdir, prompt: brief, extraArgs });
     initialCommand = launch.command;
     injectPrompt = launch.injectsPrompt;
