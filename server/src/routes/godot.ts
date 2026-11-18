@@ -54,9 +54,10 @@ export async function godotRoutes(app: FastifyInstance) {
     const ctx = await resolveForProject(p, { projectId: p.id, ...asSel(request.query) });
     if (!ctx.ok) return { context: ctx };
     const sessions = await sessionsIn(ctx.checkoutPath);
+    const tests = await runs.listTestScenes(ctx.checkoutPath);
     return {
       context: ctx, classification: ctx.file ? await classify(ctx.checkoutPath, ctx.file.rel) : null,
-      mainScene: await runs.mainScene(ctx.checkoutPath), tests: await runs.listTestScenes(ctx.checkoutPath), sessions, warnings: sessionWarnings(sessions, ctx.taskId),
+      mainScene: await runs.mainScene(ctx.checkoutPath), tests, testScripts: await runs.listUnattachedTestScripts(ctx.checkoutPath, tests), sessions, warnings: sessionWarnings(sessions, ctx.taskId),
     };
   });
 

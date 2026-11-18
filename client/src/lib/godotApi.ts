@@ -87,7 +87,7 @@ const qs = (s: Record<string, string | undefined>) => {
 export const godotApi = {
   status: (projectId: string) => call<GodotStatus>(`/projects/${projectId}/godot/status`),
   context: (projectId: string, s: GodotSelection) =>
-    call<{ context: GodotContext | GodotRefusal; classification?: GodotClassification | null; mainScene?: string | null; tests?: string[]; sessions?: SessionInCheckout[]; warnings?: string[] }>(`/projects/${projectId}/godot/context${qs({ ...s })}`),
+    call<{ context: GodotContext | GodotRefusal; classification?: GodotClassification | null; mainScene?: string | null; tests?: string[]; testScripts?: string[]; sessions?: SessionInCheckout[]; warnings?: string[] }>(`/projects/${projectId}/godot/context${qs({ ...s })}`),
   open: (projectId: string, s: GodotSelection) =>
     call<LaunchResult>(`/projects/${projectId}/godot/open`, { method: 'POST', body: JSON.stringify(s) }),
   play: (projectId: string, s: GodotSelection) =>

@@ -109,6 +109,9 @@ export function GodotActions({ projectId, file }: Props) {
           <button onClick={() => { setFocusRun(null); setResultsOpen(true) }} className="flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground" title="Runs of this file">
             <ListChecks className="h-3.5 w-3.5" />Results{latest && <OutcomeChip outcome={latest.verdict.outcome} label={runs.length > 1 ? `${runs.length}` : latest.verdict.headline} />}
           </button>
+          <button onClick={() => window.dispatchEvent(new CustomEvent('shipyard:workspace-mode', { detail: { mode: 'testing' } }))} className="flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground" title="Open the Testing workspace: every Godot run of this project, with its context">
+            <FlaskConical className="h-3.5 w-3.5" />Testing
+          </button>
         </div>
       </div>
 

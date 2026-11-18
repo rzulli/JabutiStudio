@@ -6,7 +6,7 @@ import { writeJsonAtomic } from '../atomicJson.js';
 import { getProjects } from '../projectDiscovery.js';
 import * as log from '../logService.js';
 import { resolveForProject, sameCheckout, type ContextRequest, type ExecutionContext, type Refusal } from './context.js';
-import { classify, isVerifiedRelated, DEFAULT_MARKER } from './classify.js';
+import { classify, isVerifiedRelated, scriptsOfScene, DEFAULT_MARKER } from './classify.js';
 import * as harness from './harness.js';
 import { runningInstance, rememberInstance, sessionsIn, sessionWarnings, type GuiKind, type SessionInCheckout } from './instances.js';
 
@@ -167,6 +167,30 @@ export async function listTestScenes(checkoutPath: string): Promise<string[]> {
       const r = `${rel}/${e.name}`;
       if (e.isDirectory()) { if (e.name !== '.godot' && e.name !== 'addons') await walk(r, depth + 1); }
       else if (e.isFile() && e.name.endsWith('.tscn')) out.push(r);
+    }
+  };
+  await walk('tests', 0);
+  return out.sort();
+}
+
+/**
+ * Scripts under tests/ that no test scene under tests/ attaches. They are candidates for a human to look at, never
+ * runnable: a .gd is not a Harness target, and nothing proves which scene (if any) would exercise it.
+ */
+export async function listUnattachedTestScripts(checkoutPath: string, testScenes: string[]): Promise<string[]> {
+  const attached = new Set<string>();
+  for (const scene of testScenes) {
+    try { for (const s of scriptsOfScene(await readFile(join(checkoutPath, scene), 'utf-8'))) attached.add(s); } catch { /* unreadable scene: nothing attached */ }
+  }
+  const out: string[] = [];
+  const walk = async (rel: string, depth: number) => {
+    if (depth > 4 || out.length >= 100) return;
+    let entries;
+    try { entries = await readdir(join(checkoutPath, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = `${rel}/${e.name}`;
+      if (e.isDirectory()) { if (e.name !== '.godot' && e.name !== 'addons') await walk(r, depth + 1); }
+      else if (e.isFile() && e.name.endsWith('.gd') && !attached.has(r)) out.push(r);
     }
   };
   await walk('tests', 0);
