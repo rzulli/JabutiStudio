@@ -353,28 +353,37 @@ export async function listWorktrees(): Promise<WorktreeInfo[]> {
 export interface CleanupResult {
   /** Always 0: nothing is removed by a sweep any more. */
   removed: number;
-  /** Stale git records (folder already gone) pruned. */
+  /** Projects whose stale git records (folder gone, no task behind them) were pruned. */
   pruned: number;
+  /** Worktree paths whose folder is missing but still recorded by a task: their git record was kept on purpose. */
+  kept: string[];
 }
 
 /**
  * The legacy sweep deleted worktrees by age or on request, with force, without
  * asking Git whether the work was integrated. It is gone (R2-A3). All that is
  * left is `git worktree prune`, which only forgets records of folders that no
- * longer exist. Removing a worktree is the safe close: `worktreeClose.closeTask`.
+ * longer exist, and never one a task still records: a folder that was only moved
+ * or is temporarily absent keeps its record, so it can be restored with its
+ * history. Removing a worktree is the safe close: `worktreeClose.closeTask`.
  */
 export async function cleanupWorktrees(): Promise<CleanupResult> {
   const [tasks, projects] = await Promise.all([taskStore.getAllTasks(), getProjects()]);
   const byId = new Map(projects.map(p => [p.id, p]));
   const touched = new Set(tasks.filter(t => t.worktreePath).map(t => t.projectId));
   let pruned = 0;
+  const kept: string[] = [];
   await Promise.all(
     [...touched].map(async id => {
       const project = byId.get(id);
-      if (project?.isGitRepo) { await gitService.pruneWorktrees(project.path); pruned++; }
+      if (!project?.isGitRepo) return;
+      const keep = tasks.filter(t => t.projectId === id && t.worktreePath).map(t => t.worktreePath!);
+      const res = await gitService.pruneWorktrees(project.path, keep);
+      if (res.pruned) pruned++;
+      kept.push(...res.kept);
     }),
   );
-  return { removed: 0, pruned };
+  return { removed: 0, pruned, kept };
 }
 
 // -- Scheduled sweep ------------------------------------------------------

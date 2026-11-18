@@ -1,6 +1,6 @@
 import { simpleGit, SimpleGit, StatusResult, LogResult } from 'simple-git';
 import path from 'path';
-import { promises as fsp } from 'fs';
+import { promises as fsp, realpathSync } from 'fs';
 import { execFile } from 'child_process';
 
 // Cache SimpleGit instances per resolved path so that all operations on the
@@ -449,13 +449,46 @@ export async function listWorktrees(projectPath: string): Promise<WorktreeEntry[
   return entries;
 }
 
-/** Drop worktree records whose directory no longer exists. */
-export async function pruneWorktrees(projectPath: string): Promise<void> {
+export interface PruneResult {
+  /** `git worktree prune` ran. */
+  pruned: boolean;
+  /** Paths of records that were missing but still belong to a task: the prune was skipped to keep them. */
+  kept: string[];
+}
+
+/**
+ * Drop worktree records whose directory no longer exists. `keep` lists worktree paths that a task still
+ * records. Git prunes every missing record at once, so if any of them is in `keep` the whole prune is skipped:
+ * the record is what lets a moved folder be restored with its history and link intact. Orphan records (no task
+ * behind them) are still pruned when nothing is kept.
+ */
+/** Same folder under one spelling: real parent directory (resolves 8.3 short names) + basename, lowercased on Windows. */
+function pathKey(p: string): string {
+  const abs = path.resolve(p);
+  let real = abs;
+  try { real = path.join(realpathSync.native(path.dirname(abs)), path.basename(abs)); } catch { /* parent missing */ }
+  return real.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export async function pruneWorktrees(projectPath: string, keep: string[] = []): Promise<PruneResult> {
   const git = getGit(projectPath);
+  if (keep.length) {
+    const wanted = new Set(keep.map(pathKey));
+    const kept: string[] = [];
+    for (const entry of await listWorktrees(projectPath)) {
+      const key = pathKey(entry.path);
+      if (!wanted.has(key)) continue;
+      const missing = entry.prunable || !(await fsp.stat(entry.path).then(s => s.isDirectory(), () => false));
+      if (missing) kept.push(entry.path);
+    }
+    if (kept.length) return { pruned: false, kept };
+  }
   try {
     await git.raw(['worktree', 'prune']);
+    return { pruned: true, kept: [] };
   } catch {
     // Not a repo, or nothing to prune — either way there is nothing to do.
+    return { pruned: false, kept: [] };
   }
 }
 
