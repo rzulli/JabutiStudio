@@ -837,8 +837,8 @@ export const api = {
     request<any>(`/projects/${projectId}/tasks/forecast${milestoneId ? `?milestone=${encodeURIComponent(milestoneId)}` : ''}`),
   createTask: (projectId: string, data: any) => request(`/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(data) }),
   updateTask: (projectId: string, taskId: string, data: any) => request(`/projects/${projectId}/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(data) }),
-  addTaskNote: (projectId: string, taskId: string, note: string, status?: string) =>
-    request(`/projects/${projectId}/tasks/${taskId}/note`, { method: 'POST', body: JSON.stringify({ note, status }) }),
+  addTaskNote: (projectId: string, taskId: string, note: string, status?: string, reviewedHeadSha?: string) =>
+    request(`/projects/${projectId}/tasks/${taskId}/note`, { method: 'POST', body: JSON.stringify({ note, status, reviewedHeadSha }) }),
   deleteTask: (projectId: string, taskId: string) => request(`/projects/${projectId}/tasks/${taskId}`, { method: 'DELETE' }),
   reorderTasks: (projectId: string, taskIds: string[]) => request(`/projects/${projectId}/tasks/reorder`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
   importTasks: (projectId: string, tasks: any[]) => request<{ imported: number }>(`/projects/${projectId}/tasks/import`, { method: 'POST', body: JSON.stringify({ tasks }) }),

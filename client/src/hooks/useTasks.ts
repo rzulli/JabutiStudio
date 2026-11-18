@@ -225,8 +225,8 @@ export function useUpdateTask() {
 export function useAddTaskNote() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ projectId, taskId, note, status }: { projectId: string; taskId: string; note: string; status?: Task['status'] }) =>
-      api.addTaskNote(projectId, taskId, note, status),
+    mutationFn: ({ projectId, taskId, note, status, reviewedHeadSha }: { projectId: string; taskId: string; note: string; status?: Task['status']; reviewedHeadSha?: string }) =>
+      api.addTaskNote(projectId, taskId, note, status, reviewedHeadSha),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tasks', variables.projectId] })
       queryClient.invalidateQueries({ queryKey: ['task-forecast', variables.projectId] })

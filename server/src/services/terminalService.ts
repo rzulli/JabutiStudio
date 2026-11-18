@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { resolveAgent, buildAgentLaunch, quote, runOptionArgs, DEFAULT_AGENT_ID, type AgentRunOptions } from './agentRegistry.js';
-import { agentMcpConfigFile } from './agentMcp.js';
+import { agentMcpConfigFile, knowledgePreamble, probeKnowledgeEndpoint, knowledgeState, mcpEndpoint, MCP_SERVER_NAME } from './agentMcp.js';
 import { aiTitlesEnabled, cleanTerminalOutput, summarizeTerminal } from './terminalSummary.js';
 import { endsWithQuestion, removeHookSettings, writeHookSettings } from './claudeHooks.js';
 import { trackConversation } from './claudeConversations.js';
@@ -129,9 +129,20 @@ export function usesBareClaudeTab(type: string, agentId?: string, prompt?: strin
  * `--mcp-config` for a Claude session: the Knowledge tools, while the MCP server is on. Kept last on the command line
  * because the flag takes a list of files, and it would swallow what follows it.
  */
-async function claudeMcpArgs(): Promise<string> {
+export async function claudeMcpArgs(): Promise<string> {
   const file = await agentMcpConfigFile();
   return file ? `--mcp-config ${quote(file)}` : '';
+}
+
+/**
+ * Codex has no `--mcp-config`: it takes the server as a `-c` override, so nothing is written into its config.toml and the
+ * port follows the server that is running (dev 5420, Electron 5430). Codex parses the value as TOML and falls back to the
+ * raw string, so the bare URL needs no inner quotes. Only the endpoint goes here; the OAuth approval stays with the user
+ * (`codex mcp login shipyard`), never on the command line.
+ */
+export function codexMcpArgs(): string {
+  if (knowledgeState() === 'disabled') return '';
+  return `-c mcp_servers.${MCP_SERVER_NAME}.url=${mcpEndpoint()}`;
 }
 
 /**
@@ -222,6 +233,8 @@ export async function createSession(
   // A one-shot agent takes the prompt on its command line, so there is
   // nothing left to type into it once it starts.
   let injectPrompt = false;
+  // The prompt the agent actually receives: the caller's text, with the Knowledge state in front of it.
+  let brief: string | undefined = prompt;
 
   // Claude Code is the one CLI that reports its own state (see claudeHooks).
   let runsClaude = false;
@@ -247,8 +260,12 @@ export async function createSession(
     const extraArgs = [
       runOptionArgs(agent.id, runOptions),
       ...(runsClaude ? [resumeArgs, await hookArgs(id), await claudeMcpArgs()] : []),
+      ...(agent.id === 'codex' ? [codexMcpArgs()] : []),
     ].filter(Boolean).join(' ');
-    const launch = await buildAgentLaunch(agent, { cwd: workdir, prompt: resume ? undefined : prompt, extraArgs });
+    // The Knowledge state goes at the top of the brief, so the agent knows what it can call before it starts.
+    const knowledgeAgent = runsClaude ? 'claude' : agent.id === 'codex' ? 'codex' : undefined;
+    brief = resume || !prompt ? undefined : knowledgePreamble(knowledgeAgent, await probeKnowledgeEndpoint()) + prompt;
+    const launch = await buildAgentLaunch(agent, { cwd: workdir, prompt: brief, extraArgs });
     initialCommand = launch.command;
     injectPrompt = launch.injectsPrompt;
   }
@@ -338,7 +355,7 @@ export async function createSession(
     // writes as soon as the prompt lands; it only starts judging the screen
     // once the injection is over.
     startOutputWatcher(id, { hold: true });
-    injectPromptWhenReady(id, prompt, () => releaseOutputWatcher(id));
+    injectPromptWhenReady(id, brief ?? prompt, () => releaseOutputWatcher(id));
   } else if (prompt && runsClaude) {
     // The prompt went in on the command line and the CLI submits it itself.
     // Its UserPromptSubmit hook ends the hold; the timer covers a CLI that
