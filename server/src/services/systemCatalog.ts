@@ -13,6 +13,7 @@ import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
 import * as catalogSources from './catalogSources.js';
+import * as diag from './systemDiagnostics.js';
 import { canonicalPath } from './pathIdentity.js';
 
 const run = promisify(execFile);
@@ -333,13 +334,18 @@ export interface SystemView {
   maintenance: {
     graph: { built: boolean; builtAt?: number; describesCheckout: string; installed?: boolean };
     changedMembers: string[]; needsReanalysis: boolean;
-    vanished: Vanished[]; unresolvedAnchors: { path: string; state: 'gone' }[];
+    vanished: Vanished[]; unresolvedAnchors: { path: string; state: 'gone'; source?: string }[];
     graphAgainstCheckout: string;
+    /** analysis state, kept apart from reference integrity and from the proposal classification */
+    analysis: diag.AnalysisSummary;
+    diagnostics: diag.Diagnostic[];
   };
   limitations: string[];
 }
 
 const viewCache = new Map<string, { at: number; value: SystemView }>();
+/** Drop derived views (e.g. right after a Graphify build) so the next read reflects the new analysis. */
+export const invalidateViews = () => { viewCache.clear(); };
 const VIEW_TTL = 4000;
 
 /** Short-lived memo with in-flight dedupe: systems of one checkout share a single git listing/status. */
@@ -493,6 +499,16 @@ export async function importPortable(project: Project, opts: { expectedSha256?: 
   });
 }
 
+/** Is this anchored path a regular file on disk under `root`? Never a lookup in the Godot-only file index. */
+export async function probePath(root: string, rel: string): Promise<{ state: 'present' | 'absent' | 'unknown'; note?: string }> {
+  if (!rel || isAbsolute(rel) || /^[a-z]:/i.test(rel) || rel.split(/[\\/]/).includes('..')) return { state: 'unknown', note: 'not a relative path inside the checkout' };
+  try {
+    return (await fs.stat(join(root, rel))).isFile() ? { state: 'present' } : { state: 'unknown', note: 'not a regular file' };
+  } catch (e: any) {
+    return e?.code === 'ENOENT' || e?.code === 'ENOTDIR' ? { state: 'absent' } : { state: 'unknown', note: `could not be read (${e?.code ?? 'error'})` };
+  }
+}
+
 /** Everything about one system, derived from the examined checkout. */
 export async function resolveSystem(project: Project, id: string, worktree?: string): Promise<SystemView | { error: string }> {
   const sys = await getStored(project.id, id);
@@ -553,12 +569,12 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     const moved = files.filter(f => basename(f) === basename(p));
     return moved.length === 1 ? { path: moved[0], movedFrom: p } : null;
   };
-  const unresolved: { path: string; state: 'gone' }[] = [];
+  const unresolved: { path: string; state: 'gone'; source: string }[] = [];
   for (const a of sys.anchors.files) {
     const p = posix(a);
     const r = resolvePath(p);
     if (r) add(r.path, { kind: 'anchor', detail: r.movedFrom ? `named by the system (moved from ${p})` : 'named by the system' }, 100, true, r.movedFrom);
-    else unresolved.push({ path: p, state: 'gone' });
+    else unresolved.push({ path: p, state: 'gone', source: 'system anchor' });
   }
   const areaAnchorPaths = new Map<string, { path: string; line?: number }[]>();
   for (const area of areasStored) {
@@ -566,7 +582,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     for (const raw of area.anchors.files) {
       const [pp, symbol] = posix(raw).split('#');
       const r = resolvePath(pp);
-      if (!r) { unresolved.push({ path: pp, state: 'gone' }); continue; }
+      if (!r) { unresolved.push({ path: pp, state: 'gone', source: `area "${area.name}"` }); continue; }
       add(r.path, { kind: 'anchor', detail: `anchor of "${area.name}"${r.movedFrom ? ` (moved from ${pp})` : ''}` }, 90, true, r.movedFrom);
       list.push({ path: r.path, line: await locate(root, r.path, symbol) });
     }
@@ -847,6 +863,16 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   }
 
   const changedMembers = members.filter(m => m.changedSinceAnalysis).map(m => m.path);
+  // Anchors the (Godot-only) file index could not resolve are probed ON DISK: absence from the index is not absence.
+  const canonRoot = info.isCanonical || !unresolved.length ? null : await designKnowledge.resolveRoot(project);
+  const byFile = g ? nodesByFile(g) : null;
+  const checked: diag.UnresolvedRef[] = await Promise.all(unresolved.map(async u => {
+    const here = await probePath(root, u.path);
+    const inProject = here.state === 'absent' && typeof canonRoot === 'string' ? (await probePath(canonRoot, u.path)).state === 'present' : false;
+    return { path: u.path, source: u.source, physical: here.state, note: here.note, inProjectCheckout: inProject, graphKnows: !!byFile?.has(u.path) };
+  }));
+  const missingAnchors = unresolved.filter((_, k) => checked[k].physical === 'absent');
+  const notIndexed = checked.filter(c => c.physical === 'present').length;
   const limitations: string[] = [];
   if (!g) limitations.push('Graphify has not analyzed this project: no symbols or technical relations are shown.');
   else {
@@ -861,8 +887,16 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   if (sys.status === 'proposed') limitations.push('This system is a proposal: grouping and responsibility text have not been confirmed by a person.');
   if (!areasStored.length) limitations.push('No responsibilities were described for this system: the areas shown are inferred from file names and paths only.');
   if (!relViews.length) limitations.push('No gameplay relations are documented. Technical links come from the code graph and are not gameplay facts.');
-  if (unresolved.length) limitations.push(`${unresolved.length} file anchor(s) no longer exist in this checkout.`);
+  if (missingAnchors.length) limitations.push(`${missingAnchors.length} file anchor(s) are not on disk in this checkout.`);
+  if (notIndexed) limitations.push(`${notIndexed} anchored file(s) exist but are outside the catalog's Godot file index, so they are not listed as members.`);
   if (relViews.some(r => r.basis === 'stale')) limitations.push('Some documented relations have evidence that no longer holds in this checkout.');
+
+  // ---- diagnostics: explain each state and its next action (derived, read-only) ----
+  const analysisIn = { checkout: info, graph: { built: !!g, builtAt: g?.builtAt, installed: !!graphify.graphifyPython(), building: graphify.isBuilding(project.id) }, changedMembers };
+  const diagnostics = diag.buildDiagnostics({
+    status: sys.status, origin: sys.origin, checkout: info, graph: analysisIn.graph, changedMembers, vanished,
+    unresolved: checked,
+  });
 
   const value: SystemView = {
     id: sys.id, name: sys.name, summary: sys.summary, responsibilities: sys.responsibilities,
@@ -875,8 +909,9 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     tasks, related,
     maintenance: {
       graph: { built: !!g, builtAt: g?.builtAt, describesCheckout: 'integrated checkout', installed: !!graphify.graphifyPython() },
-      changedMembers, needsReanalysis: changedMembers.length > 0, vanished, unresolvedAnchors: unresolved,
+      changedMembers, needsReanalysis: changedMembers.length > 0, vanished, unresolvedAnchors: missingAnchors,
       graphAgainstCheckout: info.isCanonical ? 'same checkout' : 'different checkout (worktree)',
+      analysis: diag.summarizeAnalysis(analysisIn), diagnostics,
     },
     limitations,
   };
@@ -934,7 +969,7 @@ export async function catalog(project: Project, worktree?: string) {
     if (v.maintenance.needsReanalysis) flags.push('stale graph');
     if (v.maintenance.vanished.length) flags.push(`${v.maintenance.vanished.length} vanished`);
     if (v.design.conflicts.length) flags.push('conflict');
-    if (v.maintenance.unresolvedAnchors.length) flags.push('missing files');
+    if (v.maintenance.diagnostics.some(d => d.code === 'files-missing')) flags.push('missing files');
     rows.push({
       id: s.id, name: s.name, summary: s.summary, status: s.status, origin: s.origin, kind: s.kind ?? 'system', planned: !!s.planned, createdAt: s.createdAt,
       files: v.members.length + v.weakerMembers, decisions: v.design.decisions.length, conflicts: v.design.conflicts.length, flags,
