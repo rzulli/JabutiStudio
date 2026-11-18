@@ -2,7 +2,7 @@ import { join } from 'path';
 import { DATA_DIR } from './dataDir.js';
 import { writeJsonAtomic } from './atomicJson.js';
 import { getMcpConfig } from './mcpConfig.js';
-import { listAuthorizedClients } from './mcpAuth.js';
+import { listAuthorizedClients, latestUse } from './mcpAuth.js';
 
 /**
  * How a Claude or Codex session that JabutiStudio starts reaches the Knowledge tools. The session gets the same MCP
@@ -59,7 +59,11 @@ export function knowledgeDiagnosis(agent?: KnowledgeAgent): KnowledgeDiagnosis {
   if (!cfg.requireAuth) return { state: 'ready', reason: 'Authentication is off; the endpoint is open on loopback.', fix: '' };
   const authorized = listAuthorizedClients();
   const mine = agent ? authorized.filter(c => AGENT_CLIENT_NAME[agent].test(c.clientName)) : authorized;
-  if (mine.length > 0) return { state: 'ready', reason: `Approved client: ${mine.map(c => c.clientName).join(', ')}.`, fix: '' };
+  if (mine.length > 0) {
+    const use = latestUse(mine.map(c => c.clientId));
+    const seen = use?.toolsListedAt ? ` Last session listed the tools at ${use.toolsListedAt}${use.toolCalls ? ` and made ${use.toolCalls} tool call(s), last ${use.tool}` : ''}.` : ' No session has listed the tools yet since the server started.';
+    return { state: 'ready', reason: `Approved client: ${mine.map(c => c.clientName).join(', ')}.${seen}`, fix: '' };
+  }
   const label = agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : 'agent';
   const others = authorized.length > 0 && agent
     ? ` Other clients are approved (${authorized.map(c => c.clientName).join(', ')}), which does not authorize ${label}.`

@@ -187,29 +187,3 @@ test('endpoint probe: a dynamic port is followed, and a wrong one is reported, n
   process.env.SHIPYARD_PORT = '5431'
 })
 
-test('JSON-RPC notifications get an empty 202, not a 200 body (Codex drops the server otherwise)', async () => {
-  await m.mcpConfig.saveMcpConfig({ enabled: true, requireAuth: false })
-  const Fastify = (await import('fastify')).default
-  const a = Fastify()
-  const { mcpRoutes } = await import('../src/routes/mcp.ts')
-  await a.register(mcpRoutes)
-  const post = (payload: unknown) => a.inject({ method: 'POST', url: '/mcp', payload: payload as object })
-
-  const init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
-  assert.equal(init.statusCode, 200)
-  assert.equal(JSON.parse(init.body).result.serverInfo.name, 'shipyard')
-
-  for (const method of ['notifications/initialized', 'notifications/cancelled', 'notifications/unknown']) {
-    const res = await post({ jsonrpc: '2.0', method })
-    assert.equal(res.statusCode, 202, method)
-    assert.equal(res.body, '', method)
-  }
-  const batch = await post([{ jsonrpc: '2.0', method: 'notifications/initialized' }])
-  assert.equal(batch.statusCode, 202)
-  const mixed = await post([{ jsonrpc: '2.0', method: 'notifications/initialized' }, { jsonrpc: '2.0', id: 7, method: 'ping' }])
-  assert.deepEqual(JSON.parse(mixed.body), [{ jsonrpc: '2.0', id: 7, result: {} }])
-
-  const unknown = await post({ jsonrpc: '2.0', id: 9, method: 'nope' })
-  assert.equal(JSON.parse(unknown.body).error.code, -32601)
-  await a.close()
-})

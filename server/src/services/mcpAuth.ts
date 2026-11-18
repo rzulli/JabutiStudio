@@ -263,3 +263,35 @@ export async function cleanup(): Promise<void> {
   authData.refreshTokens = authData.refreshTokens.filter(t => t.expiresAt > now);
   await saveAuthData();
 }
+
+// ── Evidence of use ─────────────────────────────────────
+
+export interface ClientUse { at: string; method: string; tool?: string; toolsListedAt?: string; toolCalls: number }
+const clientUse = new Map<string, ClientUse>();
+
+/**
+ * Remembers, in memory only, what an authenticated client last asked: proof that a session reached the server with a
+ * valid token and which tools it listed or called. Cleared on restart; not an authorization record.
+ */
+export function recordClientUse(clientId: string | undefined, body: unknown): void {
+  if (!clientId) return;
+  const msgs = (Array.isArray(body) ? body : [body]) as any[];
+  for (const m of msgs) {
+    if (!m || typeof m !== 'object' || typeof m.method !== 'string' || m.method.startsWith('notifications/')) continue;
+    const prev = clientUse.get(clientId);
+    const at = new Date().toISOString();
+    const use: ClientUse = { ...(prev ?? { toolCalls: 0 }), at, method: m.method };
+    if (m.method === 'tools/list') use.toolsListedAt = at;
+    if (m.method === 'tools/call') { use.toolCalls += 1; use.tool = String(m.params?.name ?? ''); }
+    clientUse.set(clientId, use);
+  }
+}
+
+export function getClientUse(clientId: string): ClientUse | undefined {
+  return clientUse.get(clientId);
+}
+
+/** Latest use among the given clients (by name filter applied by the caller). */
+export function latestUse(clientIds: string[]): ClientUse | undefined {
+  return clientIds.map(id => clientUse.get(id)).filter((u): u is ClientUse => !!u).sort((x, y) => y.at.localeCompare(x.at))[0];
+}

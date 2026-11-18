@@ -39,6 +39,7 @@ export async function mcpRoutes(app: FastifyInstance) {
         clientId: c.clientId,
         clientName: c.clientName,
         createdAt: c.createdAt,
+        lastUse: mcpAuth.getClientUse(c.clientId) ?? null,
       })),
     };
   });
@@ -289,6 +290,7 @@ export async function mcpRoutes(app: FastifyInstance) {
         reply.status(401).send({ error: 'invalid_token' });
         return false;
       }
+      (request as any).mcpClientId = auth.clientId;
     }
     return true;
   }
@@ -298,17 +300,24 @@ export async function mcpRoutes(app: FastifyInstance) {
     if (!await checkMcpAuth(request, reply)) return;
 
     const body = request.body as any;
+    mcpAuth.recordClientUse((request as any).mcpClientId, body);
 
-    // Notifications (and client responses) carry no id and get no JSON-RPC reply: Streamable HTTP answers them with an
-    // empty 202. A 200 with a body here made Codex drop the server ("unrecognized JSON-RPC message") with no tools.
+    // A JSON-RPC notification (a method and no id) gets no JSON-RPC reply: Streamable HTTP answers 202 with an
+    // empty body. Replying 200 `null` makes strict clients (Codex) drop the whole server.
+    const isNotification = (m: any) => m && typeof m === 'object' && m.method && m.id === undefined;
+
+    // Handle batch requests
     if (Array.isArray(body)) {
-      const results = (await Promise.all(body.map(handleJsonRpc))).filter(r => r !== null && r !== undefined);
-      return results.length ? results : reply.status(202).send();
+      const results = (await Promise.all(body.map(handleJsonRpc))).filter((r, i) => !isNotification(body[i]) && r != null);
+      if (!results.length) return reply.status(202).send();
+      return results;
     }
 
-    const result = await handleJsonRpc(body);
-    if (result === null || result === undefined) return reply.status(202).send();
-    return result;
+    if (isNotification(body)) {
+      await handleJsonRpc(body);
+      return reply.status(202).send();
+    }
+    return handleJsonRpc(body);
   });
 
   // SSE endpoint for server-to-client notifications
@@ -433,8 +442,6 @@ async function handleJsonRpc(msg: any) {
       });
 
     default:
-      // A notification (no id) is never answered, known or not.
-      if (id === undefined) return null;
       return jsonRpcError(id, -32601, `Method not found: ${method}`);
   }
 }
