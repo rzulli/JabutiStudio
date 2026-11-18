@@ -9,7 +9,7 @@ de worktrees nem banco paralelo de resultados.
   `worktreeLinks.withLink`, `worktreeInventory.findRegistered`, `gitService`, `pathIdentity.canonicalPath`,
   `worktreeClose.isInside`, `fromAppUi` (routes/design.ts), `projectDiscovery`, `taskStore`.
 - **Divergencia conhecida**: o Editor/arquivos (`routes/files.ts`) sempre usam `project.path` (checkout principal) e o
-  `EditorPanel` nao tem conceito de task; agentes rodam na worktree via `resolveTaskCwd`, que **cai em silencio** no
+  `EditorPanel` nao tem conceito de task; agentes rodam na worktree via `ensureTaskWorktree` (que agora recusa, em vez de cair no
   `project.path`. O contexto de execucao **nao** faz esse fallback.
 
 ## Arquitetura (server/src/services/godot/)

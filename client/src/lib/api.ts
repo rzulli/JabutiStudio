@@ -971,7 +971,7 @@ export const api = {
   getLifecycleSummary: (projectId: string) => request<{ tasks: TaskLifecycleSummary[] }>(`/projects/${projectId}/lifecycle/summary`),
   getTaskLifecycle: (projectId: string, taskId: string) => request<TaskLifecycle>(`/projects/${projectId}/tasks/${taskId}/lifecycle`),
   getClosePreview: (projectId: string, taskId: string) => request<ClosePreview>(`/projects/${projectId}/tasks/${taskId}/lifecycle/close-preview`),
-  closeTask: (projectId: string, taskId: string, body: { expectedToken: string; acknowledgeIgnored?: boolean }) =>
+  closeTask: (projectId: string, taskId: string, body: { expectedToken: string; acknowledgeIgnored?: boolean; acknowledgeUnknownProcesses?: boolean }) =>
     request<CloseOutcome>(`/projects/${projectId}/tasks/${taskId}/lifecycle/close`, { method: 'POST', body: JSON.stringify(body) }),
   getWorktreeInventory: (projectId: string) => request<WorktreeInventory>(`/projects/${projectId}/worktrees/inventory`),
   getWorktreeChanges: (projectId: string, path: string) =>

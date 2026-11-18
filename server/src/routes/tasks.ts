@@ -334,7 +334,7 @@ export async function taskRoutes(app: FastifyInstance) {
   );
 
   // Build AI resolution prompt for a task
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { feedback?: string } }>(
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { feedback?: string; recoverWorktree?: boolean } }>(
     '/api/projects/:projectId/tasks/:taskId/ai-resolve',
     async (request, reply) => {
       const { projectId, taskId } = request.params;
@@ -353,7 +353,13 @@ export async function taskRoutes(app: FastifyInstance) {
       // Create the worktree here so the prompt can name the directory the
       // agent will land in. Creating it again when the terminal opens is a
       // no-op, so the two paths agree.
-      const worktree = await worktreeService.ensureTaskWorktree(project, task);
+      let worktree: worktreeService.EnsureResult;
+      try {
+        worktree = await worktreeService.ensureTaskWorktree(project, task, { recover: request.body?.recoverWorktree === true });
+      } catch (err: any) {
+        if (worktreeService.isCheckoutUnavailable(err)) return reply.status(409).send({ error: err.message, code: err.code });
+        throw err;
+      }
 
       const port = (request.server.addresses()?.[0] as any)?.port || 5420;
       const prompt = buildAiResolvePrompt(

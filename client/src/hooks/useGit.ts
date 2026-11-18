@@ -282,7 +282,7 @@ export function useClosePreview(projectId: string, taskId: string, enabled: bool
 export function useCloseTask(projectId: string, taskId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (b: { expectedToken: string; acknowledgeIgnored?: boolean }) => api.closeTask(projectId, taskId, b),
+    mutationFn: (b: { expectedToken: string; acknowledgeIgnored?: boolean; acknowledgeUnknownProcesses?: boolean }) => api.closeTask(projectId, taskId, b),
     onSettled: () => {
       for (const key of [['task-lifecycle', projectId, taskId], ['task-lifecycle-summary', projectId], ['worktree-inventory', projectId], ['close-preview', projectId, taskId], ['tasks', projectId], ['tasks', 'all'], ['git-status', projectId], ['git-pending', projectId], ['git-worktrees', projectId]]) {
         qc.invalidateQueries({ queryKey: key })

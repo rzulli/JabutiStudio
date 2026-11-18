@@ -235,14 +235,14 @@ export async function terminalWsRoutes(app: FastifyInstance) {
   );
 
   // REST: Create a new terminal session
-  app.post<{ Body: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; model?: string; effort?: string; resume?: string; resumeTitle?: string } }>(
+  app.post<{ Body: { projectId: string; type?: string; cols?: number; rows?: number; taskId?: string; prompt?: string; agent?: string; model?: string; effort?: string; resume?: string; resumeTitle?: string; recoverWorktree?: boolean } }>(
     '/api/terminal/sessions',
     async (request, reply) => {
       if (!isAvailable()) {
         return reply.status(503).send({ error: 'Integrated terminal not available (node-pty not installed)' });
       }
 
-      const { projectId, type = 'shell', cols = 80, rows = 24, taskId, prompt, agent, model, effort, resume, resumeTitle } = request.body;
+      const { projectId, type = 'shell', cols = 80, rows = 24, taskId, prompt, agent, model, effort, resume, resumeTitle, recoverWorktree } = request.body;
       const projects = await getProjects();
       const project = projects.find(p => p.id === projectId);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
@@ -261,8 +261,16 @@ export async function terminalWsRoutes(app: FastifyInstance) {
           // Picking a conversation back up is not starting the task again.
           startTask = !resume && task.status !== 'in_progress';
           taskLabel = { title: task.title, number: task.number };
-          const worktree = await worktreeService.ensureTaskWorktree(project, task);
-          cwd = worktree.path;
+          // A task that requires its worktree never starts in the project folder: if the worktree cannot be had, or
+          // the resolved folder is not that worktree, nothing is spawned.
+          try {
+            const worktree = await worktreeService.ensureTaskWorktree(project, task, { recover: recoverWorktree === true });
+            cwd = worktree.path;
+            worktreeService.assertLaunchCheckout((await taskStore.getTask(projectId, taskId)) ?? task, cwd);
+          } catch (err: any) {
+            if (worktreeService.isCheckoutUnavailable(err)) return reply.status(409).send({ error: err.message, code: err.code });
+            throw err;
+          }
         }
       }
 

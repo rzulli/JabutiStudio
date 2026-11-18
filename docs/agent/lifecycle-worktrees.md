@@ -73,7 +73,19 @@
   Cada metade e registrada (`closure` no ledger): falha parcial mantem INTEGRATED com blocker (`closure-incomplete`); so pasta+branch sumidos = CLOSED
 - UI: `LifecycleBar` (botao "Close worktree…" + `CloseWorktreePanel`) e `WorktreeManager` (dialogo aberto pelo badge "N worktrees" do Source Control)
 - Em dev (Vite 5421) as escritas de UI levam 403 por Origin diferente do Host; o encerramento so e testavel pelo app servido pelo server
-- Testes: `server/test/worktreeClose.test.ts` (T1-T16 do R2-A2, repos descartaveis)
+- **Processos Godot/Harness** (`godot/activity.ts`, `godotProcessesIn`): o preview e a validacao final do encerramento leem
+  as janelas Godot que o servidor abriu (`godot/instances.ts`) e as runs do Harness vivas (`harness.live`, com `projectRoot`)
+  naquela pasta. Run viva = `no-processes` (bloqueia; nada e encerrado pelo Shipyard). Run gravada sem saida (`runner`
+  ausente, sem entrada viva) = `process-unknown`, reconhecivel com `acknowledgeUnknownProcesses`. Nao e prova de ausencia:
+  janela aberta a mao e janela de antes de um reinicio nao aparecem em registro nenhum, e o texto do check diz isso
+- **Sessoes e integracao** (`resolveLifecycle`): tres fatos separados. `busy`/`awaiting-input` = atividade comprovada
+  (bloqueia `session-active`). Sessao viva com `state: null` (CLI que nao reporta, ex. Codex) = atividade desconhecida:
+  bloqueia integracao com `activity-unknown` ate ser reconhecida (`acknowledgeUnknownActivity`); nunca vira turno ocupado
+  para sempre. Sessao dentro da pasta da worktree conta mesmo sem `taskId`
+- **Revalidacao antes do merge** (`revalidateForMerge`): logo antes de `git merge`, relê a branch (ainda no sha aceito),
+  a worktree (sem alteracao nao commitada) e o checkout alvo (na branch alvo, limpo). Falhou = `revalidation-failed`, nada mesclado
+- Testes: `server/test/worktreeClose.test.ts` (T1-T16 do R2-A2, repos descartaveis); `server/test/worktreeEnforcement.test.ts`
+  (corrida do ensure, worktree sumida, sessao desconhecida, processos Godot/Harness, revalidacao)
 
 ### Multi-repo Git (sub-repositorios)
 - Projeto pode conter sub-pastas com `.git` proprio (ex: `client/` e `server/` dentro de `Sistema01/`)
@@ -111,8 +123,15 @@
   `start_task` do MCP (devolve `cwd` na resposta), `POST /:id/tasks/:tid/ai-resolve`
   (o prompt ja cita a worktree) e `POST /api/terminal/sessions` com `taskId`
   (a sessao roda la dentro, via o parametro `cwd` do `createSession`)
-- Falhar criando a worktree **nunca** bloqueia o lancamento: `ensureTaskWorktree`
-  loga e devolve `project.path` com o motivo
+- Task que **exige** worktree (setting ligado, ou task que ja tem `worktreePath`) **nunca** inicia no checkout principal.
+  `ensureTaskWorktree` e serializado por task (uma chamada por vez; a segunda le a worktree que a primeira gravou) e
+  lanca `CheckoutUnavailableError` (`not-git`, `worktree-missing`, `create-failed`) em vez de devolver `project.path`.
+  Os tres lancadores recusam (409 na rota; `isError` no MCP) e nada e spawnado. `assertLaunchCheckout` confere, logo
+  antes do spawn, que o cwd e o `worktreePath` gravado. Direct Checkout (setting desligado, sem worktree gravada) segue
+  igual: devolve `project.path` com `reason: 'disabled'`
+- Worktree gravada que sumiu (pasta apagada fora do Shipyard): **nao** e recriada em silencio. O lancamento recusa
+  (`worktree-missing`); `recoverWorktree: true` (rota de terminal/ai-resolve) recria a partir da branch e avisa em
+  `recoveryNote` que alteracoes nao commitadas nao voltam
 - **Nao ha remocao fora do encerramento seguro (R2-A3).** O unico caminho que apaga
   pasta ou branch de worktree e `worktreeClose.closeTask` (previa + token + `git
   worktree remove` sem `--force` + `update-ref -d` com sha esperado). **Excluir task** (HTTP single/bulk e MCP `delete_task`/`bulk_delete_tasks`)

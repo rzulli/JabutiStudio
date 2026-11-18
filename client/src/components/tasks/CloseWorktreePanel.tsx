@@ -17,6 +17,7 @@ export function CloseWorktreePanel({ task, onCancel }: { task: Task; onCancel: (
   const preview = useClosePreview(task.projectId, task.id, true)
   const close = useCloseTask(task.projectId, task.id)
   const [ack, setAck] = useState(false)
+  const [ackProc, setAckProc] = useState(false)
   const p = preview.data
 
   if (preview.isLoading) {
@@ -24,10 +25,13 @@ export function CloseWorktreePanel({ task, onCancel }: { task: Task; onCancel: (
   }
   if (!p) return <p className="text-[11px] text-destructive">Could not read the close preview.</p>
 
-  const canRun = p.allowed || (p.needsAcknowledgement && ack)
+  // Each acknowledgement answers only its own failing check; a blocked check the person cannot answer keeps the button off.
+  const needIgnored = p.checks.some(c => !c.ok && c.code === 'ignored-files')
+  const procCheck = p.checks.find(c => !c.ok && c.code === 'process-unknown')
+  const canRun = p.allowed || (p.needsAcknowledgement && (!needIgnored || ack) && (!procCheck || ackProc))
   const run = async () => {
     try {
-      const res = await close.mutateAsync({ expectedToken: p.token, acknowledgeIgnored: ack })
+      const res = await close.mutateAsync({ expectedToken: p.token, acknowledgeIgnored: ack, acknowledgeUnknownProcesses: ackProc })
       if (res.complete) toast.success('Worktree and branch removed')
       else toast.warning(`Partly closed: worktree ${res.result?.worktree}, branch ${res.result?.branch}${res.result?.note ? ` — ${res.result.note}` : ''}`)
       onCancel()
@@ -57,7 +61,14 @@ export function CloseWorktreePanel({ task, onCancel }: { task: Task; onCancel: (
         <p className="text-muted-foreground">Branch: {p.branch.action === 'delete' ? 'deleted only if still proven integrated' : 'kept'} — {p.branch.reason}</p>
       </div>
 
-      {p.needsAcknowledgement && p.changes && (
+      {procCheck && (
+        <label className="flex items-start gap-1.5 text-[11px] cursor-pointer">
+          <input type="checkbox" className="mt-0.5" checked={ackProc} onChange={e => setAckProc(e.target.checked)} />
+          <span>{procCheck.message}. I checked that no Godot or Harness run is still using this folder.</span>
+        </label>
+      )}
+
+      {needIgnored && p.changes && (
         <label className="flex items-start gap-1.5 text-[11px] cursor-pointer">
           <input type="checkbox" className="mt-0.5" checked={ack} onChange={e => setAck(e.target.checked)} />
           <span>
