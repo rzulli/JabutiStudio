@@ -10,6 +10,8 @@ import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { useTaskGitReview, useCommitDiff, useTaskLifecycle } from '@/hooks/useGit'
 import { LifecycleBar } from '@/components/tasks/LifecycleBar'
+import { TaskGodotReview } from '@/components/tasks/TaskGodotReview'
+import { DirectDeliveryPicker } from '@/components/tasks/DirectDeliveryPicker'
 import { useAddTaskNote, type Task } from '@/hooks/useTasks'
 import { DiffFileEntry, parseDiffByFile } from '@/components/git/DiffView'
 import type { TaskCommit } from '@/lib/api'
@@ -117,7 +119,8 @@ export function TaskReviewPanel({ task, onDone, extraSections }: TaskReviewPanel
   const lc = lifecycle.data
   // With a worktree branch the review is exact (branch vs target). Without one only the
   // old date window exists, and the lifecycle says plainly that nothing can be verified.
-  const branchMode = lc?.delivery.mode === 'branch'
+  // A direct delivery is exact only once a person identified it; until then the date window still shows what to look at.
+  const branchMode = lc?.delivery.mode === 'branch' || (lc?.delivery.mode === 'direct' && !!lc.delivery.direct?.claim)
   const windowReview = useTaskGitReview(task.projectId, task.inProgressAt, until, undefined, lifecycle.isFetched && !branchMode)
   const data = branchMode && lc
     ? { available: true, branch: lc.delivery.branch ?? null, commits: lc.delivery.commits, files: lc.delivery.files, additions: lc.delivery.additions, deletions: lc.delivery.deletions, working: null }
@@ -179,6 +182,10 @@ export function TaskReviewPanel({ task, onDone, extraSections }: TaskReviewPanel
     <div className="space-y-4">
       {lc && <LifecycleBar lc={lc} task={task} extraActions={needsChanges}>{extraSections}</LifecycleBar>}
 
+      {lc?.delivery.mode === 'direct' && <DirectDeliveryPicker lc={lc} task={task} />}
+
+      <TaskGodotReview task={task} />
+
       {reasonOpen && (
         <div className="space-y-2 rounded-lg border p-3">
           <Textarea
@@ -223,7 +230,7 @@ export function TaskReviewPanel({ task, onDone, extraSections }: TaskReviewPanel
           <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
             <span>
               {commits.length} commit{commits.length !== 1 ? 's' : ''}{' '}
-              {branchMode ? `ahead of ${lc?.target.branch ?? 'target'}` : <>since started {relative(task.inProgressAt)}</>}
+              {branchMode ? (lc?.delivery.mode === 'direct' ? `identified in ${lc?.target.branch ?? 'target'}` : `ahead of ${lc?.target.branch ?? 'target'}`) : <>since started {relative(task.inProgressAt)}</>}
             </span>
             {files.length > 0 && <span>· {files.length} file{files.length !== 1 ? 's' : ''}</span>}
             {(data?.additions ?? 0) > 0 && <span className="text-success inline-flex items-center gap-0.5"><Plus className="h-2.5 w-2.5" />{data!.additions}</span>}

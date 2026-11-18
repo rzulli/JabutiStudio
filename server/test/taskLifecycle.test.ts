@@ -243,12 +243,13 @@ test('patch-equivalent without ancestry is reported as its own case, never as in
   assert.ok(v.blockers.some((b: any) => b.code === 'patch-equivalent'))
 })
 
-test('a task without a worktree branch cannot claim a verified delivery', async () => {
+test('a task without a worktree branch is a direct checkout: nothing is attributed to it until a person says so', async () => {
   const bare = await taskStore.createTask(project.id, { title: 'No worktree', description: '', priority: 'low', status: 'done' } as any)
   const v = await view(bare.id)
-  assert.equal(v.delivery.mode, 'none')
+  assert.equal(v.delivery.mode, 'direct')
   assert.equal(v.canAccept, false)
-  assert.ok(v.blockers.some((b: any) => b.code === 'no-branch'))
+  assert.ok(v.blockers.some((b: any) => b.code === 'unattributed'))
+  assert.equal(v.integration.state, 'unknown')
   assert.equal((await post(bare.id, 'accept', { targetBranch: 'main', expectedHeadSha: 'abc' })).statusCode >= 400, true)
 })
 

@@ -119,6 +119,8 @@ export interface Settings {
   worktreePerTask?: boolean;
   // Where those worktrees live (default: {DATA_DIR}/worktrees)
   worktreeBasePath?: string;
+  // Folder of the Godot Agent Harness (holds runner/godot-harness.ps1). Falls back to GODOT_HARNESS_DIR, then a known workstation path
+  godotHarnessDir?: string;
   // Let the AI name terminal tabs that have no task behind them (default: on)
   terminalAiTitles?: boolean;
 }
