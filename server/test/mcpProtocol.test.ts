@@ -63,7 +63,7 @@ test('auth required: no token is refused; a real token lists tools and its use i
   const tokens = await auth.exchangeCode(code, verifier, client.clientId, redirect)
   assert.ok(tokens)
 
-  assert.match(agent.knowledgeDiagnosis('codex').reason, /No session has listed the tools/)
+  assert.match(agent.knowledgeDiagnosis('codex').reason, /No use by this client has been recorded/)
   const list = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, tokens.access_token)
   assert.equal(list.statusCode, 200)
   const names = JSON.parse(list.body).result.tools.map((x: { name: string }) => x.name)
@@ -72,7 +72,7 @@ test('auth required: no token is refused; a real token lists tools and its use i
 
   const d = agent.knowledgeDiagnosis('codex')
   assert.equal(d.state, 'ready')
-  assert.match(d.reason, /listed the tools/)
+  assert.match(d.reason, /Last recorded use by this client \(not proof for a new session\): tools listed/)
   assert.match(d.reason, /1 tool call\(s\), last list_systems/)
   assert.equal(agent.knowledgeDiagnosis('claude').state, 'needs-authorization')
 })

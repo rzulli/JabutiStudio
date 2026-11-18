@@ -61,7 +61,8 @@ export function knowledgeDiagnosis(agent?: KnowledgeAgent): KnowledgeDiagnosis {
   const mine = agent ? authorized.filter(c => AGENT_CLIENT_NAME[agent].test(c.clientName)) : authorized;
   if (mine.length > 0) {
     const use = latestUse(mine.map(c => c.clientId));
-    const seen = use?.toolsListedAt ? ` Last session listed the tools at ${use.toolsListedAt}${use.toolCalls ? ` and made ${use.toolCalls} tool call(s), last ${use.tool}` : ''}.` : ' No session has listed the tools yet since the server started.';
+    // Last use by the client since the server started: evidence about the client, never proof about a session starting now.
+    const seen = use?.toolsListedAt ? ` Last recorded use by this client (not proof for a new session): tools listed at ${use.toolsListedAt}${use.toolCalls ? `, ${use.toolCalls} tool call(s), last ${use.tool}` : ''}.` : ' No use by this client has been recorded since the server started.';
     return { state: 'ready', reason: `Approved client: ${mine.map(c => c.clientName).join(', ')}.${seen}`, fix: '' };
   }
   const label = agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : 'agent';
