@@ -173,6 +173,9 @@
 - `runOptionArgs` valida (effort na lista do harness; modelo por regex, ja que vai para a linha do shell) e `createSession` injeta no `extraArgs`. `POST /api/terminal/sessions` aceita `model` e `effort`; `GET /api/agents` devolve `models`/`efforts` por agente.
 - Client: `RunConfigSelect` (popover) / `RunConfigFields` (inline) = seletor unico de harness + modelo + effort. Use-o em todo lugar que dispara um agente (Run with AI, Ask agent, novo sistema). Evento `shipyard:open-terminal` carrega `agent`, `model`, `effort`.
 
+## Tools Godot (descoberta do Harness)
+`get_godot_capabilities`, `get_godot_run` (somente leitura) e `record_godot_run` (liga uma run do agente a task; nao aceita nada). Contrato e regras em `godot-execution.md` ("Descoberta do Harness pelo agente"). Continua sem tool MCP que inicie run, abra o Godot ou aceite/aprove.
+
 ## Knowledge para agentes lancados (readiness)
 
 - Claude recebe `--mcp-config` (arquivo com o endpoint); Codex recebe `-c mcp_servers.shipyard.url=<endpoint>` (nada vai para `~/.codex/config.toml`). Nenhum segredo na linha de comando nem no brief.

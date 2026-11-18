@@ -8,6 +8,9 @@ import * as taskAttachments from './taskAttachments.js';
 import * as worktreeService from './worktreeService.js';
 import * as designCore from './designCore.js';
 import * as systemCatalog from './systemCatalog.js';
+import * as godotCaps from './godot/capabilities.js';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import type { Project, Task, EffortPoints } from '../types/index.js';
 
 // MCP Tool handlers - optimized for minimal token usage
@@ -28,6 +31,9 @@ const compact = (obj: any) => JSON.stringify(obj);
 
 const ok = (payload: Record<string, unknown>): McpToolResult =>
   ({ content: [{ type: 'text', text: compact({ ok: true, ...payload }) }] });
+
+const godotResult = (payload: object): McpToolResult =>
+  ({ content: [{ type: 'text', text: compact(payload) }], ...((payload as { ok?: boolean }).ok === false ? { isError: true } : {}) });
 
 const fail = (message: string): McpToolResult =>
   ({ content: [{ type: 'text', text: message }], isError: true });
@@ -635,6 +641,7 @@ export async function startTask(projectId: string, taskId: string): Promise<McpT
           status: updated.status,
           priority: updated.priority,
           ...(cwd ? { cwd } : {}),
+          ...(cwd && existsSync(join(cwd, 'project.godot')) ? { godot: 'Godot project: before running any scene or test call get_godot_capabilities { projectId, taskId } (real Harness actions, profiles, budgets, tests in this checkout), then get_godot_run and record_godot_run. Do not experiment with Harness actions.' } : {}),
           ...(worktree?.branch ? { worktree: worktree.path, branch: worktree.branch } : {}),
         },
       }),
@@ -1058,6 +1065,51 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: 'get_godot_capabilities',
+    description: 'Godot projects only. Ask the installed Godot Agent Harness what it supports BEFORE running anything: real actions, run parameters and defaults, profiles with timeout budgets, when an OverrideReason is required, the Harness path/revision/Godot version, the test scenes in the checkout this task uses, and where evidence lands. Starts nothing. Pass plan { action:"run", test, profile?, timeoutSec?, overrideReason? } to get that plan validated (unsupported action, missing test, budget refusal come back as actionable problems) and, when valid, the exact command with a run id. Pass taskId so the checkout is the task worktree.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        projectId: PROJECT_ID, taskId: TASK_ID,
+        checkout: { type: 'string', enum: ['main', 'task'], description: 'Only to choose the main checkout on purpose; omitted = the task worktree' },
+        plan: {
+          type: 'object',
+          description: 'Optional run plan to validate',
+          properties: {
+            action: { type: 'string', description: 'Harness action; defaults to "run"' },
+            test: { type: 'string', description: 'Project-relative .tscn, e.g. tests/stairs_traversal.tscn' },
+            profile: { type: 'string', description: 'Profile name from the capabilities (default smoke)' },
+            mode: { type: 'string', description: 'HEADLESS (default) or RENDER_BACKGROUND' },
+            timeoutSec: { type: 'integer', description: 'Only to exceed the profile default; see timeouts' },
+            overrideReason: { type: 'string', description: 'True justification (>= 10 chars) when timeoutSec exceeds the profile budget' },
+          },
+        },
+      },
+      required: ['projectId'],
+    },
+    annotations: readOnly,
+  },
+  {
+    name: 'get_godot_run',
+    description: 'Read the result of a Godot Harness run: verdict (assertions, execution, visual evidence, human validation kept apart), a diagnosis (test problem / infrastructure / evidence incomplete / timeout), receipt summary, evidence files, the checkout/branch/commit it belongs to, and whether it is stale for the current HEAD. Never treat a missing, stale or infrastructure result as a pass.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { projectId: PROJECT_ID, runId: { type: 'string', description: 'Run id, e.g. 20260101T120000Z-0123abcd' } },
+      required: ['projectId', 'runId'],
+    },
+    annotations: readOnly,
+  },
+  {
+    name: 'record_godot_run',
+    description: 'Link a Harness run you executed to the task, in the same run index that Testing and Review read. Requires the receipt of the run and that it ran the own checkout of the task. The verdict still comes from the receipt, never from you; this records provenance only and is not an acceptance, approval or integration.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { projectId: PROJECT_ID, taskId: TASK_ID, runId: { type: 'string', description: 'Run id of a finished run' } },
+      required: ['projectId', 'taskId', 'runId'],
+    },
+    annotations: { idempotentHint: true } as const,
+  },
+  {
     name: 'get_git_log',
     description: 'Get recent commits (default 10, compact: hash, message, date, author)',
     inputSchema: {
@@ -1232,6 +1284,14 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
       return getSystem(args.projectId, args.systemId, args.taskId, args.areaId);
     case 'propose_system':
       return proposeSystem(args.projectId, args as any);
+    case 'get_godot_capabilities':
+      return godotResult(await godotCaps.getCapabilities({ projectId: args.projectId, taskId: args.taskId, checkout: args.checkout, plan: args.plan }));
+    case 'get_godot_run':
+      return godotResult(await godotCaps.getRunReport(args.projectId, args.runId));
+    case 'record_godot_run': {
+      const r = await godotCaps.recordAgentRun({ projectId: args.projectId, taskId: args.taskId, runId: args.runId });
+      return godotResult(r.ok ? { ok: true, recorded: true, alreadyRecorded: r.alreadyRecorded, runId: r.record.runId, taskId: r.record.taskId, checkout: r.record.checkout, file: r.record.file, note: 'Linked. Read the verdict with get_godot_run; PASS is not acceptance.' } : r);
+    }
     case 'get_git_log':
       return getGitLog(args.projectId, args.limit);
     case 'get_git_diff':
