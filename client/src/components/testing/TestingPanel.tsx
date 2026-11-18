@@ -89,6 +89,8 @@ export function TestingPanel({ projectId }: { projectId: string }) {
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
 
   useEffect(() => { setChoice(readChoice(projectId)); setRefusal(null); setSelectedRun(null) }, [projectId])
+  // Hooks stay above the early returns below: this hook must run on every render.
+  const [, setEditorCheckout] = useEditorCheckout(projectId)
 
   const worktreeTasks = useMemo(() => (tasks ?? []).filter((t: Task) => !!t.worktreePath), [tasks])
   const task = choice === 'main' ? undefined : (tasks ?? []).find((t: Task) => t.id === choice)
@@ -151,7 +153,6 @@ export function TestingPanel({ projectId }: { projectId: string }) {
   // The Editor shows the project checkout only, so opening a file "from" a task worktree would show other content.
   // A test opened from here is opened from the checkout selected in A (a worktree's copy for a task). The Editor's own
   // checkout follows, so its tree shows the same copy; nothing is silently moved to another checkout.
-  const [, setEditorCheckout] = useEditorCheckout(projectId)
   const openInEditor = (rel: string) => {
     const checkout = choice === 'main' ? undefined : choice
     setEditorCheckout(checkout)
