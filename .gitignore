@@ -36,6 +36,8 @@ data/claude-conversations.json
 /data/catalog-backups/
 # Worktrees de tarefa/checkouts irmaos (cada um tem o seu proprio Git)
 /.claude/worktrees/
+# Notas de handoff locais (evidencias preservadas em backups verificados)
+/.claude/handoffs/
 
 # Build artifacts
 client/tsconfig.tsbuildinfo
