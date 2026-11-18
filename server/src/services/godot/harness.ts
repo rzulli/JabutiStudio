@@ -46,9 +46,9 @@ export function findPwsh(): string | null {
   return findOnPath(process.platform === 'win32' ? ['pwsh.exe'] : ['pwsh']);
 }
 
-interface Spawned { code: number | null; stdout: string; stderr: string; timedOut: boolean; error?: string }
+export interface Spawned { code: number | null; stdout: string; stderr: string; timedOut: boolean; error?: string }
 
-function runPwsh(pwsh: string, args: string[], cwd: string, timeoutMs: number): Promise<Spawned> {
+export function runPwsh(pwsh: string, args: string[], cwd: string, timeoutMs: number): Promise<Spawned> {
   return new Promise(resolveP => {
     let stdout = '', stderr = '', done = false, timedOut = false;
     const child = spawn(pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args], { cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -151,7 +151,7 @@ export async function readSession(h: HarnessLocation, runId: string): Promise<an
   try { return JSON.parse((await readFile(join(dir, 'session.json'), 'utf-8')).replace(/^\uFEFF/, '')); } catch { return null; }
 }
 
-const LOG_FILES = ['stdout.log', 'stderr.log', 'import.stdout.log', 'import.stderr.log', 'events.jsonl', 'focus.jsonl', 'receipt.json', 'session.json'];
+export const LOG_FILES = ['stdout.log', 'stderr.log', 'import.stdout.log', 'import.stderr.log', 'events.jsonl', 'focus.jsonl', 'receipt.json', 'session.json'];
 const SHOT_RE = /^[A-Za-z0-9._-]{1,120}\.png$/;
 
 export interface EvidenceFile { name: string; kind: 'log' | 'receipt' | 'screenshot'; bytes: number }

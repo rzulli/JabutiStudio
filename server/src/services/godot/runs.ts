@@ -42,6 +42,8 @@ export interface RunRecord {
   command: string[];
   startedAt: string;
   runner?: { exitCode: number | null; endedAt: string; stderrTail?: string; error?: string };
+  /** Set when the run was started outside this server (an agent ran the Harness itself) and linked afterwards: provenance was captured at `at`, not at launch. */
+  registered?: { by: 'agent-report'; at: string; headCommittedAt: string | null };
 }
 
 interface Store { version: 1; runs: RunRecord[] }
@@ -76,6 +78,10 @@ function mutate<T>(projectId: string, fn: (s: Store) => T): Promise<T> {
 }
 
 export const listRecords = async (projectId: string) => (await read(projectId)).runs;
+/** Add one index entry (a run the Harness already executed). Never replaces an existing run id. */
+export function addRecord(projectId: string, record: RunRecord): Promise<void> {
+  return mutate(projectId, s => { if (!s.runs.some(r => r.runId === record.runId)) s.runs.unshift(record); });
+}
 export async function getRecord(projectId: string, runId: string) { return (await read(projectId)).runs.find(r => r.runId === runId); }
 
 export type Failure = { ok: false; status: number; code: string; message: string; options?: Refusal['options'] };
