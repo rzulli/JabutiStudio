@@ -1,4 +1,7 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
 import type { Task, Project } from '../types/index.js';
+import { godotBriefSection } from './godot/capabilities.js';
 
 export function buildAiResolvePrompt(
   task: Task,
@@ -82,6 +85,8 @@ export function buildAiResolvePrompt(
   lines.push('4. Test your implementation');
   lines.push('5. Create a git commit with your changes using a clear, concise commit message that describes what was done (do NOT use --no-verify or skip hooks)');
   lines.push('');
+
+  if (existsSync(join(cwd, 'project.godot'))) lines.push(...godotBriefSection());
 
   lines.push('## IMPORTANT: When starting work on this task');
   lines.push('First, improve the task title and description if they are vague or unclear, and ALWAYS set or correct effort using Fibonacci points (1 trivial, 2 small, 3 medium, 5 large/cross-layer, 8 very large or uncertain). Effort is implementation size, not priority.');
