@@ -165,6 +165,7 @@ export function Workspace() {
       if (pending.projectId === projectId) {
         localStorage.removeItem('shipyard:pending-editor-file')
         editor.openFile(pending.path, pending.name, pending.extension, '', {
+          checkout: pending.checkout,
           diffMode: pending.diffMode,
           subrepo: pending.subrepo,
           reveal: pending.reveal,

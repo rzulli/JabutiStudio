@@ -1,7 +1,15 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 
+/**
+ * A tab is one file of one checkout. `path` is its key (unique across checkouts, and what the rest of the Editor compares
+ * and passes around); `file` is the project-relative path the API takes; `checkout` is the task id of a worktree, or
+ * undefined for the project folder. Main-checkout keys are the plain path, so tabs saved before worktrees still match.
+ */
 export interface EditorTab {
   path: string
+  file: string
+  /** Task whose worktree this copy of the file belongs to; undefined = the project folder (main checkout). */
+  checkout?: string
   name: string
   extension: string
   originalContent: string
@@ -24,7 +32,11 @@ export interface EditorReveal {
   nonce: number
 }
 
+export const tabKey = (file: string, checkout?: string) => (checkout ? `@task:${checkout}:${file}` : file)
+
 export interface OpenFileOptions {
+  /** Checkout the file is opened from (task id of a worktree). Default: the project folder. */
+  checkout?: string
   diffMode?: 'staged' | 'unstaged'
   subrepo?: string
   reveal?: Omit<EditorReveal, 'nonce'>
@@ -32,6 +44,8 @@ export interface OpenFileOptions {
 
 interface PersistedTab {
   path: string
+  file?: string
+  checkout?: string
   name: string
   extension: string
 }
@@ -39,15 +53,20 @@ interface PersistedTab {
 const STORAGE_KEY = (projectId: string) => `shipyard:editor-tabs:${projectId}`
 const ACTIVE_KEY = (projectId: string) => `shipyard:editor-active-tab:${projectId}`
 
-function loadPersistedTabs(projectId: string): PersistedTab[] {
+function loadPersistedTabs(projectId: string): EditorTab[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY(projectId))
-    return raw ? JSON.parse(raw) : []
+    const list: PersistedTab[] = raw ? JSON.parse(raw) : []
+    return list.map(p => {
+      const file = p.file ?? p.path
+      return { path: tabKey(file, p.checkout), file, checkout: p.checkout, name: p.name, extension: p.extension,
+        originalContent: '', content: '', isDirty: false, needsFetch: true }
+    })
   } catch { return [] }
 }
 
 function persistTabs(projectId: string, tabs: EditorTab[]) {
-  const data: PersistedTab[] = tabs.map(t => ({ path: t.path, name: t.name, extension: t.extension }))
+  const data: PersistedTab[] = tabs.map(t => ({ path: t.path, file: t.file, checkout: t.checkout, name: t.name, extension: t.extension }))
   localStorage.setItem(STORAGE_KEY(projectId), JSON.stringify(data))
 }
 
@@ -64,16 +83,7 @@ function persistActiveTab(projectId: string, path: string | null) {
 }
 
 export function useEditorTabs(projectId: string) {
-  const [tabs, setTabs] = useState<EditorTab[]>(() => {
-    const persisted = loadPersistedTabs(projectId)
-    return persisted.map(p => ({
-      ...p,
-      originalContent: '',
-      content: '',
-      isDirty: false,
-      needsFetch: true,
-    }))
-  })
+  const [tabs, setTabs] = useState<EditorTab[]>(() => loadPersistedTabs(projectId))
 
   const [activeTabPath, setActiveTabPath] = useState<string | null>(() => {
     const saved = loadActiveTab(projectId)
@@ -88,13 +98,7 @@ export function useEditorTabs(projectId: string) {
     if (prevProjectId.current !== projectId) {
       prevProjectId.current = projectId
       const persisted = loadPersistedTabs(projectId)
-      setTabs(persisted.map(p => ({
-        ...p,
-        originalContent: '',
-        content: '',
-        isDirty: false,
-        needsFetch: true,
-      })))
+      setTabs(persisted)
       const saved = loadActiveTab(projectId)
       setActiveTabPath(saved && persisted.some(t => t.path === saved) ? saved : persisted[0]?.path || null)
     }
@@ -109,8 +113,9 @@ export function useEditorTabs(projectId: string) {
     persistActiveTab(projectId, activeTabPath)
   }, [projectId, activeTabPath])
 
-  const openFile = useCallback((path: string, name: string, extension: string, content: string, options?: OpenFileOptions) => {
+  const openFile = useCallback((file: string, name: string, extension: string, content: string, options?: OpenFileOptions) => {
     const reveal = options?.reveal ? { ...options.reveal, nonce: Date.now() } : undefined
+    const path = tabKey(file, options?.checkout)
     setTabs(prev => {
       const existing = prev.find(t => t.path === path)
       if (existing) {
@@ -122,6 +127,8 @@ export function useEditorTabs(projectId: string) {
       }
       return [...prev, {
         path,
+        file,
+        checkout: options?.checkout,
         name,
         extension,
         originalContent: content,

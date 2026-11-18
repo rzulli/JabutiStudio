@@ -45,7 +45,7 @@ export interface RunRecord {
 }
 
 interface Store { version: 1; runs: RunRecord[] }
-const MAX_RECORDS = 300;
+export const MAX_RECORDS = 300;
 const safeId = (id: string) => id.replace(/[^a-zA-Z0-9._-]/g, '_');
 const storePath = (projectId: string) => join(DATA_DIR, 'godot-runs', `${safeId(projectId)}.json`);
 

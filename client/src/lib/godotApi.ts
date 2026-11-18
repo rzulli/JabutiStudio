@@ -95,6 +95,9 @@ export const godotApi = {
   run: (projectId: string, body: GodotSelection & { file: string; action: 'scene' | 'test'; via?: string; mode?: 'HEADLESS' | 'RENDER_BACKGROUND' }) =>
     call<{ ok: true; record: RunRecord }>(`/projects/${projectId}/godot/runs`, { method: 'POST', body: JSON.stringify(body) }),
   runs: (projectId: string, file?: string, taskId?: string) => call<{ runs: RunListItem[] }>(`/projects/${projectId}/godot/runs${qs({ file, taskId })}`),
+  /** Exact history of one file on one checkout (the index, not a window of recent runs). `stored` = runs held at all. */
+  runsExact: (projectId: string, file: string, checkoutPath: string, limit = 1) =>
+    call<{ runs: RunListItem[]; stored: number; storeLimit: number }>(`/projects/${projectId}/godot/runs${qs({ file, checkoutPath, exact: '1', limit: String(limit) })}`),
   runView: (projectId: string, runId: string) => call<RunView>(`/projects/${projectId}/godot/runs/${runId}`),
   cancel: (projectId: string, runId: string) => call<{ ok: true; output: string }>(`/projects/${projectId}/godot/runs/${runId}/cancel`, { method: 'POST', body: '{}' }),
   evidenceUrl: (projectId: string, runId: string, name: string) => `${BASE}/projects/${projectId}/godot/runs/${runId}/evidence?name=${encodeURIComponent(name)}`,

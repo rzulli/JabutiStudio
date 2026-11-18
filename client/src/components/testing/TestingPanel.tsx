@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ExternalLink, FlaskConical, FolderGit2, Gamepad2, GitBranch, Info, Loader2, Play, Square } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTasks, type Task } from '@/hooks/useTasks'
 import { godotKeys, useGodotContext, useGodotRuns, useGodotStatus } from '@/hooks/useGodot'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
+import { useEditorCheckout } from '@/hooks/useFileScope'
 import { godotApi, GodotError, contextLabel, shortSha, type GodotContext, type GodotRefusal, type GodotSelection, type RunListItem, type RunRecord } from '@/lib/godotApi'
 import { OutcomeChip, RunDetail, when } from '@/components/editor/GodotResults'
 import { cn } from '@/lib/utils'
@@ -42,6 +43,38 @@ function Section({ letter, title, hint, children }: { letter: string; title: str
       </header>
       <div className="p-3 text-xs">{children}</div>
     </section>
+  )
+}
+
+/**
+ * Last result of one test on one checkout, from the run index itself (not a window of recent runs). An empty answer says
+ * whether the index is full: then it is "not in the stored history", never "never run".
+ */
+function LastResult({ projectId, rel, checkoutPath, head, dirty }: { projectId: string; rel: string; checkoutPath: string; head: string | null; dirty: number | null }) {
+  const { data } = useQuery({
+    queryKey: ['godot', 'runs', projectId, 'exact', rel, checkoutPath],
+    queryFn: () => godotApi.runsExact(projectId, rel, checkoutPath, 1),
+    refetchInterval: 3000,
+  })
+  if (!data) return <span className="text-muted-foreground">…</span>
+  const last = data.runs[0]
+  if (!last) {
+    return <span className="text-muted-foreground">{data.stored >= data.storeLimit
+      ? `no run in the last ${data.storeLimit} stored runs (the index is full; older runs age out)`
+      : 'never run on this checkout'}</span>
+  }
+  const ranAt = last.record.checkout.head
+  const movedSha = !!head && !!ranAt && head !== ranAt
+  const dirtyThen = last.record.checkout.dirtyAtStart?.count ?? null
+  const dirtyChanged = dirty !== null && dirtyThen !== null && dirty !== dirtyThen
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <OutcomeChip outcome={last.verdict.outcome} label={last.verdict.headline} />
+      <span className="text-muted-foreground">{when(last.record.startedAt)}</span>
+      {movedSha && <span className="text-warning">ran at {shortSha(ranAt)}, checkout is now at {shortSha(head)}</span>}
+      {!movedSha && dirtyChanged && <span className="text-warning">uncommitted changes differ from that run ({dirtyThen} then, {dirty} now)</span>}
+      {!movedSha && !dirtyChanged && <span className="text-muted-foreground">same commit as now</span>}
+    </span>
   )
 }
 
@@ -94,7 +127,7 @@ export function TestingPanel({ projectId }: { projectId: string }) {
     try {
       const r = await godotApi.run(projectId, { ...selection, file, action, via })
       setSelectedRun(r.record.runId)
-      void qc.invalidateQueries({ queryKey: godotKeys.runs(projectId) })
+      void qc.invalidateQueries({ queryKey: ['godot', 'runs', projectId] })
     } catch (e) { fail(e) } finally { setBusy(null) }
   }
 
@@ -115,9 +148,14 @@ export function TestingPanel({ projectId }: { projectId: string }) {
   }
 
   // The Editor shows the project checkout only, so opening a file "from" a task worktree would show other content.
-  const openInEditor = (rel: string) => editor.openFileForProject(projectId, rel, basename(rel), extOf(rel))
-
-  const lastRunOf = (rel: string) => runs.find(r => r.record.file === rel)
+  // A test opened from here is opened from the checkout selected in A (a worktree's copy for a task). The Editor's own
+  // checkout follows, so its tree shows the same copy; nothing is silently moved to another checkout.
+  const [, setEditorCheckout] = useEditorCheckout(projectId)
+  const openInEditor = (rel: string) => {
+    const checkout = choice === 'main' ? undefined : choice
+    setEditorCheckout(checkout)
+    editor.openFileForProject(projectId, rel, basename(rel), extOf(rel), { checkout })
+  }
   const current = selectedRun ?? runs[0]?.record.runId ?? null
   const running = runs.some(r => r.running)
   const refusalNow = refusal ?? (ctxRefusal ? { code: ctxRefusal.code, message: ctxRefusal.message, options: ctxRefusal.options } : null)
@@ -187,14 +225,14 @@ export function TestingPanel({ projectId }: { projectId: string }) {
           {tests.length === 0 && !isFetching && <p className="text-muted-foreground">No test scenes under <span className="font-mono">tests/</span> in this checkout. Nothing to run.</p>}
           <ul className="space-y-1.5">
             {tests.map(rel => {
-              const last = lastRunOf(rel)
+
               return (
                 <li key={rel} className="rounded border bg-background/50 p-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <FlaskConical className="h-3.5 w-3.5 text-muted-foreground" />
                     <span className="font-mono break-all">{rel}</span>
                     <span className="rounded border px-1 text-[10px] text-muted-foreground" title="Found on disk: a .tscn under tests/">discovered</span>
-                    {last ? <OutcomeChip outcome={last.verdict.outcome} label={last.verdict.headline} /> : <span className="text-muted-foreground">no run yet</span>}
+                    {ctx && <LastResult projectId={projectId} rel={rel} checkoutPath={ctx.checkoutPath} head={ctx.head} dirty={ctx.dirty?.count ?? null} />}
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <button onClick={() => void runOn('test', rel)} disabled={blocked} className="flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-accent/50 disabled:opacity-40">
@@ -203,7 +241,7 @@ export function TestingPanel({ projectId }: { projectId: string }) {
                     <button onClick={() => void openInGodot(rel)} disabled={blocked} className="flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-accent/50 disabled:opacity-40">
                       <ExternalLink className="h-3 w-3" />Open in Godot
                     </button>
-                    <button onClick={() => openInEditor(rel)} disabled={!onMain} title={onMain ? 'Open in the Editor' : 'The Editor shows the project checkout only; switch the checkout to Main to open it there'} className="flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-accent/50 disabled:opacity-40">
+                    <button onClick={() => openInEditor(rel)} disabled={!ctx} title={onMain ? 'Open in the Editor (project folder)' : `Open in the Editor, from ${label}`} className="flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-accent/50 disabled:opacity-40">
                       Open in Editor
                     </button>
                   </div>
@@ -218,7 +256,7 @@ export function TestingPanel({ projectId }: { projectId: string }) {
                 {testScripts.map(rel => (
                   <li key={rel} className="flex flex-wrap items-center gap-2 text-muted-foreground">
                     <span className="font-mono break-all text-foreground/80">{rel}</span>
-                    <button onClick={() => openInEditor(rel)} disabled={!onMain} className="rounded border px-1.5 py-0.5 hover:bg-accent/50 disabled:opacity-40">Open in Editor</button>
+                    <button onClick={() => openInEditor(rel)} disabled={!ctx} className="rounded border px-1.5 py-0.5 hover:bg-accent/50 disabled:opacity-40">Open in Editor</button>
                   </li>
                 ))}
               </ul>

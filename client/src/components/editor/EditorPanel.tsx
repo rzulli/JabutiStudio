@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { EditorTabBar } from './EditorTabBar'
 import { GodotActions, GODOT_EXTENSIONS } from './GodotActions'
+import { CheckoutStrip } from './CheckoutStrip'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { DiffEditor } from './DiffEditor'
 import { useSaveFile } from '@/hooks/useFiles'
@@ -79,10 +80,11 @@ function TabContentLoader({ projectId, tab, onInit }: { projectId: string; tab: 
     let cancelled = false
     setIsLoading(true)
     setError(null)
-    api.getFileContent(projectId, tab.path)
+    // The tab reads its own checkout's copy: a worktree tab never shows the project folder's version of the file.
+    api.getFileContent(projectId, tab.file, tab.checkout)
       .then((data) => {
         if (cancelled) return
-        queryClient.setQueryData(['files', 'content', projectId, tab.path], data)
+        queryClient.setQueryData(['files', 'content', projectId, tab.file, tab.checkout ?? ''], data)
         onInit(tab.path, data.content)
       })
       .catch((err) => {
@@ -98,7 +100,7 @@ function TabContentLoader({ projectId, tab, onInit }: { projectId: string; tab: 
       })
       .finally(() => { if (!cancelled) setIsLoading(false) })
     return () => { cancelled = true }
-  }, [projectId, tab.path, tab.needsFetch, tab.diffMode, onInit, queryClient])
+  }, [projectId, tab.path, tab.file, tab.checkout, tab.needsFetch, tab.diffMode, onInit, queryClient])
 
   if (isLoading) {
     return (
@@ -126,7 +128,7 @@ function DiffTabContent({ projectId, tab }: { projectId: string; tab: EditorTab 
   // when the file isn't staged) ↔ working tree content (modified — `tab.content`).
   const originalRef = isStaged ? 'HEAD' : ':0'
   // The tab holds the path from the project root; git wants it from its own.
-  const repoPath = toRepoPath(tab.path, tab.subrepo)
+  const repoPath = toRepoPath(tab.file, tab.subrepo)
   const { data: originalData, isLoading: originalLoading } = useGitFileAtRef(
     projectId,
     repoPath,
@@ -199,7 +201,7 @@ export function EditorPanel({
   const handleSave = useCallback(() => {
     if (!activeTab || !activeTab.isDirty) return
     saveFile.mutate(
-      { projectId, relPath: activeTab.path, content: activeTab.content },
+      { projectId, relPath: activeTab.file, content: activeTab.content, taskId: activeTab.checkout },
       {
         onSuccess: () => {
           onMarkSaved(activeTab.path, activeTab.content)
@@ -305,8 +307,11 @@ export function EditorPanel({
         </div>
       )}
 
+      {/* Which project and which checkout the active file lives in: a worktree's copy is never shown as the main one. */}
+      {activeTab && <CheckoutStrip projectId={projectId} taskId={activeTab.checkout} />}
+
       {activeTab && !activeTab.needsFetch && !activeTab.diffMode && GODOT_EXTENSIONS.has(activeTab.extension.replace(/^\./, '').toLowerCase()) && (
-        <GodotActions key={projectId} projectId={projectId} file={activeTab.path} />
+        <GodotActions key={activeTab.path} projectId={projectId} file={activeTab.file} taskId={activeTab.checkout} />
       )}
 
       <div className="flex-1 min-h-0 relative">

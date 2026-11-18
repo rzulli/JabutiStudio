@@ -1227,18 +1227,23 @@ export const api = {
     ),
 
   // Files
-  getFileTree: (projectId: string, relPath: string, includeSidecars = false) =>
+  // `taskId` selects a task's worktree as the root of the request; omitted = the project folder.
+  getFileTree: (projectId: string, relPath: string, includeSidecars = false, taskId?: string) =>
     request<{ entries: Array<{ name: string; path: string; type: 'file' | 'dir'; size?: number; extension?: string; mimeHint?: string; readOnly?: boolean }> }>(
-      `/projects/${projectId}/files/tree?${searchParams({ path: relPath, sidecars: includeSidecars ? 'show' : undefined })}`
+      `/projects/${projectId}/files/tree?${searchParams({ path: relPath, sidecars: includeSidecars ? 'show' : undefined, taskId })}`
     ),
-  getFileContent: (projectId: string, relPath: string) =>
+  getFileCheckout: (projectId: string, taskId?: string) =>
+    request<{ projectName: string; isMainCheckout: boolean; checkoutPath: string; reason: string; taskId: string | null; taskNumber: number | null; taskTitle: string | null; branch: string | null; head: string | null; detached: boolean; dirty: { count: number; files: string[] } | null }>(
+      `/projects/${projectId}/files/checkout?${searchParams({ taskId })}`
+    ),
+  getFileContent: (projectId: string, relPath: string, taskId?: string) =>
     request<{ content: string; encoding: string; mimeHint: string; size: number }>(
-      `/projects/${projectId}/files/content?path=${encodeURIComponent(relPath)}`,
+      `/projects/${projectId}/files/content?${searchParams({ path: relPath, taskId })}`,
       { headers: { 'Accept': 'application/json' } }
     ),
-  deleteFile: (projectId: string, relPath: string) =>
+  deleteFile: (projectId: string, relPath: string, taskId?: string) =>
     request<{ success: boolean }>(
-      `/projects/${projectId}/files?path=${encodeURIComponent(relPath)}`,
+      `/projects/${projectId}/files?${searchParams({ path: relPath, taskId })}`,
       { method: 'DELETE' }
     ),
   openFileFolder: (projectId: string, relPath: string) =>
@@ -1246,25 +1251,25 @@ export const api = {
       `/projects/${projectId}/files/open-folder`,
       { method: 'POST', body: JSON.stringify({ path: relPath }) }
     ),
-  saveFileContent: (projectId: string, relPath: string, content: string) =>
+  saveFileContent: (projectId: string, relPath: string, content: string, taskId?: string) =>
     request<{ success: boolean; size: number }>(
       `/projects/${projectId}/files/content`,
-      { method: 'PUT', body: JSON.stringify({ path: relPath, content }) }
+      { method: 'PUT', body: JSON.stringify({ path: relPath, content, taskId }) }
     ),
-  renameFile: (projectId: string, relPath: string, newName: string) =>
+  renameFile: (projectId: string, relPath: string, newName: string, taskId?: string) =>
     request<{ success: boolean; newPath: string }>(
       `/projects/${projectId}/files/rename`,
-      { method: 'POST', body: JSON.stringify({ path: relPath, newName }) }
+      { method: 'POST', body: JSON.stringify({ path: relPath, newName, taskId }) }
     ),
-  createFile: (projectId: string, parentPath: string, name: string, type: 'file' | 'dir') =>
+  createFile: (projectId: string, parentPath: string, name: string, type: 'file' | 'dir', taskId?: string) =>
     request<{ success: boolean; path: string }>(
       `/projects/${projectId}/files/create`,
-      { method: 'POST', body: JSON.stringify({ parentPath, name, type }) }
+      { method: 'POST', body: JSON.stringify({ parentPath, name, type, taskId }) }
     ),
-  copyFile: (projectId: string, sourcePath: string, destParentPath?: string, newName?: string) =>
+  copyFile: (projectId: string, sourcePath: string, destParentPath?: string, newName?: string, taskId?: string) =>
     request<{ success: boolean; path: string }>(
       `/projects/${projectId}/files/copy`,
-      { method: 'POST', body: JSON.stringify({ sourcePath, destParentPath, newName }) }
+      { method: 'POST', body: JSON.stringify({ sourcePath, destParentPath, newName, taskId }) }
     ),
 
   // Reports
