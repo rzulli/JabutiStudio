@@ -29,6 +29,26 @@ export async function systemRoutes(app: FastifyInstance) {
     catch (e: any) { return reply.status(500).send({ error: String(e?.message ?? e) }); }
   });
 
+  // Read-only: row-by-row comparison with another catalog (identical / only one side / differs, field by field).
+  app.get<{ Params: { id: string }; Querystring: { fromDir?: string } }>('/api/projects/:id/systems/catalog-source/compare', async (request, reply) => {
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    if (!request.query.fromDir) return reply.status(400).send({ error: 'fromDir is required' });
+    try { return await systems.compareWithCatalog(project, request.query.fromDir); }
+    catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
+  });
+
+  // A person's explicit choice per conflicting system (keep-active | take-other | keep-both). All or nothing; backup + manifest.
+  app.post<{ Params: { id: string }; Body: { fromDir?: string; expectedSourceSha256?: string; expectedTargetSha256?: string | null; choices?: Record<string, string> } }>('/api/projects/:id/systems/catalog-source/resolve', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = await resolve(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const b = request.body ?? {};
+    if (!b.fromDir || !/^[a-f0-9]{64}$/.test(b.expectedSourceSha256 ?? '') || !b.choices) return reply.status(400).send({ error: 'fromDir, expectedSourceSha256 and choices are required' });
+    try { return await systems.resolveWithCatalog(project, { fromDir: b.fromDir, expectedSourceSha256: b.expectedSourceSha256!, expectedTargetSha256: b.expectedTargetSha256 ?? null, choices: b.choices as any }); }
+    catch (e: any) { return reply.status(409).send({ error: String(e?.message ?? e) }); }
+  });
+
   // Explicit, add-only import from another data dir on this machine (backup + manifest; conflicts block everything).
   app.post<{ Params: { id: string }; Body: { fromDir?: string; expectedSourceSha256?: string; expectedTargetSha256?: string | null } }>('/api/projects/:id/systems/catalog-source/import', async (request, reply) => {
     if (!uiOnly(request, reply)) return;

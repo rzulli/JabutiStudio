@@ -86,3 +86,13 @@ export function isKnownSibling(dir: string): string | null {
   const k = canonicalPath(dir);
   return siblingDataDirs().find(d => canonicalPath(d) === k) ?? null;
 }
+
+/** Human name of a data dir, so a person can tell the installed app from the dev checkout. */
+export function labelOf(dir: string): string {
+  const k = canonicalPath(dir);
+  const appData = process.env.APPDATA
+    ?? (process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : join(homedir(), '.config'));
+  if (k === canonicalPath(join(appData, 'JabutiStudio', 'data'))) return 'Installed app (AppData)';
+  if (k === canonicalPath(resolve(import.meta.dirname, '../../../data'))) return 'Dev checkout (<repo>/data)';
+  return 'Other data directory';
+}

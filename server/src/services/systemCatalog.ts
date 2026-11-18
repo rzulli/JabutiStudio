@@ -13,6 +13,7 @@ import * as taskStore from './taskStore.js';
 import * as sem from './systemSemantics.js';
 import { portableSchema, portableSystem } from './systemPortable.js';
 import * as catalogSources from './catalogSources.js';
+import { canonicalPath } from './pathIdentity.js';
 
 const run = promisify(execFile);
 
@@ -1482,12 +1483,71 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
 
 const lastRead = new Map<string, { at: string; ok: boolean; systems: number; error?: string }>();
 
-export type SiblingRelation = 'identical' | 'addable' | 'conflicting' | 'unreadable';
+export type SiblingRelation = 'identical' | 'addable' | 'conflicting' | 'resolved' | 'unreadable';
 export interface SiblingCatalog extends catalogSources.CatalogProbe {
   relation: SiblingRelation;
+  label: string;
   /** ids present only there / present in both with different content or an equivalent name or term under another id. */
   addableIds: string[];
   conflictIds: string[];
+  /** a person already reviewed THIS exact file of the other catalog (same sha256) and decided */
+  resolution?: ResolutionRecord;
+}
+
+// ---- comparing and resolving two catalogs -------------------------------------------------------------
+
+export type RowKind = 'identical' | 'only-here' | 'only-there' | 'different' | 'duplicate';
+export type Choice = 'keep-active' | 'take-other' | 'keep-both';
+export interface FieldChange { field: string; here: string; there: string }
+export interface CompareRow { id: string; name: string; kind: RowKind; changes: FieldChange[]; duplicateOf?: string; hereUpdatedAt?: string; thereUpdatedAt?: string; hereStatus?: string; thereStatus?: string }
+export interface ResolutionRecord { dir: string; sourceSha256: string; resolvedAt: string; manifest: string | null; choices: Record<string, string>; targetSha256After: string | null }
+
+const list = (xs: unknown[] | undefined) => (xs ?? []).map(String).join(', ') || '—';
+/** Readable per-field view of a system, used only to show a person what differs. updatedAt/createdAt are NOT content. */
+function fieldsOf(x: StoredSystem): Record<string, string> {
+  return {
+    name: x.name, kind: x.kind ?? 'system', status: x.status, origin: x.origin, summary: x.summary || '—',
+    responsibilities: (x.responsibilities ?? []).join(' | ') || '—',
+    terms: list(x.anchors?.terms), files: list(x.anchors?.files), decisions: list(x.anchors?.decisions), related: list(x.related),
+    areas: list((x.areas ?? []).map(a => `${a.id} (${a.status})`)), relations: list((x.relations ?? []).map(r => `${r.id} (${r.status})`)),
+    suggestions: String(x.suggestions?.length ?? 0), planned: x.planned ? 'yes' : 'no',
+  };
+}
+const contentKey = (x: StoredSystem) => {
+  const { updatedAt: _u, createdAt: _c, ...rest } = portableSystem(x) as any;
+  return JSON.stringify({ ...rest, planned: !!x.planned });
+};
+
+/** Pure comparison. Systems with the same id and the same content (timestamps aside) are identical, not conflicting. */
+export function compareSystems(active: StoredSystem[], other: StoredSystem[]): CompareRow[] {
+  const rows: CompareRow[] = [];
+  for (const t of other) {
+    const h = active.find(x => x.id === t.id);
+    if (h) {
+      if (contentKey(h) === contentKey(t)) { rows.push({ id: t.id, name: t.name, kind: 'identical', changes: [] }); continue; }
+      const fh = fieldsOf(h), ft = fieldsOf(t);
+      const changes = Object.keys(fh).filter(f => fh[f] !== ft[f]).map(f => ({ field: f, here: fh[f], there: ft[f] }));
+      rows.push({ id: t.id, name: h.name === t.name ? h.name : `${h.name} / ${t.name}`, kind: 'different', changes, hereUpdatedAt: h.updatedAt, thereUpdatedAt: t.updatedAt, hereStatus: h.status, thereStatus: t.status });
+      continue;
+    }
+    const dup = active.find(x => x.status !== 'dismissed' && x.status !== 'merged' && x.id !== t.id &&
+      (x.name.toLowerCase() === t.name.toLowerCase() || x.anchors.terms.some(a => t.anchors.terms.some(b => a.toLowerCase() === b.toLowerCase()))));
+    rows.push(dup ? { id: t.id, name: t.name, kind: 'duplicate', changes: [], duplicateOf: dup.id } : { id: t.id, name: t.name, kind: 'only-there', changes: [] });
+  }
+  for (const h of active) if (!other.some(t => t.id === h.id)) rows.push({ id: h.id, name: h.name, kind: 'only-here', changes: [] });
+  return rows;
+}
+
+const resolutionsPath = () => join(DATA_DIR, 'catalog-backups', 'resolutions.json');
+async function readResolutions(projectId: string): Promise<Record<string, ResolutionRecord>> {
+  try { return (JSON.parse(await fs.readFile(resolutionsPath(), 'utf8')).projects?.[projectId]) ?? {}; } catch { return {}; }
+}
+async function writeResolution(projectId: string, rec: ResolutionRecord) {
+  let all: any = { version: 1, projects: {} };
+  try { all = JSON.parse(await fs.readFile(resolutionsPath(), 'utf8')); } catch { /* first one */ }
+  all.projects ??= {}; (all.projects[projectId] ??= {})[canonicalPath(rec.dir)] = rec;
+  await fs.mkdir(dirname(resolutionsPath()), { recursive: true });
+  await writeJsonAtomic(resolutionsPath(), all);
 }
 
 /** Read-only report: active catalog (path, count, last read) + any other catalog on this machine for the same project. */
@@ -1495,18 +1555,19 @@ export async function catalogSourceReport(project: Project) {
   const active = await catalogSources.probe(DATA_DIR, project.id);
   let store: Store | null = null;
   try { store = await readStore(project.id); } catch { /* reported through active.error / lastRead */ }
+  const resolutions = await readResolutions(project.id);
   const others: SiblingCatalog[] = [];
   for (const o of await catalogSources.otherCatalogs(project.id)) {
-    const sib: SiblingCatalog = { ...o, relation: 'unreadable', addableIds: [], conflictIds: [] };
+    const sib: SiblingCatalog = { ...o, label: catalogSources.labelOf(o.dir), relation: 'unreadable', addableIds: [], conflictIds: [] };
     if (!o.error && store) {
       try {
         const theirs: StoredSystem[] = JSON.parse(await fs.readFile(o.file, 'utf8')).systems;
-        for (const s of theirs) {
-          const k = classifyPortableImport(store.systems, portableSystem(s)).kind;
-          if (k === 'new') sib.addableIds.push(s.id);
-          else if (k !== 'identical') sib.conflictIds.push(s.id);
-        }
+        const rows = compareSystems(store.systems, theirs);
+        sib.addableIds = rows.filter(r => r.kind === 'only-there').map(r => r.id);
+        sib.conflictIds = rows.filter(r => r.kind === 'different' || r.kind === 'duplicate').map(r => r.id);
         sib.relation = sib.conflictIds.length ? 'conflicting' : sib.addableIds.length ? 'addable' : 'identical';
+        const rec = resolutions[canonicalPath(o.dir)];
+        if (rec && rec.sourceSha256 === o.sha256 && sib.relation !== 'identical') { sib.resolution = rec; sib.relation = 'resolved'; }
       } catch (e: any) { sib.error = String(e?.message ?? e); }
     }
     others.push(sib);
@@ -1514,9 +1575,93 @@ export async function catalogSourceReport(project: Project) {
   return {
     identity: { projectId: project.id, path: project.path },
     source: catalogSources.activeSource(),
-    active: { ...active, loaded: store?.systems.length ?? null, lastRead: lastRead.get(project.id) ?? null },
+    active: { ...active, label: catalogSources.labelOf(DATA_DIR), loaded: store?.systems.length ?? null, lastRead: lastRead.get(project.id) ?? null },
     others,
   };
+}
+
+/** Read-only, row by row: what is the same, what only one side has, and what differs (field by field). */
+export async function compareWithCatalog(project: Project, fromDir: string) {
+  const sibling = catalogSources.isKnownSibling(fromDir);
+  if (!sibling) throw new Error('That data directory is not a known JabutiStudio data directory on this machine');
+  const src = await catalogSources.probe(sibling, project.id);
+  if (!src.exists || src.error) throw new Error(`The other catalog cannot be read${src.error ? `: ${src.error}` : ''}`);
+  const target = await catalogSources.probe(DATA_DIR, project.id);
+  const store = await readStore(project.id);
+  const theirs: StoredSystem[] = JSON.parse(await fs.readFile(src.file, 'utf8')).systems;
+  const rows = compareSystems(store.systems, theirs);
+  const rec = (await readResolutions(project.id))[canonicalPath(sibling)] ?? null;
+  return {
+    active: { dir: DATA_DIR, label: catalogSources.labelOf(DATA_DIR), sha256: target.sha256, systems: store.systems.length, modifiedAt: target.modifiedAt },
+    other: { dir: src.dir, label: catalogSources.labelOf(src.dir), sha256: src.sha256, systems: theirs.length, modifiedAt: src.modifiedAt },
+    rows, resolution: rec && rec.sourceSha256 === src.sha256 ? rec : null,
+  };
+}
+
+/**
+ * A person's explicit decision for every row that needs one. All or nothing: a missing choice writes nothing.
+ * Nothing is merged: a conflicting system is kept as is, replaced by the other one, or both are kept (the other as a
+ * proposed copy under a new id). What is replaced or declined is preserved in the manifest, the previous file is
+ * backed up, the other catalog is never touched, and the decision is recorded so the same file is not flagged again.
+ */
+export async function resolveWithCatalog(project: Project, opts: { fromDir: string; expectedSourceSha256: string; expectedTargetSha256: string | null; choices: Record<string, Choice> }) {
+  const sibling = catalogSources.isKnownSibling(opts.fromDir);
+  if (!sibling) throw new Error('That data directory is not a known JabutiStudio data directory on this machine');
+  const src = await catalogSources.probe(sibling, project.id);
+  if (!src.exists || src.error) throw new Error(`The other catalog cannot be read${src.error ? `: ${src.error}` : ''}`);
+  if (src.sha256 !== opts.expectedSourceSha256) throw new Error('The other catalog changed since you looked at it; review it again');
+  return locked(async () => {
+    await checkLocalStore(project.id);
+    const target = await catalogSources.probe(DATA_DIR, project.id);
+    if ((target.sha256 ?? null) !== (opts.expectedTargetSha256 ?? null)) throw new Error('The active catalog changed since you looked at it; review it again');
+    const theirs: StoredSystem[] = JSON.parse(await fs.readFile(src.file, 'utf8')).systems;
+    const store = await readStore(project.id);
+    const rows = compareSystems(store.systems, theirs);
+    const valid: Choice[] = ['keep-active', 'take-other', 'keep-both'];
+    const choices = opts.choices ?? {};
+    const missing = rows.filter(r => (r.kind === 'different' || r.kind === 'duplicate') && !valid.includes(choices[r.id])).map(r => r.id);
+    if (missing.length) throw new Error(`A choice is needed for: ${missing.join(', ')}. Nothing was changed.`);
+    for (const r of rows) if (r.kind === 'duplicate' && choices[r.id] === 'take-other') throw new Error(`${r.id} has no counterpart to replace (it only resembles ${r.duplicateOf}); choose keep-active or keep-both. Nothing was changed.`);
+
+    const next = store.systems.map(s => ({ ...s }));
+    const record: Record<string, string> = {}, added: string[] = [], replaced: string[] = [], copies: string[] = [], kept: string[] = [];
+    const discarded: StoredSystem[] = [], declined: StoredSystem[] = [];
+    for (const r of rows) {
+      if (r.kind === 'identical' || r.kind === 'only-here') continue;
+      const t = theirs.find(x => x.id === r.id)!;
+      // a system only the other catalog has comes in unless the person says to skip it (keep-active)
+      const c: Choice = r.kind === 'only-there' ? (choices[r.id] === 'keep-active' ? 'keep-active' : 'take-other') : choices[r.id];
+      record[r.id] = r.kind === 'only-there' ? (c === 'keep-active' ? 'skip' : 'add') : c;
+      if (c === 'keep-active') { kept.push(r.id); declined.push(t); continue; }
+      if (r.kind === 'only-there') { next.push(t); added.push(t.id); continue; }
+      if (c === 'take-other') { const i = next.findIndex(x => x.id === r.id); discarded.push(store.systems[i]); next[i] = t; replaced.push(r.id); continue; }
+      // keep-both: the other one comes in as a PROPOSED copy; a confirmation is a person's judgement of one specific text
+      let id = `${t.id}-other`; for (let n = 2; next.some(x => x.id === id); n++) id = `${t.id}-other-${n}`;
+      const { confirmedAt: _a, confirmedVia: _b, ...rest } = t;
+      next.push({ ...rest, id, name: `${t.name} (other catalog)`, status: t.status === 'confirmed' ? 'proposed' : t.status });
+      copies.push(id);
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dir = join(DATA_DIR, 'catalog-backups', safe(project.id));
+    await fs.mkdir(dir, { recursive: true });
+    let backup: string | null = null;
+    if (target.exists) { backup = join(dir, `${stamp}-before-resolve.json`); await fs.copyFile(target.file, backup); }
+    const manifest = join(dir, `${stamp}-resolve.json`);
+    await writeJsonAtomic(manifest, {
+      version: 1, at: new Date().toISOString(), projectId: project.id,
+      source: { dir: src.dir, file: src.file, sha256: src.sha256 }, target: { dir: DATA_DIR, file: target.file, sha256Before: target.sha256 },
+      backup, choices: record, added, replaced, copies, keptActive: kept, discardedActiveVersions: discarded, declinedOtherVersions: declined,
+    });
+    await fs.mkdir(join(DATA_DIR, 'systems'), { recursive: true });
+    const out: Store = { version: 1, systems: next };
+    await writeJsonAtomic(storePath(project.id), out);
+    storeCache.set(project.id, { store: out, mtime: (await fs.stat(storePath(project.id))).mtimeMs });
+    viewCache.clear();
+    const after = await catalogSources.probe(DATA_DIR, project.id);
+    await writeResolution(project.id, { dir: src.dir, sourceSha256: src.sha256!, resolvedAt: new Date().toISOString(), manifest, choices: record, targetSha256After: after.sha256 });
+    return { added, replaced, copies, keptActive: kept, backup, manifest, systems: next.length };
+  });
 }
 
 /**
@@ -1536,7 +1681,7 @@ export async function importFromCatalog(project: Project, opts: { fromDir: strin
     if ((target.sha256 ?? null) !== (opts.expectedTargetSha256 ?? null)) throw new Error('The active catalog changed since the preview; review it again');
     const theirs: StoredSystem[] = JSON.parse(await fs.readFile(src.file, 'utf8')).systems;
     const store = await readStore(project.id);
-    const conflicts = theirs.filter(s => { const k = classifyPortableImport(store.systems, portableSystem(s)).kind; return k === 'changed' || k === 'duplicate'; }).map(s => s.id);
+    const conflicts = compareSystems(store.systems, theirs).filter(r => r.kind === 'different' || r.kind === 'duplicate').map(r => r.id);
     if (conflicts.length) return { added: [] as string[], conflicts, backup: null as string | null, manifest: null as string | null };
     const added = theirs.filter(s => !store.systems.some(x => x.id === s.id));
     if (!added.length) return { added: [] as string[], conflicts: [] as string[], backup: null, manifest: null };

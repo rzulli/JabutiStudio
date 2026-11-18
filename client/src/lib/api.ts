@@ -572,11 +572,16 @@ export interface SystemSummary {
   files: number; decisions: number; conflicts: number; flags: string[]
 }
 export interface CatalogProbe { dir: string; file: string; exists: boolean; sha256: string | null; systems: number; ids: string[]; modifiedAt: string | null; error?: string }
-export interface SiblingCatalog extends CatalogProbe { relation: 'identical' | 'addable' | 'conflicting' | 'unreadable'; addableIds: string[]; conflictIds: string[] }
+export interface CatalogResolutionRecord { dir: string; sourceSha256: string; resolvedAt: string; manifest: string | null; choices: Record<string, string>; targetSha256After: string | null }
+export interface SiblingCatalog extends CatalogProbe { relation: 'identical' | 'addable' | 'conflicting' | 'resolved' | 'unreadable'; label: string; addableIds: string[]; conflictIds: string[]; resolution?: CatalogResolutionRecord }
+export type CatalogChoice = 'keep-active' | 'take-other' | 'keep-both'
+export interface CatalogCompareRow { id: string; name: string; kind: 'identical' | 'only-here' | 'only-there' | 'different' | 'duplicate'; changes: { field: string; here: string; there: string }[]; duplicateOf?: string; hereUpdatedAt?: string; thereUpdatedAt?: string; hereStatus?: string; thereStatus?: string }
+export interface CatalogSide { dir: string; label: string; sha256: string | null; systems: number; modifiedAt: string | null }
+export interface CatalogCompare { active: CatalogSide; other: CatalogSide; rows: CatalogCompareRow[]; resolution: CatalogResolutionRecord | null }
 export interface CatalogSourceReport {
   identity: { projectId: string; path: string }
   source: { dataDir: string; selectedBy: string; mode: string; port: string | null; pid: number }
-  active: CatalogProbe & { loaded: number | null; lastRead: { at: string; ok: boolean; systems: number; error?: string } | null }
+  active: CatalogProbe & { label: string; loaded: number | null; lastRead: { at: string; ok: boolean; systems: number; error?: string } | null }
   others: SiblingCatalog[]
 }
 export interface SystemCheckout { root: string; isCanonical: boolean; branch?: string; head?: string; unborn?: boolean; uncommitted: number; integration: string }
@@ -765,6 +770,9 @@ export const api = {
   getCatalogSource: (projectId: string) => request<CatalogSourceReport>(`/projects/${projectId}/systems/catalog-source`),
   importCatalogSource: (projectId: string, body: { fromDir: string; expectedSourceSha256: string; expectedTargetSha256: string | null }) =>
     request<{ added: string[]; backup: string | null; manifest: string | null }>(`/projects/${projectId}/systems/catalog-source/import`, { method: 'POST', body: JSON.stringify(body) }),
+  compareCatalogSource: (projectId: string, fromDir: string) => request<CatalogCompare>(`/projects/${projectId}/systems/catalog-source/compare?fromDir=${encodeURIComponent(fromDir)}`),
+  resolveCatalogSource: (projectId: string, body: { fromDir: string; expectedSourceSha256: string; expectedTargetSha256: string | null; choices: Record<string, CatalogChoice> }) =>
+    request<{ added: string[]; replaced: string[]; copies: string[]; keptActive: string[]; backup: string | null; manifest: string; systems: number }>(`/projects/${projectId}/systems/catalog-source/resolve`, { method: 'POST', body: JSON.stringify(body) }),
   // Shipyard Cloud
   getCloudStatus: () => request<CloudStatus>('/cloud/status'),
   cloudSignup: (body: CloudCredentials) => request<CloudStatus>('/cloud/signup', { method: 'POST', body: JSON.stringify(body), timeout: 120_000 }),

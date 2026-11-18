@@ -87,7 +87,7 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
   const v = detailQ.data && detailQ.data.id === current ? detailQ.data : undefined
 
   const sourceQ = useCatalogSource(projectId)
-  const siblingHasSystems = !!sourceQ.data?.others.some(o => o.systems > 0 && o.relation !== 'identical')
+  const siblingHasSystems = !!sourceQ.data?.others.some(o => o.systems > 0 && (o.relation === 'addable' || o.relation === 'conflicting'))
   const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['systems', projectId] }), qc.invalidateQueries({ queryKey: ['system', projectId] }), qc.invalidateQueries({ queryKey: ['catalog-source', projectId] })])
 
   const filtered = useMemo(() => {
