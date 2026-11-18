@@ -91,6 +91,31 @@ export async function taskLifecycleRoutes(app: FastifyInstance) {
     },
   );
 
+  // Direct checkout: a person identifies which commits of the target branch are this task's delivery.
+  app.post<{ Params: { id: string; taskId: string }; Body: { baseSha?: string; headSha?: string; note?: string } }>(
+    '/api/projects/:id/tasks/:taskId/lifecycle/direct-delivery',
+    async (request, reply) => {
+      if (!uiOnly(request, reply)) return;
+      const { project, task } = await load(request.params.id, request.params.taskId);
+      if (!project || !task) return reply.status(404).send({ error: 'Task not found' });
+      const res = await lifecycle.identifyDirectDelivery(project, task, { ...(request.body || {}), sessions: await sessionsFor(project.id, task.id) });
+      if (!res.ok) return reply.status(status(res.code)).send(res);
+      log.info('git', `Task #${task.number ?? task.id} delivery identified`, res.view.delivery.head ?? undefined, project.id);
+      return res;
+    },
+  );
+
+  app.delete<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/lifecycle/direct-delivery',
+    async (request, reply) => {
+      if (!uiOnly(request, reply)) return;
+      const { project, task } = await load(request.params.id, request.params.taskId);
+      if (!project || !task) return reply.status(404).send({ error: 'Task not found' });
+      const res = await lifecycle.clearDirectDelivery(project, task, await sessionsFor(project.id, task.id));
+      return res.ok ? res : reply.status(status(res.code)).send(res);
+    },
+  );
+
   app.post<{ Params: { id: string; taskId: string }; Body: { targetBranch?: string; expectedHeadSha?: string; branch?: string } }>(
     '/api/projects/:id/tasks/:taskId/lifecycle/integrate',
     async (request, reply) => {

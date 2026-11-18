@@ -26,6 +26,7 @@ import { designRoutes } from './routes/design.js';
 import { systemRoutes } from './routes/systems.js';
 import { taskLifecycleRoutes } from './routes/taskLifecycle.js';
 import { worktreeInventoryRoutes } from './routes/worktreeInventory.js';
+import { godotRoutes } from './routes/godot.js';
 import { identityRoutes } from './routes/identity.js';
 import { initProjectDiscovery } from './services/projectDiscovery.js';
 import { loadSettings } from './services/settingsStore.js';
@@ -121,6 +122,7 @@ await app.register(designRoutes);
 await app.register(systemRoutes);
 await app.register(taskLifecycleRoutes);
 await app.register(worktreeInventoryRoutes);
+await app.register(godotRoutes);
 
 // SPA fallback: serve index.html for all non-API, non-WS routes
 if (STATIC_DIR) {

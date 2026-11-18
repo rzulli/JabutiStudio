@@ -139,3 +139,6 @@ interface Project {
 **Worktrees**: GET /api/worktrees (config + lista), PUT /api/worktrees (`{ enabled?, basePath? }`),
   POST /api/worktrees/clean (so faz `git worktree prune`; nao remove nada — ver R2-A3). O DELETE .../tasks/:tid/worktree foi removido
 **Sistema**: GET/PATCH /api/settings (PATCH so aceita `terminalAiTitles`), POST /api/browse
+
+## Godot (RC1)
+Rotas em `routes/godot.ts` (detalhe em `docs/agent/godot-execution.md`): `GET /api/projects/:id/godot/{status,context,runs,runs/:runId,runs/:runId/evidence}`; so-navegador: `POST .../godot/{open,play,runs}` e `POST .../godot/runs/:runId/cancel`. Entrega direta: `POST|DELETE /api/projects/:id/tasks/:tid/lifecycle/direct-delivery` (so-navegador). Dados: `data/godot-runs/<projectId>.json`.

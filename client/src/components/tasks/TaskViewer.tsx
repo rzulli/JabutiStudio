@@ -275,7 +275,7 @@ export function TaskViewer({ task: taskProp, projectName, projectPath, open, onO
   )
 
   const current = statusActions.find(a => task.status === a.status || (a.status === 'todo' && task.status === 'backlog'))
-  const needsAction = lcQuery.data?.stage === 'REVIEW' && lcQuery.data.delivery.mode === 'branch'
+  const needsAction = lcQuery.data?.stage === 'REVIEW' && lcQuery.data.delivery.mode !== 'none'
   const lcTone = lcReading ? TONE_CLASS[lcReading.tone] : null
   const lower = (t: string) => t.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())
 

@@ -6,6 +6,7 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { EditorTabBar } from './EditorTabBar'
+import { GodotActions, GODOT_EXTENSIONS } from './GodotActions'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { DiffEditor } from './DiffEditor'
 import { useSaveFile } from '@/hooks/useFiles'
@@ -302,6 +303,10 @@ export function EditorPanel({
             </button>
           )}
         </div>
+      )}
+
+      {activeTab && !activeTab.needsFetch && !activeTab.diffMode && GODOT_EXTENSIONS.has(activeTab.extension.replace(/^\./, '').toLowerCase()) && (
+        <GodotActions key={projectId} projectId={projectId} file={activeTab.path} />
       )}
 
       <div className="flex-1 min-h-0 relative">

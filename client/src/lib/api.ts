@@ -272,9 +272,18 @@ export interface TaskLifecycleSummary {
   taskId: string
   stage: TaskLifecycle['stage']
   acceptance: 'none' | 'accepted' | 'lapsed'
-  integration: 'integrated' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'
+  integration: 'integrated' | 'in-target' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'
   commits: number
   flag?: 'conflict' | 'branch-missing' | 'patch-equivalent'
+}
+
+/** Direct-checkout delivery: candidates by time only until a person identifies the range (server taskLifecycle.ts). */
+export interface DirectDelivery {
+  candidates: { sha: string; subject: string; date: string; author: string; trailer: boolean }[]
+  claim?: { at: string; targetBranch: string; baseSha: string; headSha: string; basis: 'trailer' | 'person'; note?: string }
+  claimProblem?: string
+  uncertainty: string[]
+  concurrentTasks: { id: string; number?: number; title: string }[]
 }
 
 export interface TaskLifecycle {
@@ -283,15 +292,16 @@ export interface TaskLifecycle {
   stage: LifecycleStage;
   execution: { status: string; finished: boolean; sessionActive: boolean; sessions: { id: string; agent?: string; type?: string; state?: string | null; cwd?: string }[] };
   delivery: {
-    mode: 'branch' | 'none'; branch?: string; head?: string | null; worktreePath?: string; worktreeExists: boolean; worktreeMatches: boolean;
+    mode: 'branch' | 'direct' | 'none'; branch?: string; head?: string | null; worktreePath?: string; worktreeExists: boolean; worktreeMatches: boolean;
     dirty: { count: number; files: string[] };
     commits: TaskCommit[];
     files: { file: string; additions: number; deletions: number; commits: number }[];
     additions: number; deletions: number;
+    direct?: DirectDelivery;
   };
   target: { branch: string | null; exists: boolean; head?: string | null; baseline?: string | null; checkoutBranch: string | null; checkoutDirty: number; operation: string | null };
   acceptance: { state: 'none' | 'accepted' | 'lapsed'; reason?: string; record?: { at: string; headSha: string; targetBranch: string; branch: string; note?: string } };
-  integration: { state: 'integrated' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'; mergeable: 'clean' | 'conflict' | 'unknown' | null; mergeCommit?: string };
+  integration: { state: 'integrated' | 'in-target' | 'not-integrated' | 'patch-equivalent' | 'nothing-to-integrate' | 'unknown'; mergeable: 'clean' | 'conflict' | 'unknown' | null; mergeCommit?: string };
   blockers: { code: string; message: string }[];
   canAccept: boolean;
   canIntegrate: boolean;
@@ -961,6 +971,10 @@ export const api = {
     request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/accept`, { method: 'POST', body: JSON.stringify(body) }),
   revokeTaskAcceptance: (projectId: string, taskId: string) =>
     request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/accept`, { method: 'DELETE' }),
+  identifyDirectDelivery: (projectId: string, taskId: string, body: { baseSha: string; headSha: string; note?: string }) =>
+    request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/direct-delivery`, { method: 'POST', body: JSON.stringify(body) }),
+  clearDirectDelivery: (projectId: string, taskId: string) =>
+    request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/direct-delivery`, { method: 'DELETE' }),
   integrateTask: (projectId: string, taskId: string, body: { targetBranch: string; expectedHeadSha: string; branch: string }) =>
     request<{ ok: true; view: TaskLifecycle }>(`/projects/${projectId}/tasks/${taskId}/lifecycle/integrate`, { method: 'POST', body: JSON.stringify(body) }),
   discardFile: (projectId: string, file: string, type: 'staged' | 'unstaged' | 'untracked', subrepo?: string) =>

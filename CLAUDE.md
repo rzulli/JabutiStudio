@@ -34,6 +34,7 @@ Modelos (Task, Milestone, Project), lista de rotas e mapa de services: `docs/age
 | Project Explorer / Graphify (Godot) | `docs/agent/explorer-graphify.md` |
 | MCP, agentes de codigo, AI backend, CLIs | `docs/agent/mcp-agents.md` |
 | Terminais, estado de sessao Claude, hooks | `docs/agent/terminals.md` |
+| Execucao Godot (Editor/Review, Harness, contexto de execucao, Play Game) | `docs/agent/godot-execution.md` |
 | Busca Ctrl+K / Ctrl+Shift+F | `docs/agent/search.md` |
 | Design system, layout, editor, atalhos, relatorios | `docs/agent/client-ux.md` |
 | Cache, performance, stores JSON, acesso local, Electron | `docs/agent/server-core.md` |

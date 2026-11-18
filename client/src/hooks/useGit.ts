@@ -261,6 +261,8 @@ export function useTaskLifecycleActions(projectId: string, taskId: string) {
   return {
     accept: useMutation({ mutationFn: (b: { targetBranch: string; expectedHeadSha: string; note?: string }) => api.acceptTaskDelivery(projectId, taskId, b), onSettled: done }),
     revoke: useMutation({ mutationFn: () => api.revokeTaskAcceptance(projectId, taskId), onSettled: done }),
+    identify: useMutation({ mutationFn: (b: { baseSha: string; headSha: string }) => api.identifyDirectDelivery(projectId, taskId, b), onSettled: done }),
+    clearDelivery: useMutation({ mutationFn: () => api.clearDirectDelivery(projectId, taskId), onSettled: done }),
     integrate: useMutation({ mutationFn: (b: { targetBranch: string; expectedHeadSha: string; branch: string }) => api.integrateTask(projectId, taskId, b), onSettled: done }),
   }
 }

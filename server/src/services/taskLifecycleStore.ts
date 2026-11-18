@@ -34,14 +34,33 @@ export interface AcceptanceRecord {
   note?: string;
 }
 
+/**
+ * A task worked "directly" in a checkout (no worktree, no branch): which commits of the target branch are its
+ * delivery. Git cannot say, so a person says it (`by: 'ui'`) and the range is re-validated on every read.
+ * `basis: 'trailer'` only when every commit in the range carries `Shipyard-Task: <taskId>`; otherwise 'person'.
+ */
+export interface DirectClaim {
+  at: string;
+  by: 'ui';
+  targetBranch: string;
+  /** Exclusive: the commit before the first delivered one. */
+  baseSha: string;
+  /** Inclusive: the last delivered commit. */
+  headSha: string;
+  basis: 'trailer' | 'person';
+  note?: string;
+}
+
 export interface LifecycleEvent {
   at: string;
-  event: 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused' | 'closure-refused' | 'worktree-removed' | 'branch-deleted' | 'branch-preserved' | 'closure-failed';
+  event: 'delivery-identified' | 'delivery-cleared' | 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused' | 'closure-refused' | 'worktree-removed' | 'branch-deleted' | 'branch-preserved' | 'closure-failed';
   detail?: Record<string, unknown>;
 }
 
 export interface LifecycleEntry {
   accepted?: AcceptanceRecord;
+  /** Direct-checkout delivery identified by a person (see DirectClaim). */
+  direct?: DirectClaim;
   integrated?: { at: string; targetBranch: string; mergeCommit: string; headSha: string; targetBefore: string };
   /** Outcome of the last close attempt. Each half is recorded on its own: removing the folder is not deleting the branch. */
   closure?: { at: string; worktreePath: string; branch: string; headSha: string; worktree: 'removed' | 'failed' | 'absent'; branchResult: 'deleted' | 'preserved' | 'failed'; note?: string };

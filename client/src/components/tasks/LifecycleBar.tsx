@@ -50,7 +50,7 @@ export function LifecycleBar({ lc, task, extraActions, children }: { lc: TaskLif
   const actions = useTaskLifecycleActions(task.projectId, task.id)
   const [confirm, setConfirm] = useState<'accept' | 'integrate' | null>(null)
   const [closing, setClosing] = useState(false)
-  const closable = lc.stage === 'INTEGRATED'
+  const closable = lc.stage === 'INTEGRATED' && lc.delivery.mode !== 'direct'
   const target = lc.target.branch || ''
   const head = lc.delivery.head || ''
   const session = lc.execution.sessions[0]
@@ -166,7 +166,7 @@ export function LifecycleBar({ lc, task, extraActions, children }: { lc: TaskLif
         <Step
           ok={lc.delivery.commits.length > 0 ? (lc.delivery.dirty.count ? 'warn' : true) : false}
           label="Delivered"
-          detail={lc.delivery.mode === 'none' ? 'no worktree branch' : commitsLabel}
+          detail={lc.delivery.mode === 'none' ? 'not tracked' : lc.delivery.mode === 'direct' && !lc.delivery.direct?.claim ? 'not identified' : lc.delivery.mode === 'direct' ? `${commitsLabel} · ${lc.delivery.direct?.claim?.basis === 'trailer' ? 'proven by trailer' : 'identified by you'}` : commitsLabel}
         />
         <Step
           ok={lc.acceptance.state === 'accepted' ? true : lc.acceptance.state === 'lapsed' ? 'warn' : false}
@@ -176,9 +176,9 @@ export function LifecycleBar({ lc, task, extraActions, children }: { lc: TaskLif
             : lc.acceptance.state === 'lapsed' ? 'branch moved since' : 'by you, not the agent'}
         />
         <Step
-          ok={integ === 'integrated' ? true : integ === 'patch-equivalent' ? 'warn' : false}
+          ok={integ === 'integrated' || integ === 'in-target' ? true : integ === 'patch-equivalent' ? 'warn' : false}
           label="Integrated"
-          detail={integ === 'integrated' ? `in ${target}` : integ === 'patch-equivalent' ? 'same patch, no ancestry' : target ? `not in ${target}` : undefined}
+          detail={integ === 'in-target' ? `already in ${target} · no merge` : integ === 'integrated' ? `in ${target}` : integ === 'patch-equivalent' ? 'same patch, no ancestry' : target ? `not in ${target}` : undefined}
         />
       </ol>
 

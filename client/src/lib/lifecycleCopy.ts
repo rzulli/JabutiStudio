@@ -38,7 +38,23 @@ export function readStage(lc: TaskLifecycle): StageReading {
       return { label: STAGE_LABEL.RUNNING, tone: 'attention', meaning: 'An agent is still working on this task.', next: 'Review it once the agent stops.' }
     case 'REVIEW':
       if (lc.delivery.mode === 'none') {
-        return { label: 'Not tracked', tone: 'neutral', meaning: 'This task has no worktree branch, so Git cannot say what it delivered.', next: 'Check the repository by hand, or use Needs changes.' }
+        return { label: 'Not tracked', tone: 'neutral', meaning: 'This project is not a Git repository (or the task branch history is gone), so Git cannot say what it delivered.', next: 'Check the work by hand, or use Needs changes.' }
+      }
+      if (lc.delivery.mode === 'direct') {
+        const d = lc.delivery.direct
+        if (!d?.claim) {
+          return {
+            label: 'Delivery not identified', tone: 'attention',
+            meaning: `The task was worked directly in the ${target} checkout, so there is no branch to compare. The agent is done, but no commits have been tied to it yet.`,
+            next: d?.candidates.length ? 'Choose which commits are the delivery of this task, or use Needs changes.' : 'No commits since the task started: check the work by hand, or use Needs changes.',
+          }
+        }
+        if (d.claimProblem) return { label: 'Delivery needs identifying again', tone: 'danger', meaning: d.claimProblem, next: 'Identify the delivery again, or use Needs changes.' }
+        return {
+          label: STAGE_LABEL.REVIEW, tone: 'attention',
+          meaning: `Delivery identified: ${lc.delivery.commits.length} commit(s) already in ${target}. Committed directly, so there is nothing to merge.`,
+          next: lc.canAccept ? 'Review the commits, then accept this exact delivery.' : blocked ? 'Resolve the blockers before accepting.' : 'Waiting on the delivery to become acceptable.',
+        }
       }
       if (lc.delivery.commits.length === 0) {
         return {
@@ -59,7 +75,11 @@ export function readStage(lc: TaskLifecycle): StageReading {
         next: lc.canIntegrate ? `Integrate it into ${target}.` : blocked ? 'Resolve the blockers before integrating.' : 'Waiting on the target branch to be ready.',
       }
     case 'INTEGRATED':
-      return { label: STAGE_LABEL.INTEGRATED, tone: 'done', meaning: `Git shows the accepted commit inside ${target}.`, next: 'Nothing left to do for this delivery.' }
+      return {
+        label: STAGE_LABEL.INTEGRATED, tone: 'done',
+        meaning: lc.delivery.mode === 'direct' ? `You accepted this delivery, which was committed directly in ${target}. No merge was needed.` : `Git shows the accepted commit inside ${target}.`,
+        next: 'Nothing left to do for this delivery.',
+      }
     case 'CLOSED':
       return { label: STAGE_LABEL.CLOSED, tone: 'done', meaning: 'Integrated and cleaned up.', next: 'Nothing left to do.' }
   }

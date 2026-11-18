@@ -23,8 +23,23 @@
   ancestralidade; so entao grava o historico e move a task para done (timestamps cascading intactos)
 - Patch equivalente sem ancestralidade (cherry-pick, rebase, squash) e um caso proprio (`patch-equivalent`): reportado,
   nunca tratado como integrado, nao aceitavel. Branch sem commits alem do alvo = `nothing-to-integrate`
-- So existe para task com worktree criada pelo Shipyard (`task.worktreeBranch`). Sem branch o estado diz `no-branch`:
-  nada e verificavel. Worktrees criadas a mao (ex.: PNMG/worktrees) nao estao ligadas a task nenhuma
+- Task com worktree criada pelo Shipyard (`task.worktreeBranch`) = `delivery.mode: 'branch'` (fluxo isolado acima).
+  Worktrees criadas a mao (ex.: PNMG/worktrees) nao estao ligadas a task nenhuma
+- **Direct checkout** (`delivery.mode: 'direct'`, RC1 addendum): task de projeto Git **sem** branch (trabalhou direto num
+  checkout, tipicamente `master`; foi o caso da QP1 do IncrementalStairs: "Not tracked" porque o lifecycle so olhava a
+  branch da task). Git nao diz quais commits sao da task, entao **uma pessoa identifica** o intervalo
+  (`POST/DELETE .../lifecycle/direct-delivery`, so navegador; `baseSha`..`headSha` validados: ids de commit, head dentro
+  do alvo, base ancestral). `data/task-lifecycle/` guarda `direct` (claim) ao lado do aceite; **revalidado a cada leitura**
+  (historia reescrita => `claim-invalid`, aceite `lapsed`). `basis: 'trailer'` so se TODOS os commits tem
+  `Shipyard-Task: <taskId>`; senao `person`. Os commits desde `inProgressAt` sao **candidatos por tempo**, nunca
+  atribuicao; `uncertainty[]` lista outras tasks diretas com janela sobreposta e sessao ainda trabalhando.
+  `integration.state: 'in-target'` = ja esta no alvo, **nao ha merge** (`integrate` => 409 `direct-delivery`, canIntegrate
+  sempre false). Aceite continua humano e preso ao sha final; apos aceite o estagio e INTEGRATED (nunca CLOSED: nao ha
+  worktree a fechar). Needs changes funciona igual e nunca reverte commit. Task que ja teve branch (aceite/closure/integrated)
+  nunca volta a ser lida como direct (`hadBranch`). Tasks antigas nao migram: nada e atribuido sem acao humana
+- A sessao `busy` do QP1 nao e reproduzivel pelo lifecycle: `sessionActive` so vem de sessoes de terminal vivas com
+  `taskId` e estado `busy|awaiting-input`; CLIs de outros agentes (codex) nao reportam estado (tab sem `state`). Uma aba
+  "busy" vem do estado do terminal do cliente, nao da task; no momento da auditoria o servidor tinha 0 sessoes da task
 - UI: a aba Review do TaskViewer (`LifecycleBar.tsx` + `TaskReviewPanel`). Com branch, a revisao e exata (branch vs
   alvo) em vez da janela de datas, que olhava o checkout do projeto e nao a worktree da task
 - `removeTaskWorktree` apaga a branch com `-d`, nao `-D`: branch com commits fora do checkout sobrevive. CLOSED = integrado
