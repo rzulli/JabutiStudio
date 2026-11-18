@@ -24,6 +24,17 @@ export interface Agent {
   builtin?: boolean
   /** Whether the binary answered a --version probe on this machine. */
   available?: boolean
+  /** Suggested models for this harness; others can be typed. Empty when it has no model flag we know. */
+  models?: { id: string; name: string }[]
+  /** Reasoning-effort levels the harness accepts. Empty when it has none. */
+  efforts?: string[]
+}
+
+/** What one run may choose besides the task: which harness, which model, how much effort. */
+export interface AgentRunChoice {
+  agent?: string
+  model?: string
+  effort?: string
 }
 
 export interface WorktreeInfo {
@@ -982,10 +993,10 @@ export const api = {
     request<{ sessions: TerminalSessionInfo[] }>(
       `/terminal/sessions${projectId ? `?projectId=${projectId}` : ''}`
     ),
-  createTerminalSession: (projectId: string, type = 'shell', cols = 80, rows = 24, taskId?: string, prompt?: string, agent?: string, resume?: { id: string; title?: string }) =>
+  createTerminalSession: (projectId: string, type = 'shell', cols = 80, rows = 24, taskId?: string, prompt?: string, agent?: string, resume?: { id: string; title?: string }, run?: { model?: string; effort?: string }) =>
     request<TerminalSessionInfo>(
       '/terminal/sessions',
-      { method: 'POST', body: JSON.stringify({ projectId, type, cols, rows, ...(taskId ? { taskId } : {}), ...(prompt ? { prompt } : {}), ...(agent ? { agent } : {}), ...(resume ? { resume: resume.id, resumeTitle: resume.title } : {}) }) }
+      { method: 'POST', body: JSON.stringify({ projectId, type, cols, rows, ...(taskId ? { taskId } : {}), ...(prompt ? { prompt } : {}), ...(agent ? { agent } : {}), ...(run?.model ? { model: run.model } : {}), ...(run?.effort ? { effort: run.effort } : {}),...(resume ? { resume: resume.id, resumeTitle: resume.title } : {}) }) }
     ),
   getClaudeConversations: (projectId?: string, limit?: number) =>
     request<{ conversations: ClaudeConversation[] }>(
