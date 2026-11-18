@@ -299,13 +299,16 @@ export async function mcpRoutes(app: FastifyInstance) {
 
     const body = request.body as any;
 
-    // Handle batch requests
+    // Notifications (and client responses) carry no id and get no JSON-RPC reply: Streamable HTTP answers them with an
+    // empty 202. A 200 with a body here made Codex drop the server ("unrecognized JSON-RPC message") with no tools.
     if (Array.isArray(body)) {
-      const results = await Promise.all(body.map(handleJsonRpc));
-      return results;
+      const results = (await Promise.all(body.map(handleJsonRpc))).filter(r => r !== null && r !== undefined);
+      return results.length ? results : reply.status(202).send();
     }
 
-    return handleJsonRpc(body);
+    const result = await handleJsonRpc(body);
+    if (result === null || result === undefined) return reply.status(202).send();
+    return result;
   });
 
   // SSE endpoint for server-to-client notifications
@@ -430,6 +433,8 @@ async function handleJsonRpc(msg: any) {
       });
 
     default:
+      // A notification (no id) is never answered, known or not.
+      if (id === undefined) return null;
       return jsonRpcError(id, -32601, `Method not found: ${method}`);
   }
 }
