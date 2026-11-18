@@ -516,6 +516,10 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
     throw new Error(error.error || error.message || 'Request failed');
   }
 
+  // A non-JSON answer means the port serves something other than this API (e.g. a stale server or a web page).
+  if (!(res.headers.get('content-type') || '').includes('application/json')) {
+    throw new Error("This API answered with a web page instead of JSON. Another server is probably on this port (often a dev server from another checkout): stop it, then restart this checkout's server.");
+  }
   return res.json();
 }
 

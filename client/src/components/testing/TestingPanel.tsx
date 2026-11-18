@@ -80,7 +80,7 @@ function LastResult({ projectId, rel, checkoutPath, head, dirty }: { projectId: 
 
 export function TestingPanel({ projectId }: { projectId: string }) {
   const qc = useQueryClient()
-  const { data: status } = useGodotStatus(projectId)
+  const { data: status, error: statusError } = useGodotStatus(projectId)
   const { data: tasks } = useTasks(projectId)
   const editor = useEditorTabsContext()
   const [choice, setChoice] = useState(() => readChoice(projectId))
@@ -106,6 +106,7 @@ export function TestingPanel({ projectId }: { projectId: string }) {
   const label = ctx ? contextLabel(ctx) : choice === 'main' ? 'Main checkout' : `Task #${task?.number ?? '?'} worktree`
   const onMain = choice === 'main'
 
+  if (statusError) return <div className="m-auto max-w-md p-6 text-center text-xs text-destructive">{(statusError as Error).message}</div>
   if (!status) return <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /></div>
   if (!status.godotProject) {
     return (

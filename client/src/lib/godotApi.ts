@@ -72,6 +72,9 @@ export class GodotError extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: init?.body ? { 'Content-Type': 'application/json' } : undefined, ...init })
+  if (!(res.headers.get('content-type') || '').includes('application/json')) {
+    throw new GodotError("This API answered with a web page instead of JSON. Another server is probably on this port (often a dev server from another checkout): stop it, then restart this checkout's server.", 'not-json')
+  }
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new GodotError(body.message || body.error || res.statusText || 'Request failed', body.code || 'error', body.options)
   return body as T
