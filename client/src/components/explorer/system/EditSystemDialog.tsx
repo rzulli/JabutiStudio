@@ -36,7 +36,7 @@ export function blankView(p: { name?: string; kind?: SystemView['kind']; summary
     anchors: { terms: p.terms ?? [], files: p.files ?? [], decisions: [] }, suggestions: [],
     checkout: { root: '', isCanonical: true, uncommitted: 0, integration: '' }, members: [], weakerMembers: 0, neighbors: [],
     design: { available: false, decisions: [], conflicts: [] }, tasks: [], related: [],
-    maintenance: { graph: { built: false, describesCheckout: '' }, changedMembers: [], needsReanalysis: false, vanished: [], unresolvedAnchors: [], graphAgainstCheckout: '' },
+    maintenance: { graph: { built: false, describesCheckout: '' }, changedMembers: [], needsReanalysis: false, vanished: [], unresolvedAnchors: [], graphAgainstCheckout: '', analysis: { state: 'not-built', label: '', describes: '' }, diagnostics: [] },
     limitations: [],
   } as SystemView
 }

@@ -276,17 +276,9 @@ export function EvidenceTab({ v, actions, projectId, onChanged, onPick }: { v: S
     <div className="space-y-5" data-testid="tab-evidence">
       <Provenance v={v} />
 
-      {(v.limitations.length > 0 || m.vanished.length > 0 || m.unresolvedAnchors.length > 0 || m.needsReanalysis) && (
-        <Section title="Maintenance and limits" testId="system-maintenance">
+      {v.limitations.length > 0 && (
+        <Section title="Limits" hint="Warnings about stale analysis and missing files are listed under the system header." testId="system-maintenance">
           <ul className="space-y-1 text-[11px] text-muted-foreground">
-            {m.needsReanalysis && <li className="flex gap-1.5 text-warning"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />Changed after the last Graphify analysis: {m.changedMembers.map(baseName).join(', ')}. Re-analyze in Files to refresh symbols and relations.</li>}
-            {m.vanished.length > 0 && (
-              <li className="flex gap-1.5 text-warning" data-testid="system-vanished"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                <span>Disappeared since earlier: {m.vanished.slice(0, 6).map(x => x.key.replace(/^(file|sym):/, '')).join('; ')}{m.vanished.length > 6 ? ` +${m.vanished.length - 6}` : ''}.{' '}
-                  <button className="underline" onClick={async () => { await api.editSystem(projectId, v.id, { ackVanished: true }); onChanged() }}>Acknowledge</button></span>
-              </li>
-            )}
-            {m.unresolvedAnchors.map(a => <li key={a.path} className="flex gap-1.5 text-warning"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />Anchored file no longer exists: <code>{a.path}</code></li>)}
             {v.limitations.map(l => <li key={l}>• {l}</li>)}
           </ul>
         </Section>
