@@ -25,8 +25,9 @@ export function TaskGodotReview({ task }: { task: Task }) {
   const [failure, setFailure] = useState<{ message: string; options?: GodotRefusal['options'] } | null>(null)
 
   const hasWorktree = !!task.worktreePath
-  // Never main by default: a task without a worktree is refused by the server (task-without-worktree) and offers the
-  // main checkout as an explicit option. Main is used only after that explicit choice (forceMain).
+  // Never main by default. A Direct Checkout task resolves to the project folder on its own; a task of unknown mode
+  // (worktrees on, none recorded) is refused by the server and offers the main checkout as an explicit option.
+  // Main is used only after that explicit choice (forceMain).
   const selection: GodotSelection = forceMain ? { taskId: task.id, checkout: 'main', origin: 'task' } : { taskId: task.id, checkout: 'task', origin: 'task' }
   const enabled = !!status?.godotProject
   const { data } = useGodotContext(projectId, selection, enabled)
@@ -58,7 +59,13 @@ export function TaskGodotReview({ task }: { task: Task }) {
   })
   const rerun = (r: RunRecord) => { if (r.action === 'test') void runTest(r.file) }
 
-  const mode = hasWorktree && !forceMain ? 'Isolated worktree' : forceMain && hasWorktree ? 'Main checkout (chosen instead of the task worktree)' : 'Direct checkout'
+  // The label follows what the server resolved, never a guess from worktreePath: a task with no worktree is either a
+  // Direct Checkout (resolved, runs in the project folder) or of unknown mode (refused until the main checkout is chosen).
+  const mode = ctx
+    ? ctx.isMainCheckout
+      ? forceMain && hasWorktree ? 'Main checkout (chosen instead of the task worktree)' : forceMain ? 'Main checkout (chosen explicitly)' : 'Direct checkout'
+      : 'Isolated worktree'
+    : forceMain ? 'Main checkout (chosen explicitly)' : hasWorktree ? 'Worktree unavailable' : 'Checkout mode unknown'
   const BtnCls = 'inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs hover:bg-accent/50 disabled:opacity-40'
 
   return (

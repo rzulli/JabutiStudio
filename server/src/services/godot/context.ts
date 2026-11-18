@@ -8,6 +8,7 @@ import * as git from '../gitService.js';
 import { findRegistered } from '../worktreeInventory.js';
 import { canonicalPath } from '../pathIdentity.js';
 import { isInside } from '../worktreeClose.js';
+import { requiresWorktree } from '../worktreeService.js';
 import type { Project } from '../../types/index.js';
 
 /**
@@ -143,10 +144,15 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
     if (req.checkout === 'main') {
       reason = `${label} is selected, but the main checkout was chosen explicitly.`;
       notes.push(task.worktreePath ? `${label} has its own worktree (${task.worktreePath}); this run does NOT see its changes.` : `${label} has no worktree; running the main checkout.`);
+    } else if (!task.worktreePath && !requiresWorktree(task)) {
+      // Direct Checkout: worktrees are off and this task never recorded one, so it was worked in the project folder.
+      // Legitimate, not a fallback: it runs there as it always did.
+      reason = `${label} is a Direct Checkout task (worktrees are off): it runs in the project folder.`;
     } else if (!task.worktreePath) {
+      // Worktrees are on but this task has none: a legacy or unknown checkout mode. Never guess; the person must choose.
       return {
         ok: false, code: 'task-without-worktree',
-        message: `${label} has no worktree, so there is nothing task-specific to run. Choose the main checkout explicitly if that is what you want.`,
+        message: `${label} has no worktree and its checkout mode is unknown (worktrees are on). Nothing was run. Choose the main checkout explicitly if that is what you want.`,
         options: [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }],
       };
     } else {
