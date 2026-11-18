@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { MCP_TOOLS, handleToolCall } from '../services/mcpServer.js';
 import * as mcpAuth from '../services/mcpAuth.js';
 import { getMcpConfig, loadMcpConfig, saveMcpConfig } from '../services/mcpConfig.js';
-import { knowledgeState, mcpEndpoint } from '../services/agentMcp.js';
+import { knowledgeState, knowledgeDiagnosis, probeKnowledgeEndpoint, codexLoginCommand, mcpEndpoint } from '../services/agentMcp.js';
 import * as log from '../services/logService.js';
 
 // JSON-RPC helpers
@@ -31,11 +31,15 @@ export async function mcpRoutes(app: FastifyInstance) {
       enabled: getMcpConfig().enabled,
       requireAuth: getMcpConfig().requireAuth,
       state: knowledgeState(),
+      diagnosis: { claude: knowledgeDiagnosis('claude'), codex: knowledgeDiagnosis('codex') },
+      codexLoginCommand: codexLoginCommand(),
+      endpointProbe: await probeKnowledgeEndpoint(),
       endpoint: mcpEndpoint(),
       clients: mcpAuth.listClients().map(c => ({
         clientId: c.clientId,
         clientName: c.clientName,
         createdAt: c.createdAt,
+        lastUse: mcpAuth.getClientUse(c.clientId) ?? null,
       })),
     };
   });
@@ -286,6 +290,7 @@ export async function mcpRoutes(app: FastifyInstance) {
         reply.status(401).send({ error: 'invalid_token' });
         return false;
       }
+      (request as any).mcpClientId = auth.clientId;
     }
     return true;
   }
@@ -295,6 +300,7 @@ export async function mcpRoutes(app: FastifyInstance) {
     if (!await checkMcpAuth(request, reply)) return;
 
     const body = request.body as any;
+    mcpAuth.recordClientUse((request as any).mcpClientId, body);
 
     // A JSON-RPC notification (a method and no id) gets no JSON-RPC reply: Streamable HTTP answers 202 with an
     // empty body. Replying 200 `null` makes strict clients (Codex) drop the whole server.

@@ -53,7 +53,7 @@ export interface DirectClaim {
 
 export interface LifecycleEvent {
   at: string;
-  event: 'delivery-identified' | 'delivery-cleared' | 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused' | 'closure-refused' | 'worktree-removed' | 'branch-deleted' | 'branch-preserved' | 'closure-failed' | 'checkout-mode-recorded';
+  event: 'delivery-identified' | 'delivery-cleared' | 'accepted' | 'acceptance-revoked' | 'integrated' | 'integration-refused' | 'closure-refused' | 'worktree-removed' | 'branch-deleted' | 'branch-preserved' | 'closure-failed' | 'checkout-mode-recorded' | 'changes-requested';
   detail?: Record<string, unknown>;
 }
 

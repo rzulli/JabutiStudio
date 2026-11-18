@@ -658,6 +658,15 @@ export interface SystemDecision {
   evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[]
   files: string[]; tests: string[]
 }
+export type SystemDiagnosticRef = { path: string; source: string; state: 'absent' | 'absent-since-analysis' | 'other-checkout' | 'not-indexed' | 'unknown' }
+export interface SystemDiagnostic {
+  code: 'proposal' | 'graph-not-built' | 'graph-stale' | 'graph-other-checkout' | 'files-missing' | 'files-not-indexed' | 'files-unverifiable' | 'references-vanished'
+  kind: 'classification' | 'analysis' | 'integrity'; severity: 'info' | 'warning'
+  title: string; meaning: string; cause: string; effect: string
+  action: { kind: 'review' | 'reanalyze' | 'edit-members' | 'acknowledge' | 'none'; label: string; available: boolean; blockedReason?: string }
+  refs: SystemDiagnosticRef[]; altersDesign: false
+}
+export interface SystemAnalysis { state: 'not-built' | 'current' | 'stale' | 'other-checkout'; label: string; builtAt?: number; describes: string }
 export interface SystemView {
   id: string; name: string; summary: string; responsibilities: string[]
   kind: 'system' | 'subsystem' | 'mechanic' | 'entity'; planned: boolean
@@ -678,8 +687,9 @@ export interface SystemView {
   maintenance: {
     graph: { built: boolean; builtAt?: number; describesCheckout: string; installed?: boolean }
     changedMembers: string[]; needsReanalysis: boolean
-    vanished: { key: string; since: string }[]; unresolvedAnchors: { path: string; state: 'gone' }[]
+    vanished: { key: string; since: string }[]; unresolvedAnchors: { path: string; state: 'gone'; source?: string }[]
     graphAgainstCheckout: string
+    analysis: SystemAnalysis; diagnostics: SystemDiagnostic[]
   }
   limitations: string[]
 }
@@ -827,8 +837,8 @@ export const api = {
     request<any>(`/projects/${projectId}/tasks/forecast${milestoneId ? `?milestone=${encodeURIComponent(milestoneId)}` : ''}`),
   createTask: (projectId: string, data: any) => request(`/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(data) }),
   updateTask: (projectId: string, taskId: string, data: any) => request(`/projects/${projectId}/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(data) }),
-  addTaskNote: (projectId: string, taskId: string, note: string, status?: string) =>
-    request(`/projects/${projectId}/tasks/${taskId}/note`, { method: 'POST', body: JSON.stringify({ note, status }) }),
+  addTaskNote: (projectId: string, taskId: string, note: string, status?: string, reviewedHeadSha?: string) =>
+    request(`/projects/${projectId}/tasks/${taskId}/note`, { method: 'POST', body: JSON.stringify({ note, status, reviewedHeadSha }) }),
   deleteTask: (projectId: string, taskId: string) => request(`/projects/${projectId}/tasks/${taskId}`, { method: 'DELETE' }),
   reorderTasks: (projectId: string, taskIds: string[]) => request(`/projects/${projectId}/tasks/reorder`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
   importTasks: (projectId: string, tasks: any[]) => request<{ imported: number }>(`/projects/${projectId}/tasks/import`, { method: 'POST', body: JSON.stringify({ tasks }) }),

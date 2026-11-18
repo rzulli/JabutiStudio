@@ -29,6 +29,16 @@ data/inbox-config.json
 data/cloud-sync.json
 data/claude-conversations.json
 
+# JabutiStudio runtime stores (criados pelo app, nao sao codigo)
+/data/task-lifecycle/
+/data/worktree-links/
+/data/godot-runs/
+/data/catalog-backups/
+# Worktrees de tarefa/checkouts irmaos (cada um tem o seu proprio Git)
+/.claude/worktrees/
+# Notas de handoff locais (evidencias preservadas em backups verificados)
+/.claude/handoffs/
+
 # Build artifacts
 client/tsconfig.tsbuildinfo
 

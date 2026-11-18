@@ -175,3 +175,12 @@
 
 ## Tools Godot (descoberta do Harness)
 `get_godot_capabilities`, `get_godot_run` (somente leitura) e `record_godot_run` (liga uma run do agente a task; nao aceita nada). Contrato e regras em `godot-execution.md` ("Descoberta do Harness pelo agente"). Continua sem tool MCP que inicie run, abra o Godot ou aceite/aprove.
+
+## Knowledge para agentes lancados (readiness)
+
+- Claude recebe `--mcp-config` (arquivo com o endpoint); Codex recebe `-c mcp_servers.shipyard.url=<endpoint>` (nada vai para `~/.codex/config.toml`). Nenhum segredo na linha de comando nem no brief.
+- `agentMcp.knowledgeDiagnosis(agent)` → `{state, reason, fix}`. `ready` so quando a auth esta desligada **ou** um cliente do proprio agente (nome `Codex`/`Claude…`) tem refresh token vivo (`mcpAuth.listAuthorizedClients`). Registro (DCR) acontece antes do consent e **nao** conta; cliente aprovado de um agente nao autoriza o outro.
+- `ready` nao prova descoberta de ferramentas: so uma sessao que chama a tool prova. O brief diz isso. `probeKnowledgeEndpoint()` checa o endpoint anunciado (401 esperado com auth; `tools/list` completo sem auth) e aparece em `/api/mcp/status` e no brief quando falha.
+- Login do Codex: `codex -c mcp_servers.shipyard.url=<endpoint> mcp login shipyard`. O `codex mcp login shipyard` sem o `-c` falha ("No MCP server named 'shipyard'"), porque o servidor so existe como override de lancamento.
+- `mcpAuth.recordClientUse` guarda em memoria o ultimo uso (tools/list, tools/call) de cada cliente autenticado; o diagnostico o mostra como "ultimo uso registrado por este cliente (nao prova para uma sessao nova)". E evidencia do cliente, nunca do acesso da sessao atual; zera ao reiniciar.
+- **Risco nao resolvido (consentimento OAuth):** `POST /authorize` com `approved=true` passa por `localAccess` sem `Origin`/`Sec-Fetch-*` (curl, scripts e agentes locais nao os enviam), e nao ha prova de clique humano. Em dois logins reais de Codex em instancia isolada o consentimento foi aprovado ~2 s depois de abrir a pagina, sem interacao do agente; a origem (pessoa, navegador embutido/extensao ou processo local) nao pode ser provada por falta de cabecalhos nos logs. Nao ha codigo de auto-aprovacao no servidor. Politica nao alterada; decisao de exigir atestacao humana fica com o dono.
