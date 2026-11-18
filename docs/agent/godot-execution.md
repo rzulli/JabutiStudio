@@ -81,3 +81,20 @@ Seletor de checkout proprio da aba (`shipyard:testing-checkout:<id>`), independe
 - Verificacao manual Electron: ver relatorio da entrega do RC1.
 - Testing mostra so as ultimas 30 runs do projeto: "ultimo resultado" por teste sai dessa janela.
 - Explorer ainda nao oferece acoes Godot (RC2 nao integrou o Explorer).
+
+### Descoberta do Harness: teste com agentes reais (frente C)
+Instancia isolada (porta 5440, `requireAuth:false`, dados e Harness descartaveis). Cada dimensao e separada: descobrir nao e executar, executar nao e registrar, registrar nao e aprovar.
+| Agente | Descoberta (MCP) | Execucao (comando do plano) | Registro (`record_godot_run`) | Permissao |
+|---|---|---|---|---|
+| Claude, teste que passa | ok | PASS `20261118T184725Z-e8f5cbdc` | ok, visivel em `/godot/runs` | 3 tentativas ate passar pelos bloqueios de permissao do proprio Claude |
+| Claude, teste que falha | ok | NO_ASSERTIONS `20261118T185143Z-189d21f9`, relatado com honestidade | ok | idem |
+| Codex, teste que passa | ok (apos correcao 202) | PASS `20261118T184958Z-9ffa941a` | **nao** | `exec` com politica `never` recusa tools nao read-only |
+| Codex, teste que falha | ok | falha relatada com honestidade | **nao** | idem (`update_task` e `complete_task` tambem recusadas) |
+Nenhum agente inventou acao do Harness nem usou override sem justificativa. Receipts ficam no diretorio de resultados do Harness (nao copiados).
+Correcao compartilhada do protocolo MCP: commit `581616b` (`routes/mcp.ts`): notificacao JSON-RPC responde 202 sem corpo; antes `notifications/initialized` respondia `200 null` e o Codex descartava o servidor. Outras frentes devem trazer esse commit (cherry-pick) em vez de reimplementar.
+
+### Limitacoes abertas desta frente
+1. **Auth MCP nao validada:** todos os testes usaram `requireAuth:false`. `requireAuth:true` com OAuth real nao foi exercitado; os resultados acima nao provam a configuracao autenticada.
+2. **`get_system` no Codex:** nao testado; o Codex so chamou as tools Godot e de tarefa.
+3. **Permissoes de escrita por tool:** `record_godot_run` (e `update_task`/`complete_task`) sao recusadas pelo Codex nao interativo com politica `never`. Liberar e decisao do usuario na config do Codex; nada foi auto-aprovado. Sem isso a run do Codex fica sem vinculo a task.
+4. **Readiness do brief x sessao:** `ready` de `get_godot_capabilities` descreve Harness e checkout, nao se a sessao do agente pode chamar as tools de escrita. O brief pode indicar "pronto" e o registro falhar.
