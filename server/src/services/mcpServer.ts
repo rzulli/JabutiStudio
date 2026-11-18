@@ -597,17 +597,26 @@ export async function startTask(projectId: string, taskId: string): Promise<McpT
   if (!existing) {
     return { content: [{ type: 'text', text: `Task "${taskId}" not found` }], isError: true };
   }
+  // Worktree per task: the agent gets its own checkout so a second agent on the same repo can work at the same time.
+  // Resolved BEFORE the status moves: when the task requires a worktree and it cannot be had, the task is not started
+  // and the agent is told why, instead of being handed the project folder.
+  const project = await resolveProject(projectId);
+  let worktree: worktreeService.EnsureResult | null = null;
+  if (project) {
+    try {
+      worktree = await worktreeService.ensureTaskWorktree(project, existing);
+    } catch (err: any) {
+      if (worktreeService.isCheckoutUnavailable(err)) {
+        return { content: [{ type: 'text', text: `Task "${taskId}" was not started: ${err.message}` }], isError: true };
+      }
+      throw err;
+    }
+  }
   const updated = await taskStore.updateTask(projectId, taskId, { status: 'in_progress' });
   if (!updated) {
     return { content: [{ type: 'text', text: `Failed to start task "${taskId}"` }], isError: true };
   }
   afterTaskMutation(projectId);
-
-  // Worktree per task (opt-in): the agent gets its own checkout so a second
-  // agent on the same repo can work at the same time. Off, or on a folder
-  // that is not a repo, this leaves the project path untouched.
-  const project = await resolveProject(projectId);
-  const worktree = project ? await worktreeService.ensureTaskWorktree(project, updated) : null;
   const cwd = worktree?.path || project?.path;
 
   return {

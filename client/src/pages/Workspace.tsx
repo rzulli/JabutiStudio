@@ -4,7 +4,7 @@ import { TaskBoard } from '@/components/tasks/TaskBoard'
 import { useProjects, useUpdateProject, useLaunchTerminal, useOpenFolder } from '@/hooks/useProjects'
 import {
   GitBranch, Star, ExternalLink, Link2, Settings, Code2, LayoutList,
-  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal, Network, X,
+  Play, Monitor, FolderOpen, Sparkles, MoreHorizontal, PanelLeft, SquareTerminal, Network, X, FlaskConical,
 } from 'lucide-react'
 // CodeMirror and its language modes only matter once the user opens a file.
 const EditorPanel = lazy(() =>
@@ -28,11 +28,12 @@ import { ExplorerView } from '@/components/layout/views/ExplorerView'
 import { useActivity } from '@/hooks/useActivity'
 import { EXPLORER_EDITOR_EVENT } from '@/components/explorer/ProjectExplorer'
 import { ExplorerHost } from '@/components/explorer/ExplorerHost'
+import { TestingPanel } from '@/components/testing/TestingPanel'
 import { DeployBadge } from '@/components/deploy/DeployBadge'
 import { toast } from 'sonner'
 
-type WorkspaceMode = 'tasks' | 'editor' | 'explorer'
-const savedMode = (v: string | null): WorkspaceMode => (v === 'editor' || v === 'explorer' ? v : 'tasks')
+type WorkspaceMode = 'tasks' | 'editor' | 'explorer' | 'testing'
+const savedMode = (v: string | null): WorkspaceMode => (v === 'editor' || v === 'explorer' || v === 'testing' ? v : 'tasks')
 
 export function Workspace() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -69,7 +70,7 @@ export function Workspace() {
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ mode?: WorkspaceMode }>).detail
-      if (detail?.mode === 'tasks' || detail?.mode === 'editor' || detail?.mode === 'explorer') {
+      if (detail?.mode === 'tasks' || detail?.mode === 'editor' || detail?.mode === 'explorer' || detail?.mode === 'testing') {
         setWorkspaceMode(detail.mode)
       }
     }
@@ -164,6 +165,7 @@ export function Workspace() {
       if (pending.projectId === projectId) {
         localStorage.removeItem('shipyard:pending-editor-file')
         editor.openFile(pending.path, pending.name, pending.extension, '', {
+          checkout: pending.checkout,
           diffMode: pending.diffMode,
           subrepo: pending.subrepo,
           reveal: pending.reveal,
@@ -297,6 +299,19 @@ export function Workspace() {
             >
               <Network className="h-3 w-3" />
               Explorer
+            </button>
+            <button
+              onClick={() => setWorkspaceMode('testing')}
+              data-testid="project-testing-tab"
+              className={cn(
+                'flex h-6 items-center gap-1.5 rounded px-2.5 text-[11px] font-medium transition-colors',
+                workspaceMode === 'testing' && !terminalFull
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <FlaskConical className="h-3 w-3" />
+              Testing
             </button>
           </div>
         </div>
@@ -455,6 +470,8 @@ export function Workspace() {
                 </>
               )}
             </div>
+          ) : workspaceMode === 'testing' ? (
+            <TestingPanel projectId={project.id} />
           ) : workspaceMode === 'tasks' ? (
             <TaskBoard
               projectId={project.id}

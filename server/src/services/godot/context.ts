@@ -8,6 +8,7 @@ import * as git from '../gitService.js';
 import { findRegistered } from '../worktreeInventory.js';
 import { canonicalPath } from '../pathIdentity.js';
 import { isInside } from '../worktreeClose.js';
+import { checkoutModeOf } from '../worktreeService.js';
 import type { Project } from '../../types/index.js';
 
 /**
@@ -28,6 +29,8 @@ export interface ContextRequest {
   checkout?: 'main' | 'task';
   /** Project-relative path (or res://). */
   file?: string;
+  /** Files of a non-Godot project only need the checkout, not a Godot project at its root. */
+  requireGodot?: boolean;
   origin?: Origin;
 }
 
@@ -77,7 +80,8 @@ export interface Refusal {
   code: RefusalCode;
   message: string;
   /** Explicit choices that would make the request unambiguous. */
-  options?: { checkout: 'main' | 'task'; label: string }[];
+  /** Choices the person can take. `checkout` selects this run's checkout; `checkoutMode` records the task's checkout (persisted). */
+  options?: { checkout?: 'main' | 'task'; checkoutMode?: 'direct' | 'isolated'; label: string }[];
 }
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
@@ -141,11 +145,24 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
     if (req.checkout === 'main') {
       reason = `${label} is selected, but the main checkout was chosen explicitly.`;
       notes.push(task.worktreePath ? `${label} has its own worktree (${task.worktreePath}); this run does NOT see its changes.` : `${label} has no worktree; running the main checkout.`);
+    } else if (!task.worktreePath && checkoutModeOf(task) === 'direct') {
+      // Direct Checkout, as recorded when the task was created: it runs in the project folder, as it always did.
+      reason = `${label} is a Direct Checkout task: it runs in the project folder.`;
     } else if (!task.worktreePath) {
+      // Isolated but not created yet, or legacy with no recorded mode. Never guess the checkout: the person must choose.
+      // Legacy: the worktree setting never decides it. The person records the checkout once, here or in Review.
+      const legacy = checkoutModeOf(task) === 'legacy';
+      const choices: NonNullable<Refusal['options']> = [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }];
+      if (legacy) {
+        choices.push({ checkoutMode: 'direct', label: 'This task was worked directly: record Direct Checkout (project folder)' });
+        if (project.isGitRepo) choices.push({ checkoutMode: 'isolated', label: 'Give this task its own worktree' });
+      }
       return {
         ok: false, code: 'task-without-worktree',
-        message: `${label} has no worktree, so there is nothing task-specific to run. Choose the main checkout explicitly if that is what you want.`,
-        options: [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }],
+        message: legacy
+          ? `${label} has no recorded checkout mode (created before it was kept). Nothing was run and no worktree was created. Record its checkout: Direct Checkout, or its own worktree.`
+          : `${label} is an isolated task with no worktree yet. Nothing was run. Choose the main checkout explicitly if that is what you want.`,
+        options: choices,
       };
     } else {
       if (!(await exists(task.worktreePath))) {
@@ -163,7 +180,7 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
     reason = 'No task selected: the project\'s main checkout.';
   }
 
-  if (!(await exists(join(checkoutPath, 'project.godot')))) {
+  if (req.requireGodot !== false && !(await exists(join(checkoutPath, 'project.godot')))) {
     return { ok: false, code: 'not-godot-project', message: `No project.godot at the root of ${checkoutPath}; this is not a Godot project checkout.` };
   }
 

@@ -25,7 +25,10 @@ export function TaskGodotReview({ task }: { task: Task }) {
   const [failure, setFailure] = useState<{ message: string; options?: GodotRefusal['options'] } | null>(null)
 
   const hasWorktree = !!task.worktreePath
-  const selection: GodotSelection = forceMain || !hasWorktree ? { taskId: task.id, checkout: 'main', origin: 'task' } : { taskId: task.id, checkout: 'task', origin: 'task' }
+  // Never main by default. A Direct Checkout task resolves to the project folder on its own. A legacy task (no mode
+  // recorded) is refused whatever the worktree setting says; the refusal offers a single-run main checkout and the
+  // recorded choices. Main is used only after that explicit choice (forceMain).
+  const selection: GodotSelection = forceMain ? { taskId: task.id, checkout: 'main', origin: 'task' } : { taskId: task.id, checkout: 'task', origin: 'task' }
   const enabled = !!status?.godotProject
   const { data } = useGodotContext(projectId, selection, enabled)
   const { data: runsData } = useGodotRuns(projectId, undefined, !!busy, enabled, task.id)
@@ -44,6 +47,14 @@ export function TaskGodotReview({ task }: { task: Task }) {
     setBusy(what); setFailure(null)
     try { await fn() } catch (e) { setFailure({ message: (e as Error).message, options: e instanceof GodotError ? e.options : undefined }) } finally { setBusy(null) }
   }
+  // The same options the refusal already offers: a checkout for this run, or a checkout recorded on the task (once).
+  const recordMode = (checkoutMode: 'direct' | 'isolated') => guard('mode', async () => {
+    const r = await godotApi.recordCheckoutMode(projectId, task.id, checkoutMode)
+    toast.success(r.checkoutMode === 'direct' ? 'Recorded: Direct Checkout (project folder)' : 'Recorded: its own worktree', { description: r.changed ? 'Kept on this task; it is not asked again.' : 'It was already recorded.' })
+    void qc.invalidateQueries({ queryKey: ['godot', 'context'] })
+    void qc.invalidateQueries({ queryKey: ['tasks', projectId] })
+    void qc.invalidateQueries({ queryKey: ['tasks', 'all'] })
+  })
   const launch = (kind: 'open' | 'play') => guard(kind, async () => {
     const r = kind === 'open' ? await godotApi.open(projectId, selection) : await godotApi.play(projectId, selection)
     setLaunchWarnings(r.warnings)
@@ -56,7 +67,13 @@ export function TaskGodotReview({ task }: { task: Task }) {
   })
   const rerun = (r: RunRecord) => { if (r.action === 'test') void runTest(r.file) }
 
-  const mode = hasWorktree && !forceMain ? 'Isolated worktree' : forceMain && hasWorktree ? 'Main checkout (chosen instead of the task worktree)' : 'Direct checkout'
+  // The label follows what the server resolved, never a guess from worktreePath: a task with no worktree is either a
+  // Direct Checkout (resolved, runs in the project folder) or of unknown mode (refused until the main checkout is chosen).
+  const mode = ctx
+    ? ctx.isMainCheckout
+      ? forceMain && hasWorktree ? 'Main checkout (chosen instead of the task worktree)' : forceMain ? 'Main checkout (chosen explicitly)' : 'Direct checkout'
+      : 'Isolated worktree'
+    : forceMain ? 'Main checkout (chosen explicitly)' : hasWorktree ? 'Worktree unavailable' : 'Checkout mode unknown'
   const BtnCls = 'inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs hover:bg-accent/50 disabled:opacity-40'
 
   return (
@@ -85,7 +102,9 @@ export function TaskGodotReview({ task }: { task: Task }) {
           <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
           <div className="min-w-0">
             <div className="break-words">{problem.message}</div>
-            {problem.options?.map(o => <button key={o.checkout} onClick={() => { setForceMain(o.checkout === 'main'); setFailure(null) }} className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10">{o.label}</button>)}
+            {problem.options?.map(o => o.checkoutMode
+              ? <button key={`mode-${o.checkoutMode}`} disabled={!!busy} onClick={() => recordMode(o.checkoutMode!)} title="Recorded on this task once; it is not asked again on each run." className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10 disabled:opacity-40">{o.label}</button>
+              : <button key={`checkout-${o.checkout}`} onClick={() => { setForceMain(o.checkout === 'main'); setFailure(null) }} title={o.checkout === 'main' ? 'Switches the Godot checkout to the main checkout. Nothing runs until you press a Godot action.' : o.label} className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10">{o.checkout === 'main' ? 'Switch to the main checkout (nothing runs yet)' : o.label}</button>)}
           </div>
         </div>
       )}

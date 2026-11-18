@@ -27,7 +27,8 @@ export interface LaunchResult {
   ok: true; kind: 'editor' | 'play'; context: GodotContext; godot: string; version: string | null; pid: number | null; args: string[]
   openedPath: string; scene?: string; note?: string; warnings: string[]; sessions: SessionInCheckout[]
 }
-export interface GodotRefusal { ok: false; code: string; message: string; options?: { checkout: 'main' | 'task'; label: string }[] }
+/** `checkout` picks this run's checkout; `checkoutMode` records the task's checkout (kept on the task, asked once). */
+export interface GodotRefusal { ok: false; code: string; message: string; options?: { checkout?: 'main' | 'task'; checkoutMode?: 'direct' | 'isolated'; label: string }[] }
 
 export interface Related { rel: string; res: string; verified: boolean; reason: string }
 export interface GodotClassification {
@@ -72,6 +73,9 @@ export class GodotError extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: init?.body ? { 'Content-Type': 'application/json' } : undefined, ...init })
+  if (!(res.headers.get('content-type') || '').includes('application/json')) {
+    throw new GodotError("This API answered with a web page instead of JSON. Another server is probably on this port (often a dev server from another checkout): stop it, then restart this checkout's server.", 'not-json')
+  }
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new GodotError(body.message || body.error || res.statusText || 'Request failed', body.code || 'error', body.options)
   return body as T
@@ -86,8 +90,11 @@ const qs = (s: Record<string, string | undefined>) => {
 
 export const godotApi = {
   status: (projectId: string) => call<GodotStatus>(`/projects/${projectId}/godot/status`),
+  /** Records a legacy task's checkout once (Direct Checkout or its own worktree). A person's click only. */
+  recordCheckoutMode: (projectId: string, taskId: string, checkoutMode: 'direct' | 'isolated') =>
+    call<{ ok: true; checkoutMode: 'direct' | 'isolated'; changed: boolean }>(`/projects/${projectId}/tasks/${taskId}/checkout-mode`, { method: 'POST', body: JSON.stringify({ checkoutMode }) }),
   context: (projectId: string, s: GodotSelection) =>
-    call<{ context: GodotContext | GodotRefusal; classification?: GodotClassification | null; mainScene?: string | null; tests?: string[]; sessions?: SessionInCheckout[]; warnings?: string[] }>(`/projects/${projectId}/godot/context${qs({ ...s })}`),
+    call<{ context: GodotContext | GodotRefusal; classification?: GodotClassification | null; mainScene?: string | null; tests?: string[]; testScripts?: string[]; sessions?: SessionInCheckout[]; warnings?: string[] }>(`/projects/${projectId}/godot/context${qs({ ...s })}`),
   open: (projectId: string, s: GodotSelection) =>
     call<LaunchResult>(`/projects/${projectId}/godot/open`, { method: 'POST', body: JSON.stringify(s) }),
   play: (projectId: string, s: GodotSelection) =>
@@ -95,6 +102,9 @@ export const godotApi = {
   run: (projectId: string, body: GodotSelection & { file: string; action: 'scene' | 'test'; via?: string; mode?: 'HEADLESS' | 'RENDER_BACKGROUND' }) =>
     call<{ ok: true; record: RunRecord }>(`/projects/${projectId}/godot/runs`, { method: 'POST', body: JSON.stringify(body) }),
   runs: (projectId: string, file?: string, taskId?: string) => call<{ runs: RunListItem[] }>(`/projects/${projectId}/godot/runs${qs({ file, taskId })}`),
+  /** Exact history of one file on one checkout (the index, not a window of recent runs). `stored` = runs held at all. */
+  runsExact: (projectId: string, file: string, checkoutPath: string, limit = 1) =>
+    call<{ runs: RunListItem[]; stored: number; storeLimit: number }>(`/projects/${projectId}/godot/runs${qs({ file, checkoutPath, exact: '1', limit: String(limit) })}`),
   runView: (projectId: string, runId: string) => call<RunView>(`/projects/${projectId}/godot/runs/${runId}`),
   cancel: (projectId: string, runId: string) => call<{ ok: true; output: string }>(`/projects/${projectId}/godot/runs/${runId}/cancel`, { method: 'POST', body: '{}' }),
   evidenceUrl: (projectId: string, runId: string, name: string) => `${BASE}/projects/${projectId}/godot/runs/${runId}/evidence?name=${encodeURIComponent(name)}`,

@@ -181,7 +181,7 @@ async function dirExists(p?: string): Promise<boolean> {
 export async function resolveLifecycle(
   project: Project,
   task: Task,
-  opts: { target?: string; sessions?: SessionLite[]; withDiff?: boolean } = {},
+  opts: { target?: string; sessions?: SessionLite[]; withDiff?: boolean; acknowledgeUnknownActivity?: boolean } = {},
 ): Promise<LifecycleView> {
   const cwd = project.path;
   const entry = await store.getEntry(task.projectId, task.id);
@@ -259,7 +259,11 @@ export async function resolveLifecycle(
     : deriveStage(integrationState, !worktreeExists && !registered && !head, task.status, acceptance.state);
 
   const sessions = (opts.sessions ?? []).filter(s => s);
+  // Three different facts, never merged: a session that reports work (proven activity, blocks), a session that is open
+  // but reports nothing (unknown activity: it may be idle or writing, so it needs an explicit answer, not a timeout),
+  // and no session at all.
   const sessionActive = sessions.some(s => s.state === 'busy' || s.state === 'awaiting-input');
+  const unknownActivity = sessions.filter(s => s.state === null || s.state === undefined);
 
   // -- blockers: why it cannot move forward ---------------------------------
   const blockers: Blocker[] = [];
@@ -272,6 +276,10 @@ export async function resolveLifecycle(
   } else if (!head && integrationState !== 'integrated') add('branch-missing', `Branch ${branch} no longer exists`);
   if (task.status !== 'done' && integrationState !== 'integrated') add('not-finished', 'The agent has not marked the task done');
   if (sessionActive) add('session-active', 'An agent session on this task is still working');
+  else if (unknownActivity.length && !opts.acknowledgeUnknownActivity) {
+    const names = [...new Set(unknownActivity.map(s => s.agent || s.type || 'shell'))].join(', ');
+    add('activity-unknown', `${unknownActivity.length} session${unknownActivity.length === 1 ? ' is' : 's are'} open on this task (${names}) and ${unknownActivity.length === 1 ? 'does' : 'do'} not report whether ${unknownActivity.length === 1 ? 'it is' : 'they are'} working, so Shipyard cannot prove nothing is still writing. Close the tab, or acknowledge it to integrate`);
+  }
   if (mode === 'branch' && head && task.worktreePath && !worktreeExists) add('worktree-missing', 'The worktree folder is gone; the branch still holds the work');
   if (worktreeExists && branch && !worktreeMatches) add('worktree-mismatch', `${task.worktreePath} is not git's worktree for ${branch}`);
   if (dirty.count > 0) add('worktree-dirty', `${dirty.count} uncommitted or untracked file${dirty.count === 1 ? '' : 's'} in the worktree`);
@@ -297,7 +305,7 @@ export async function resolveLifecycle(
   const baseBlock = ['not-git', 'no-branch', 'unattributed', 'claim-invalid', 'branch-missing', 'not-finished', 'session-active', 'worktree-missing', 'worktree-mismatch', 'worktree-dirty', 'no-target', 'target-missing', 'nothing-to-integrate', 'patch-equivalent'];
   const canAccept = (integrationState === 'not-integrated' || integrationState === 'in-target') && commits.length > 0 && !hard(baseBlock) && acceptance.state !== 'accepted';
   const canIntegrate = mode !== 'direct' && integrationState === 'not-integrated' && acceptance.state === 'accepted' &&
-    !hard([...baseBlock, 'conflict', 'target-not-checked-out', 'target-dirty', 'operation-in-progress']) && mergeable === 'clean';
+    !hard([...baseBlock, 'activity-unknown', 'conflict', 'target-not-checked-out', 'target-dirty', 'operation-in-progress']) && mergeable === 'clean';
 
   return {
     taskId: task.id,
@@ -482,11 +490,32 @@ export async function revokeAcceptance(project: Project, task: Task, sessions?: 
  * Merge the accepted commit into the target. Every precondition is re-read from
  * Git here; nothing from the earlier view is trusted. Git confirms the result.
  */
+/**
+ * Read again, immediately before the merge, what the accepted commit depends on: the branch still points at the reviewed
+ * sha, the worktree has nothing uncommitted, and the target checkout is the target, clean. Returns the reason, or null.
+ */
+async function revalidateForMerge(project: Project, task: Task, rec: { headSha: string; branch: string; targetBranch: string }): Promise<string | null> {
+  const branchHead = await git.resolveRef(project.path, `refs/heads/${rec.branch}`);
+  if (branchHead !== rec.headSha) return `Branch ${rec.branch} is at ${branchHead ? branchHead.slice(0, 7) : 'nothing'}, not the accepted ${rec.headSha.slice(0, 7)}. Review it again`;
+  if (task.worktreePath) {
+    const wt = await git.dirtySummary(task.worktreePath);
+    if (!wt) return 'The worktree state could not be read right before the merge';
+    if (wt.count > 0) return `The worktree has ${wt.count} uncommitted change${wt.count === 1 ? '' : 's'} since review. Commit or discard them and review again`;
+  }
+  const current = await git.currentBranch(project.path);
+  if (current !== rec.targetBranch) return `The checkout is on ${current ?? 'a detached HEAD'}, not ${rec.targetBranch}`;
+  const target = await git.dirtySummary(project.path);
+  if (!target) return 'The target checkout state could not be read right before the merge';
+  if (target.count > 0) return `The target checkout has ${target.count} uncommitted change${target.count === 1 ? '' : 's'}; nothing was merged`;
+  return null;
+}
+
 export async function integrate(
   project: Project, task: Task,
-  req: { targetBranch?: string; expectedHeadSha?: string; branch?: string; sessions?: SessionLite[] },
+  req: { targetBranch?: string; expectedHeadSha?: string; branch?: string; sessions?: SessionLite[]; acknowledgeUnknownActivity?: boolean },
 ): Promise<ActionResult> {
-  const view = await resolveLifecycle(project, task, { sessions: req.sessions });
+  const ack = req.acknowledgeUnknownActivity === true;
+  const view = await resolveLifecycle(project, task, { sessions: req.sessions, acknowledgeUnknownActivity: ack });
   const fail = async (code: string, message: string) => {
     await store.mutate(task.projectId, task.id, e => { e.history.push({ at: new Date().toISOString(), event: 'integration-refused', detail: { code, message } }); });
     return refuse(code, message, view);
@@ -507,6 +536,9 @@ export async function integrate(
     const why = view.blockers.filter(b => b.code !== 'not-accepted').map(b => b.message).join('; ');
     return fail('blocked', why || 'Not ready to integrate');
   }
+
+  const reval = await revalidateForMerge(project, task, rec);
+  if (reval) return fail('revalidation-failed', reval);
 
   const targetBefore = view.target.head!;
   const label = task.number ? `#${task.number} ${task.title}` : task.title;

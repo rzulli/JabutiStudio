@@ -4,6 +4,8 @@ import { getProjects } from '../services/projectDiscovery.js';
 import * as lifecycle from '../services/taskLifecycle.js';
 import * as closer from '../services/worktreeClose.js';
 import { withLink } from '../services/worktreeLinks.js';
+import { recordCheckoutChoice } from '../services/worktreeService.js';
+import { planCheckoutMigration, applyCheckoutMigration } from '../services/checkoutMigration.js';
 import { invalidateInventory } from '../services/worktreeInventory.js';
 import { fromAppUi } from './design.js';
 import { triggerAutoSync } from '../services/sync/syncEngine.js';
@@ -12,8 +14,11 @@ import * as log from '../services/logService.js';
 async function sessionsFor(projectId: string, taskId: string): Promise<lifecycle.SessionLite[]> {
   try {
     const { listSessions } = await import('../services/terminalService.js');
+    // A session counts for the task when it is tied to it, or when it works inside the task's worktree folder
+    // (an agent started by hand there is still writing to the task's branch).
+    const wtPath = (await taskStore.getTask(projectId, taskId))?.worktreePath;
     return listSessions(projectId)
-      .filter(s => s.taskId === taskId)
+      .filter(s => s.taskId === taskId || (!!wtPath && !!s.cwd && closer.isInside(s.cwd, wtPath)))
       .map(s => ({ id: s.id, taskId: s.taskId, agent: s.agent, type: s.type, state: s.state ?? null, cwd: s.cwd, claudeSessionId: s.claudeSessionId }));
   } catch {
     return []; // terminal layer unavailable: no live sessions to report
@@ -41,6 +46,35 @@ export async function taskLifecycleRoutes(app: FastifyInstance) {
     return false;
   };
   const status = (code: string) => (code === 'not-accepted' || code === 'target-required' || code === 'head-required' || code === 'token-required' ? 400 : 409);
+
+  // A person records the checkout of a legacy task (Direct Checkout or its own worktree). Written once, kept on the task.
+  app.post<{ Params: { id: string; taskId: string }; Body: { checkoutMode?: string } }>(
+    '/api/projects/:id/tasks/:taskId/checkout-mode',
+    async (request, reply) => {
+      if (!uiOnly(request, reply)) return;
+      const { project, task } = await load(request.params.id, request.params.taskId);
+      if (!project || !task) return reply.status(404).send({ error: 'Task not found' });
+      const choice = request.body?.checkoutMode;
+      if (choice !== 'direct' && choice !== 'isolated') return reply.status(400).send({ ok: false, code: 'bad-choice', message: 'checkoutMode must be "direct" or "isolated"' });
+      const r = await recordCheckoutChoice(project, task.id, choice, 'ui');
+      if (!r.ok) return reply.status(409).send({ ok: false, code: r.code, message: r.message });
+      return { ok: true, checkoutMode: r.checkoutMode, changed: r.changed };
+    },
+  );
+
+  // The migration of legacy tasks: the plan only reads; apply records the evidence-backed decisions (UI only).
+  app.get<{ Params: { id: string } }>('/api/projects/:id/checkout-modes/migration', async (request, reply) => {
+    const project = (await getProjects()).find(p => p.id === request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    return planCheckoutMigration(project);
+  });
+  app.post<{ Params: { id: string }; Body: { taskIds?: string[] } }>('/api/projects/:id/checkout-modes/migration', async (request, reply) => {
+    if (!uiOnly(request, reply)) return;
+    const project = (await getProjects()).find(p => p.id === request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const ids = Array.isArray(request.body?.taskIds) ? request.body!.taskIds!.filter(x => typeof x === 'string') : undefined;
+    return applyCheckoutMigration(project, ids);
+  });
 
   app.get<{ Params: { id: string; taskId: string }; Querystring: { target?: string } }>(
     '/api/projects/:id/tasks/:taskId/lifecycle',
@@ -141,13 +175,17 @@ export async function taskLifecycleRoutes(app: FastifyInstance) {
   );
 
   // Remove the worktree and, if proven integrated, the branch. UI-only; every precondition is re-read from Git.
-  app.post<{ Params: { id: string; taskId: string }; Body: { expectedToken?: string; acknowledgeIgnored?: boolean } }>(
+  app.post<{ Params: { id: string; taskId: string }; Body: { expectedToken?: string; acknowledgeIgnored?: boolean; acknowledgeUnknownProcesses?: boolean } }>(
     '/api/projects/:id/tasks/:taskId/lifecycle/close',
     async (request, reply) => {
       if (!uiOnly(request, reply)) return;
       const { project, raw } = await load(request.params.id, request.params.taskId);
       if (!project || !raw) return reply.status(404).send({ error: 'Task not found' });
-      const res = await closer.closeTask(project, raw, { expectedToken: request.body?.expectedToken, acknowledgeIgnored: request.body?.acknowledgeIgnored === true });
+      const res = await closer.closeTask(project, raw, {
+        expectedToken: request.body?.expectedToken,
+        acknowledgeIgnored: request.body?.acknowledgeIgnored === true,
+        acknowledgeUnknownProcesses: request.body?.acknowledgeUnknownProcesses === true,
+      });
       invalidateInventory(project.id);
       if (!res.ok) return reply.status(status(res.code)).send(res);
       log.info('git', `Task #${raw.number ?? raw.id} closed (${res.complete ? 'complete' : 'partial'})`, JSON.stringify(res.result), project.id);

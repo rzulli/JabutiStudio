@@ -7,7 +7,7 @@ import { canonicalPath } from '../pathIdentity.js';
  */
 export type GuiKind = 'editor' | 'play';
 
-const live = new Map<string, { pid: number; startedAt: string }>();
+const live = new Map<string, { pid: number; startedAt: string; checkout: string; kind: GuiKind }>();
 const key = (checkout: string, kind: GuiKind) => `${canonicalPath(checkout)}|${kind}`;
 
 function alive(pid: number): boolean {
@@ -24,7 +24,7 @@ export function runningInstance(checkout: string, kind: GuiKind): { pid: number;
 }
 
 export function rememberInstance(checkout: string, kind: GuiKind, pid: number): void {
-  live.set(key(checkout, kind), { pid, startedAt: new Date().toISOString() });
+  live.set(key(checkout, kind), { pid, startedAt: new Date().toISOString(), checkout, kind });
 }
 
 export interface SessionInCheckout { id: string; taskId?: string; taskNumber?: number; agent?: string; state: string | null; title?: string }
@@ -51,5 +51,20 @@ export function sessionWarnings(sessions: SessionInCheckout[], taskId?: string):
   if (silent.length) out.push(`${silent.length} session(s) in this checkout do not report whether they are working (${silent.map(s => s.agent ?? 'shell').join(', ')}); the files may change under you.`);
   const others = new Set(sessions.filter(s => s.taskId && s.taskId !== taskId).map(s => s.taskNumber ? `#${s.taskNumber}` : s.taskId));
   if (others.size) out.push(`The checkout is shared with other task(s): ${[...others].join(', ')}. What you see may include their changes.`);
+  return out;
+}
+
+/**
+ * Godot windows this server started that are still alive in `checkout`. Only what this process launched since its last
+ * start is known: a window opened by hand, or started before a restart, is not in this map and is not reported here.
+ */
+export function trackedGuiIn(checkout: string): { kind: GuiKind; pid: number; startedAt: string }[] {
+  const here = canonicalPath(checkout);
+  const out: { kind: GuiKind; pid: number; startedAt: string }[] = [];
+  for (const [k, hit] of [...live.entries()]) {
+    if (canonicalPath(hit.checkout) !== here) continue;
+    if (alive(hit.pid)) out.push({ kind: hit.kind, pid: hit.pid, startedAt: hit.startedAt });
+    else live.delete(k);
+  }
   return out;
 }

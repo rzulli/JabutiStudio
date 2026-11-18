@@ -3,7 +3,7 @@ import { readFile, stat, open } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { getProjects } from '../services/projectDiscovery.js';
-import { resolveForProject, type Origin } from '../services/godot/context.js';
+import { resolveForProject, sameCheckout, type Origin } from '../services/godot/context.js';
 import { classify } from '../services/godot/classify.js';
 import * as harness from '../services/godot/harness.js';
 import * as runs from '../services/godot/runs.js';
@@ -54,9 +54,10 @@ export async function godotRoutes(app: FastifyInstance) {
     const ctx = await resolveForProject(p, { projectId: p.id, ...asSel(request.query) });
     if (!ctx.ok) return { context: ctx };
     const sessions = await sessionsIn(ctx.checkoutPath);
+    const tests = await runs.listTestScenes(ctx.checkoutPath);
     return {
       context: ctx, classification: ctx.file ? await classify(ctx.checkoutPath, ctx.file.rel) : null,
-      mainScene: await runs.mainScene(ctx.checkoutPath), tests: await runs.listTestScenes(ctx.checkoutPath), sessions, warnings: sessionWarnings(sessions, ctx.taskId),
+      mainScene: await runs.mainScene(ctx.checkoutPath), tests, testScripts: await runs.listUnattachedTestScripts(ctx.checkoutPath, tests), sessions, warnings: sessionWarnings(sessions, ctx.taskId),
     };
   });
 
@@ -84,13 +85,28 @@ export async function godotRoutes(app: FastifyInstance) {
   });
 
   // Runs of a file (and of the files provably related to it), newest first.
-  app.get<{ Params: { id: string }; Querystring: { file?: string; taskId?: string; limit?: string } }>('/api/projects/:id/godot/runs', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { file?: string; taskId?: string; limit?: string; exact?: string; checkoutPath?: string } }>('/api/projects/:id/godot/runs', async (request, reply) => {
     const p = await project(request.params.id);
     if (!p) return reply.status(404).send({ error: 'Project not found' });
     const limit = Math.min(50, Math.max(1, Number(request.query.limit) || 30));
+    // Exact history of one file on one checkout (for "last result"): no context resolution, no 30-run window.
+    // `stored` tells the caller how many runs the index holds at all, so an empty answer is never presented as "never run".
+    if (request.query.exact === '1' && request.query.file && request.query.checkoutPath) {
+      const all = await runs.listRecords(p.id);
+      const cp = String(request.query.checkoutPath);
+      const mine = all.filter(r => r.file === request.query.file && sameCheckout(r.checkout.path, cp)).slice(0, limit);
+      const exactItems = [];
+      for (const r of mine) {
+        const v = await runs.viewRun(r);
+        exactItems.push({ record: r, running: v.running, verdict: { outcome: v.verdict.outcome, headline: v.verdict.headline, harnessStatus: v.verdict.harnessStatus, reason: v.verdict.reason } });
+      }
+      return { runs: exactItems, stored: all.length, storeLimit: runs.MAX_RECORDS };
+    }
     const file = request.query.file ? (await resolveForProject(p, { projectId: p.id, file: request.query.file })) : null;
     if (file && !file.ok) return reply.status(400).send(file);
-    const records = file?.ok ? await runs.recordsForFile(p.id, file.checkoutPath, file.file!.rel)
+    // Runs of a file: all of them, labelled with their checkout; a task narrows to its own runs.
+    const records = file?.ok ? (await runs.recordsForFile(p.id, file.checkoutPath, file.file!.rel))
+        .filter(r => !request.query.taskId || r.taskId === request.query.taskId)
       : (await runs.listRecords(p.id)).filter(r => !request.query.taskId || r.taskId === request.query.taskId);
     const items = [];
     for (const r of records.slice(0, limit)) {
