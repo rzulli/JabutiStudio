@@ -37,6 +37,28 @@ Rotas (`routes/godot.ts`): leitura aberta (`status`, `context`, `runs`, `runs/:i
 - Run de outro checkout nunca e apresentada como evidencia da versao atual: o registro guarda checkout/branch/sha/dirty e
   a UI mostra "Re-run on <contexto atual>" explicitamente.
 
+## Descoberta do Harness pelo agente (contrato de capacidades)
+**Diagnostico**: o agente nao tinha como saber o que o Harness aceita. As rotas Godot sao so-UI (por desenho), nao havia
+tool MCP de Godot e o brief nao citava o Harness; sobrava `-?` e tentativa e erro (`-Action playtest`, timeout acima do
+perfil, `-OverrideReason`). Nenhum Harness, runner ou store novo: tudo le o Harness existente e o indice `data/godot-runs/`.
+
+`services/godot/capabilities.ts` (sem iniciar nada) e 3 tools MCP:
+| Tool | Papel |
+|---|---|
+| `get_godot_capabilities {projectId, taskId?, checkout?, plan?}` | Contrato: Harness (dir, revisao git, Godot, pwsh), **acoes, modos, perfis, parametros e defaults lidos do `param()` do runner** (parse PowerShell, o arquivo nao e executado), **orcamentos de timeout e teto lidos de `doctor -Deep`**, regra de `OverrideReason`, checkout da task (worktree/branch/sha/dirty), cenas em `tests/`, onde ficam as evidencias. `sources` diz a origem de cada campo. Com `plan {action,test,profile,timeoutSec,overrideReason}` valida o plano e devolve **problemas acionaveis** (`unsupported-action`, `test-not-found`, `override-required`, `long-profile-required`, `harness-unavailable`...) ou o comando exato com `-RunId` |
+| `get_godot_run {projectId, runId}` | Veredito (quatro dimensoes), `diagnosis` (passed / test-problem / timeout / infrastructure / evidence-incomplete), resumo do receipt, evidencias, checkout/branch/sha e `freshness` (HEAD mudou = `stale`) |
+| `record_godot_run {projectId, taskId, runId}` | Liga uma run que o agente executou ao **mesmo indice** que Testing/Review leem (`RunRecord.registered`). Exige receipt valido e que o receipt tenha rodado o checkout da task (`wrong-checkout`). O veredito sai do receipt, nunca do agente; nao e aceite/aprovacao/integracao |
+
+Regras: nao ha lista estatica de acoes (uma acao nova no `ValidateSet` aparece sozinha); se a introspeccao falha, `ready:false` e
+`blockers`, nao um palpite. A regra "timeout > orcamento exige `-OverrideReason` (>=10 chars, gravado no receipt); > teto so `long_playtest`"
+e aplicada apenas sobre orcamentos que o proprio runner reportou. Nunca se gera override automatico: a recusa propoe um perfil que caiba ou
+perguntar ao usuario. Tool MCP para **iniciar** run continua inexistente (rota so-UI); o agente roda o comando devolvido pelo plano e depois registra.
+
+Brief: `aiResolvePrompt` (Run with AI) e `start_task` citam as tools quando o checkout tem `project.godot` (ponteiro curto, sem despejar docs).
+Limitacoes: o `param()` nao diz quais parametros cada acao exige (`run` = Project+Test, aprendido do contrato do runner, so para `run`); defaults
+de timeout vem do `doctor -Deep`, que tambem checa MCP/portas (~2 s, cacheado por versao do runner); a procedencia de uma run registrada
+e capturada no registro (depois da run) e dito no `notes` do record; staleness compara HEAD do registro com o atual.
+
 ## UI
 `components/editor/GodotActions.tsx` (barra do Editor para `.tscn`/`.gd`; seletor de checkout), `GodotResults.tsx`
 (dialog de runs/recibos/evidencias, reaproveitavel por uma futura aba Testing via `hooks/useGodot.ts`),
