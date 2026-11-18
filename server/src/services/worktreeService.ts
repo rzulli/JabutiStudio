@@ -113,7 +113,7 @@ async function exists(path: string): Promise<boolean> {
 
 /** A task whose worktree is required cannot be started: the reason is final and nothing was launched. */
 export class CheckoutUnavailableError extends Error {
-  constructor(readonly code: 'not-git' | 'worktree-missing' | 'create-failed' | 'checkout-mismatch', message: string) {
+  constructor(readonly code: 'not-git' | 'worktree-missing' | 'create-failed' | 'checkout-mismatch' | 'checkout-unknown', message: string) {
     super(message);
     this.name = 'CheckoutUnavailableError';
   }
@@ -122,9 +122,31 @@ export function isCheckoutUnavailable(e: unknown): e is CheckoutUnavailableError
   return e instanceof CheckoutUnavailableError;
 }
 
-/** The task must run in its own worktree: the setting is on, or the task already owns one. */
+export type CheckoutMode = 'direct' | 'isolated' | 'legacy';
+
+/**
+ * The task's own checkout mode. A worktree it owns makes it isolated; otherwise the mode stamped when it was created
+ * (`checkoutMode`, set once). A task with neither is legacy: unknown, never decided by the current setting alone.
+ */
+export function checkoutModeOf(task: Task): CheckoutMode {
+  if (task.worktreePath) return 'isolated';
+  return task.checkoutMode ?? 'legacy';
+}
+
+/**
+ * The task must run in its own worktree. Isolated tasks always do. A legacy task only gets one while the setting is
+ * on (that is what it was started under); it is never sent to the project folder by the setting.
+ */
 export function requiresWorktree(task: Task): boolean {
-  return getConfig().enabled || !!task.worktreePath;
+  const mode = checkoutModeOf(task);
+  return mode === 'isolated' || (mode === 'legacy' && getConfig().enabled);
+}
+
+/** Worktree folders that other tasks of the project still record: a missing one must keep its git record. */
+async function otherTaskWorktrees(projectId: string, taskId: string): Promise<string[]> {
+  return (await taskStore.getAllTasks())
+    .filter(t => t.projectId === projectId && t.id !== taskId && t.worktreePath)
+    .map(t => t.worktreePath!);
 }
 
 /**
@@ -176,7 +198,11 @@ export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOpt
   return serialize(`${project.id}:${task.id}`, async (): Promise<EnsureResult> => {
     const config = getConfig();
     const fresh = (await taskStore.getTask(task.projectId, task.id)) ?? task;
-    if (!requiresWorktree(fresh)) return { path: project.path, created: false, reason: 'disabled' };
+    const mode = checkoutModeOf(fresh);
+    if (mode === 'direct') return { path: project.path, created: false, reason: 'disabled' };
+    if (mode === 'legacy' && !config.enabled) {
+      throw new CheckoutUnavailableError('checkout-unknown', 'This task has no recorded checkout mode (it was created before the mode was kept) and worktrees are off now, so the project folder was not used. Nothing was started. Choose the main checkout explicitly in Review if that is what you want.');
+    }
     if (!project.isGitRepo) {
       throw new CheckoutUnavailableError('not-git', 'The project is not a git repository, so this task cannot get a worktree. Nothing was started.');
     }
@@ -192,12 +218,12 @@ export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOpt
       const dest = fresh.worktreePath;
       try {
         await mkdir(dirname(dest), { recursive: true });
-        await gitService.createWorktree(project.path, branch, dest);
+        await gitService.createWorktree(project.path, branch, dest, await otherTaskWorktrees(project.id, task.id));
       } catch (err: any) {
         log.error('git', 'Failed to recover task worktree', err?.message || String(err), project.id);
         throw new CheckoutUnavailableError('create-failed', `The worktree could not be re-created (${err?.message || 'git worktree add failed'}). Nothing was started.`);
       }
-      await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch });
+      await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch, checkoutMode: 'isolated' });
       log.info('git', `Worktree re-created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
       return {
         path: dest, branch, created: true, recovered: true,
@@ -209,12 +235,12 @@ export function ensureTaskWorktree(project: Project, task: Task, opts: EnsureOpt
     const dest = join(config.basePath, dirNameFor(project.id, fresh));
     try {
       await mkdir(config.basePath, { recursive: true });
-      await gitService.createWorktree(project.path, branch, dest);
+      await gitService.createWorktree(project.path, branch, dest, await otherTaskWorktrees(project.id, task.id));
     } catch (err: any) {
       log.error('git', 'Failed to create task worktree', err?.message || String(err), project.id);
       throw new CheckoutUnavailableError('create-failed', `The worktree could not be created (${err?.message || 'git worktree add failed'}). Nothing was started, and the project folder was not used.`);
     }
-    await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch });
+    await taskStore.updateTask(task.projectId, task.id, { worktreePath: dest, worktreeBranch: branch, checkoutMode: 'isolated' });
     log.info('git', `Worktree created for task #${task.number ?? task.id}`, `${branch} -> ${dest}`, project.id);
     return { path: dest, branch, created: true };
   });

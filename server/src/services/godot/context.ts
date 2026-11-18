@@ -8,7 +8,7 @@ import * as git from '../gitService.js';
 import { findRegistered } from '../worktreeInventory.js';
 import { canonicalPath } from '../pathIdentity.js';
 import { isInside } from '../worktreeClose.js';
-import { requiresWorktree } from '../worktreeService.js';
+import { checkoutModeOf } from '../worktreeService.js';
 import type { Project } from '../../types/index.js';
 
 /**
@@ -144,15 +144,17 @@ export async function resolveForProject(project: Project, req: ContextRequest): 
     if (req.checkout === 'main') {
       reason = `${label} is selected, but the main checkout was chosen explicitly.`;
       notes.push(task.worktreePath ? `${label} has its own worktree (${task.worktreePath}); this run does NOT see its changes.` : `${label} has no worktree; running the main checkout.`);
-    } else if (!task.worktreePath && !requiresWorktree(task)) {
-      // Direct Checkout: worktrees are off and this task never recorded one, so it was worked in the project folder.
-      // Legitimate, not a fallback: it runs there as it always did.
-      reason = `${label} is a Direct Checkout task (worktrees are off): it runs in the project folder.`;
+    } else if (!task.worktreePath && checkoutModeOf(task) === 'direct') {
+      // Direct Checkout, as recorded when the task was created: it runs in the project folder, as it always did.
+      reason = `${label} is a Direct Checkout task: it runs in the project folder.`;
     } else if (!task.worktreePath) {
-      // Worktrees are on but this task has none: a legacy or unknown checkout mode. Never guess; the person must choose.
+      // Isolated but not created yet, or legacy with no recorded mode. Never guess the checkout: the person must choose.
+      const legacy = checkoutModeOf(task) === 'legacy';
       return {
         ok: false, code: 'task-without-worktree',
-        message: `${label} has no worktree and its checkout mode is unknown (worktrees are on). Nothing was run. Choose the main checkout explicitly if that is what you want.`,
+        message: legacy
+          ? `${label} has no recorded checkout mode (created before it was kept), so there is no task checkout to run in. Nothing was run. Choose the main checkout explicitly if that is what you want.`
+          : `${label} is an isolated task with no worktree yet. Nothing was run. Choose the main checkout explicitly if that is what you want.`,
         options: [{ checkout: 'main', label: `Run on the main checkout (${project.path})` }],
       };
     } else {

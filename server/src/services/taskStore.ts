@@ -4,6 +4,12 @@ import { nanoid } from 'nanoid';
 import type { Task, TaskAttachment, Milestone, TasksFile, EffortPoints, EffortConfidence } from '../types/index.js';
 import { DATA_DIR } from './dataDir.js';
 import { writeJsonAtomic } from './atomicJson.js';
+import { getSettings } from './settingsStore.js';
+
+/** Mode a task gets when it is created: whatever the worktree setting says at that moment, kept on the task. */
+export function defaultCheckoutMode(): 'direct' | 'isolated' {
+  return getSettings().worktreePerTask ? 'isolated' : 'direct';
+}
 
 export const TASKS_DIR = join(DATA_DIR, 'tasks');
 const EFFORT_POINTS = new Set<EffortPoints>([1, 2, 3, 5, 8]);
@@ -205,6 +211,7 @@ export function createTask(projectId: string, data: Omit<Task, 'id' | 'projectId
       createdAt: now,
       updatedAt: now,
       order: tasks.length,
+      checkoutMode: data.checkoutMode ?? defaultCheckoutMode(),
       ...buildCascadingTimestamps(status, now),
     };
     tasks.push(task);
@@ -225,6 +232,8 @@ export function updateTask(projectId: string, taskId: string, data: Partial<Omit
     tasks[idx] = {
       ...tasks[idx],
       ...data,
+      // Set once: a later update can never reclassify the checkout mode.
+      checkoutMode: tasks[idx].checkoutMode ?? data.checkoutMode,
       ...applyStatusTimestamps(tasks[idx], data.status, now),
       updatedAt: onlySeen ? tasks[idx].updatedAt : now,
     };
@@ -472,6 +481,7 @@ export function replaceTasks(projectId: string, incoming: Partial<Task>[], miles
         comments: t.comments ?? existing?.comments,
         worktreePath: t.worktreePath ?? existing?.worktreePath,
         worktreeBranch: t.worktreeBranch ?? existing?.worktreeBranch,
+        checkoutMode: existing?.checkoutMode ?? t.checkoutMode ?? (existing ? undefined : defaultCheckoutMode()),
         ...buildCascadingTimestamps(status, now, {
           inboxAt: t.inboxAt || existing?.inboxAt,
           inProgressAt: t.inProgressAt || existing?.inProgressAt,
@@ -636,6 +646,7 @@ export function applyCloudChanges(projectId: string, changes: {
         projectId,
         worktreePath: existing?.worktreePath,
         worktreeBranch: existing?.worktreeBranch,
+        checkoutMode: existing?.checkoutMode ?? t.checkoutMode ?? (existing ? undefined : defaultCheckoutMode()),
       });
     }
     const milestones = new Map((file.milestones || []).map(m => [m.id, m]));

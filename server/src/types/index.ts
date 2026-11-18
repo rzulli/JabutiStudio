@@ -85,6 +85,12 @@ export interface Task {
   comments?: TaskComment[];        // Pulled from the remote board — remote is authoritative
   worktreePath?: string;   // Isolated git worktree the agent runs in (worktree-per-task)
   worktreeBranch?: string; // Branch checked out in that worktree
+  /**
+   * Checkout mode, decided once when the task is created from the setting then in force and never reclassified
+   * when that setting changes. Absent = legacy task created before this field: its mode is unknown, so it is
+   * refused unless the person chooses the main checkout explicitly.
+   */
+  checkoutMode?: 'direct' | 'isolated';
 }
 
 export interface Milestone {

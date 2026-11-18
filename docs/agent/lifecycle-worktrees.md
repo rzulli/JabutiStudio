@@ -142,7 +142,8 @@
   A task e o unico registro de por que a worktree existe: nunca se apaga uma sem a outra, e
   nada e forcado nem removido para permitir a exclusao. `cleanupWorktrees` e a varredura de 6h (`startWorktreeCleanup`) so rodam `git worktree
   prune` (esquece registro de pasta que ja sumiu), mas nunca quando algum registro ausente ainda pertence a uma task
-  (pasta movida ou sumida temporariamente: o registro e o que permite restaurar com historico e vinculo; `pruneWorktrees(path, keep)`);
+  (pasta movida ou sumida temporariamente: o registro e o que permite restaurar com historico e vinculo; `pruneWorktrees(path, keep)`); criar ou recuperar uma worktree nunca poda o registro de outra task (`createWorktree(..., otherTaskPaths)`);
+  o modo de checkout e gravado na task na criacao (`checkoutMode`: direct | isolated), e a config global nao o reclassifica depois; task sem modo gravado (legada) nao roda na main pela config: recusa e escolha explicita (`checkoutModeOf`);
   a varredura por idade, a limpeza
   `all: true` e o `rm -rf` de pastas orfas foram removidos, e `gitService.removeWorktree`
   / `deleteBranch` (force, `-D`) deixaram de existir. O cartao "Task worktrees" em Settings

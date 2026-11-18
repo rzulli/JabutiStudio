@@ -60,7 +60,7 @@ test('a Direct Checkout task (worktrees off, none recorded) runs in the project 
   assert.match(r.reason, /Direct Checkout/)
 })
 
-test('a task with no worktree while worktrees are on has an unknown mode: refused, main only by explicit choice', async () => {
+test('an isolated task with no worktree yet (created while worktrees were on) is refused; main only by explicit choice', async () => {
   await wt.saveConfig({ enabled: true, basePath: join(parent, 'wt') })
   const t = await tstore.createTask(project.id, { title: 'legacy', description: 'd', status: 'in_progress' } as any)
   const r: any = await resolve(t.id)
