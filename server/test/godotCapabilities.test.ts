@@ -242,3 +242,19 @@ test('the MCP server exposes the three tools; the two readers are read-only', as
   assert.ok(by('record_godot_run')); assert.equal(by('record_godot_run').annotations.readOnlyHint, undefined)
   assert.equal(MCP_TOOLS.some((t: any) => /accept|approve|integrate|run_godot|start_godot/.test(t.name)), false) // still no tool that starts or accepts
 })
+
+test('MCP notifications get 202 and no body (Codex drops a server that answers 200 "null")', async () => {
+  const { saveMcpConfig } = await import('../src/services/mcpConfig.js')
+  await saveMcpConfig({ enabled: true, requireAuth: false })
+  const Fastify = (await import('fastify')).default
+  const app = Fastify()
+  await app.register((await import('../src/routes/mcp.js')).mcpRoutes)
+  const post = (payload: any) => app.inject({ method: 'POST', url: '/mcp', payload })
+  const note = await post({ jsonrpc: '2.0', method: 'notifications/initialized' })
+  assert.equal(note.statusCode, 202); assert.equal(note.body, '')
+  const call = await post({ jsonrpc: '2.0', id: 1, method: 'ping' })
+  assert.equal(call.statusCode, 200); assert.equal(call.json().id, 1)
+  const mixed = await post([{ jsonrpc: '2.0', method: 'notifications/initialized' }, { jsonrpc: '2.0', id: 2, method: 'ping' }])
+  assert.deepEqual(mixed.json().map((r: any) => r.id), [2])
+  await app.close()
+})

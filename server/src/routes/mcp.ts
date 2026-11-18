@@ -296,12 +296,21 @@ export async function mcpRoutes(app: FastifyInstance) {
 
     const body = request.body as any;
 
+    // A JSON-RPC notification (a method and no id) gets no JSON-RPC reply: Streamable HTTP answers 202 with an
+    // empty body. Replying 200 `null` makes strict clients (Codex) drop the whole server.
+    const isNotification = (m: any) => m && typeof m === 'object' && m.method && m.id === undefined;
+
     // Handle batch requests
     if (Array.isArray(body)) {
-      const results = await Promise.all(body.map(handleJsonRpc));
+      const results = (await Promise.all(body.map(handleJsonRpc))).filter((r, i) => !isNotification(body[i]) && r != null);
+      if (!results.length) return reply.status(202).send();
       return results;
     }
 
+    if (isNotification(body)) {
+      await handleJsonRpc(body);
+      return reply.status(202).send();
+    }
     return handleJsonRpc(body);
   });
 
