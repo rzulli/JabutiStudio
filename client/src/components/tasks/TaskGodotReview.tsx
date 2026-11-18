@@ -25,7 +25,9 @@ export function TaskGodotReview({ task }: { task: Task }) {
   const [failure, setFailure] = useState<{ message: string; options?: GodotRefusal['options'] } | null>(null)
 
   const hasWorktree = !!task.worktreePath
-  const selection: GodotSelection = forceMain || !hasWorktree ? { taskId: task.id, checkout: 'main', origin: 'task' } : { taskId: task.id, checkout: 'task', origin: 'task' }
+  // Never main by default: a task without a worktree is refused by the server (task-without-worktree) and offers the
+  // main checkout as an explicit option. Main is used only after that explicit choice (forceMain).
+  const selection: GodotSelection = forceMain ? { taskId: task.id, checkout: 'main', origin: 'task' } : { taskId: task.id, checkout: 'task', origin: 'task' }
   const enabled = !!status?.godotProject
   const { data } = useGodotContext(projectId, selection, enabled)
   const { data: runsData } = useGodotRuns(projectId, undefined, !!busy, enabled, task.id)
@@ -85,7 +87,7 @@ export function TaskGodotReview({ task }: { task: Task }) {
           <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
           <div className="min-w-0">
             <div className="break-words">{problem.message}</div>
-            {problem.options?.map(o => <button key={o.checkout} onClick={() => { setForceMain(o.checkout === 'main'); setFailure(null) }} className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10">{o.label}</button>)}
+            {problem.options?.map(o => <button key={o.checkout} onClick={() => { setForceMain(o.checkout === 'main'); setFailure(null) }} title={o.checkout === 'main' ? 'Switches the Godot checkout to the main checkout. Nothing runs until you press a Godot action.' : o.label} className="mt-1 mr-2 rounded border border-destructive/40 px-2 py-0.5 hover:bg-destructive/10">{o.checkout === 'main' ? 'Switch to the main checkout (nothing runs yet)' : o.label}</button>)}
           </div>
         </div>
       )}
