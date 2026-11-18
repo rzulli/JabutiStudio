@@ -12,6 +12,7 @@ import { StatusPill, baseName, type AskAgent, type SystemActions } from './syste
 import { OverviewTab, ImplementationTab, EvidenceTab } from './system/Tabs'
 import { SystemMap } from './system/SystemMap'
 import { RulesTab } from './system/RulesTab'
+import { DiagnosticsPanel } from './system/DiagnosticsPanel'
 import { KnowledgePanel } from './system/KnowledgePanel'
 import { CatalogSourceBanner, useCatalogSource } from './system/CatalogSourcePanel'
 import { EditSystemDialog, type EditStep, type Focus } from './system/EditSystemDialog'
@@ -316,7 +317,9 @@ function SystemDetail({ v, projectId, allSystems, onOpen, onGraph, onAsk, onChan
   const actions: SystemActions = { onOpen, onGraph, onAsk, onPickSystem: onPick, onEdit: step => setEditing(step), onQuickEdit: f => setFocus(f), onChanged }
   const c = v.checkout
   const m = v.maintenance
-  const stale = m.needsReanalysis || m.vanished.length > 0 || m.unresolvedAnchors.length > 0
+  // Analysis staleness and broken references are different problems with different fixes: shown separately.
+  const stale = m.analysis.state === 'stale'
+  const integrity = m.unresolvedAnchors.length + m.vanished.length > 0
   const conflicts = v.comparisons.length
   return (
     <div className="mx-auto max-w-4xl space-y-3 p-4">
@@ -338,9 +341,10 @@ function SystemDetail({ v, projectId, allSystems, onOpen, onGraph, onAsk, onChan
           <span>{c.uncommitted ? `${c.uncommitted} uncommitted` : 'clean'}</span>
           {!c.isCanonical && <span className="text-muted-foreground">{c.integration.replace(/integrated checkout/g, 'project checkout')}</span>}
           <span className={cn('ml-auto', stale ? 'text-warning' : 'text-muted-foreground')} data-testid="analysis-state">
-            {!m.graph.built ? 'code graph: not analyzed' : stale ? 'analysis out of date' : 'analysis current'}
+            {m.analysis.label}{m.analysis.builtAt ? ` (${new Date(m.analysis.builtAt).toLocaleString()})` : ''}
           </span>
         </div>
+        <DiagnosticsPanel v={v} projectId={projectId} onChanged={onChanged} onReview={() => setEditing('review')} onEditMembers={() => setEditing('members')} />
         <div className="flex flex-wrap items-center gap-1.5">
           <button onClick={() => setEditing('identity')} data-testid="system-edit" className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] text-primary-foreground"><Pencil className="h-3 w-3" /> Edit system</button>
           <AskMenu actions={actions} target={`the system “${v.name}”`} />
@@ -368,7 +372,7 @@ function SystemDetail({ v, projectId, allSystems, onOpen, onGraph, onAsk, onChan
             className={cn('-mb-px border-b-2 px-2.5 py-1.5 text-xs', tab === id ? 'border-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground')}>
             {label}
             {id === 'rules' && conflicts > 0 && <span className="ml-1 rounded bg-destructive/15 px-1 text-[10px] text-destructive">{conflicts}</span>}
-            {id === 'evidence' && stale && <AlertTriangle className="ml-1 inline h-3 w-3 text-warning" />}
+            {id === 'evidence' && (stale || integrity) && <AlertTriangle className="ml-1 inline h-3 w-3 text-warning" />}
           </button>
         ))}
       </nav>
