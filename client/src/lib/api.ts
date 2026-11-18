@@ -1182,9 +1182,9 @@ export const api = {
   // Search
   // `prefer` is the open project: it and the rest of its client rank first.
   // `projectId` restricts the search to that one project.
-  searchFiles: (query: string, opts: { projectId?: string; prefer?: string; signal?: AbortSignal } = {}) =>
+  searchFiles: (query: string, opts: { projectId?: string; prefer?: string; includeSidecars?: boolean; signal?: AbortSignal } = {}) =>
     request<{ results: Array<{ name: string; path: string; projectId: string; projectName: string; type: 'file' | 'dir'; extension?: string }> }>(
-      `/search/files?${searchParams({ q: query, projectId: opts.projectId, prefer: opts.prefer })}`,
+      `/search/files?${searchParams({ q: query, projectId: opts.projectId, prefer: opts.prefer, sidecars: opts.includeSidecars ? 'show' : undefined })}`,
       { signal: opts.signal },
     ),
   searchContent: (query: string, opts: ContentSearchOptions & { projectId?: string; prefer?: string; signal?: AbortSignal } = {}) =>
@@ -1202,9 +1202,9 @@ export const api = {
     ),
 
   // Files
-  getFileTree: (projectId: string, relPath: string) =>
-    request<{ entries: Array<{ name: string; path: string; type: 'file' | 'dir'; size?: number; extension?: string; mimeHint?: string }> }>(
-      `/projects/${projectId}/files/tree?path=${encodeURIComponent(relPath)}`
+  getFileTree: (projectId: string, relPath: string, includeSidecars = false) =>
+    request<{ entries: Array<{ name: string; path: string; type: 'file' | 'dir'; size?: number; extension?: string; mimeHint?: string; readOnly?: boolean }> }>(
+      `/projects/${projectId}/files/tree?${searchParams({ path: relPath, sidecars: includeSidecars ? 'show' : undefined })}`
     ),
   getFileContent: (projectId: string, relPath: string) =>
     request<{ content: string; encoding: string; mimeHint: string; size: number }>(

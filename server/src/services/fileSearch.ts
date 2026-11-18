@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { readdir, readFile, stat } from 'fs/promises';
 import { join, extname } from 'path';
 import type { Project } from '../types/index.js';
+import { isSidecarFile } from './sidecarFiles.js';
 
 /**
  * Folders no search enters by default: dependencies, build output, caches and
@@ -170,7 +171,7 @@ function scoreEntry(entry: IndexEntry, query: string, terms: string[]): number {
 export async function searchFileNames(
   projects: Project[],
   query: string,
-  opts: { limit: number; preferId?: string; filter: WalkFilter },
+  opts: { limit: number; preferId?: string; filter: WalkFilter; includeSidecars?: boolean },
 ): Promise<FileNameResult[]> {
   const q = query.trim().toLowerCase();
   const terms = q.split(/[\s/\\]+/).filter(Boolean);
@@ -181,6 +182,8 @@ export async function searchFileNames(
   await Promise.all(projects.map(async project => {
     const boost = RANK_BOOST[ranks.get(project.id) ?? 2];
     for (const entry of await getIndex(project, opts.filter)) {
+      // The index is shared by every caller, so the sidecar rule is applied per result.
+      if (!opts.includeSidecars && entry.type === 'file' && isSidecarFile(entry.name)) continue;
       const s = scoreEntry(entry, q, terms);
       if (s === 0) continue;
       scored.push({

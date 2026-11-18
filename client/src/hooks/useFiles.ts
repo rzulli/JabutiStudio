@@ -8,6 +8,8 @@ export interface FileEntry {
   size?: number
   extension?: string
   mimeHint?: string
+  /** Godot sidecar: listed for preview only, never written. */
+  readOnly?: boolean
 }
 
 export interface FileContent {
@@ -17,10 +19,10 @@ export interface FileContent {
   size: number
 }
 
-export function useFileTree(projectId: string, relPath: string, enabled = true) {
+export function useFileTree(projectId: string, relPath: string, enabled = true, includeSidecars = false) {
   return useQuery({
-    queryKey: ['files', 'tree', projectId, relPath],
-    queryFn: () => api.getFileTree(projectId, relPath),
+    queryKey: ['files', 'tree', projectId, relPath, includeSidecars],
+    queryFn: () => api.getFileTree(projectId, relPath, includeSidecars),
     enabled: !!projectId && enabled,
     staleTime: 10_000,
   })

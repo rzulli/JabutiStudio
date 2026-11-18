@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, FolderOpen, Loader2, AlertTriangle, ArrowUp, Minus, ArrowDown as ArrowDownIcon } from 'lucide-react'
 import { useProjects } from '@/hooks/useProjects'
+import { readShowSidecars } from '@/lib/sidecarPref'
 import { useAllTasks, type Task } from '@/hooks/useTasks'
 import { useTabs } from '@/hooks/useTabs'
 import { FileIcon } from '@/components/files/FileIcon'
@@ -53,7 +54,7 @@ export function SearchView() {
     const controller = new AbortController()
     debounceRef.current = setTimeout(async () => {
       try {
-        const data = await api.searchFiles(trimmedQuery, { prefer: activeTabId ?? undefined, signal: controller.signal })
+        const data = await api.searchFiles(trimmedQuery, { prefer: activeTabId ?? undefined, includeSidecars: readShowSidecars(), signal: controller.signal })
         if (!controller.signal.aborted) setFileResults(data.results)
       } catch {
         if (!controller.signal.aborted) setFileResults([])

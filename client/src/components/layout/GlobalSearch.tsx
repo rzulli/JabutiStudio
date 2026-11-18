@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { readShowSidecars } from '@/lib/sidecarPref'
 import {
   FolderOpen,
   ClipboardList,
@@ -132,7 +133,7 @@ export function GlobalSearch() {
     const controller = new AbortController()
     const timer = setTimeout(async () => {
       try {
-        const data = await api.searchFiles(trimmedQuery, { prefer: activeTabId ?? undefined, signal: controller.signal })
+        const data = await api.searchFiles(trimmedQuery, { prefer: activeTabId ?? undefined, includeSidecars: readShowSidecars(), signal: controller.signal })
         if (!controller.signal.aborted) setFileResults(data.results)
       } catch {
         if (!controller.signal.aborted) setFileResults([])
