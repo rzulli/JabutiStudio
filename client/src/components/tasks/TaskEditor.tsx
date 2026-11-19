@@ -49,6 +49,9 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
   const [subtasks, setSubtasks] = useState<Subtask[]>([])
   const [newSubtask, setNewSubtask] = useState('')
   const [showDetails, setShowDetails] = useState(false)
+  // AI Analyze never writes into the form by itself: its answer waits here, field by field, until the person applies it.
+  const [aiSuggestion, setAiSuggestion] = useState<AiSuggestion | null>(null)
+  const [aiUndo, setAiUndo] = useState<AiUndo | null>(null)
   const [quickCreate, setQuickCreate] = useState(() =>
     localStorage.getItem('shipyard:quick-create') === 'true'
   )
@@ -235,14 +238,37 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
               taskId={task?.id}
               title={title}
               className="h-11 shrink-0"
-              onResult={({ title: t, description: d, prompt: p, effort: e }) => {
-                if (t) setTitle(t)
-                if (d) setDescription(d)
-                if (p) { setPrompt(p); setShowDetails(true) }
-                if (e) { setEffort(String(e)); setEffortSource('claude') }
-              }}
+              onResult={r => setAiSuggestion({ title: r.title, description: r.description, prompt: r.prompt, effort: r.effort })}
             />
           </div>
+
+          {aiSuggestion && (
+            <AiSuggestionPanel
+              suggestion={aiSuggestion}
+              current={{ title, description, prompt, effort: effort === 'none' ? undefined : Number(effort) }}
+              onApply={pick => {
+                // Snapshot first, so Undo restores exactly what the form held before this apply.
+                setAiUndo({ title, description, prompt, effort, effortSource })
+                if (pick.title && aiSuggestion.title) setTitle(aiSuggestion.title)
+                if (pick.description && aiSuggestion.description) setDescription(aiSuggestion.description)
+                if (pick.prompt && aiSuggestion.prompt) { setPrompt(aiSuggestion.prompt); setShowDetails(true) }
+                if (pick.effort && aiSuggestion.effort) { setEffort(String(aiSuggestion.effort)); setEffortSource('claude') }
+                setAiSuggestion(null)
+                toast.success('Applied the selected AI suggestions. Undo restores the previous text.')
+              }}
+              onDiscard={() => setAiSuggestion(null)}
+            />
+          )}
+          {aiUndo && !aiSuggestion && (
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground" data-testid="ai-undo-row">
+              <span>AI suggestions were applied.</span>
+              <button type="button" className="underline hover:text-foreground" data-testid="ai-undo"
+                onClick={() => {
+                  setTitle(aiUndo.title); setDescription(aiUndo.description); setPrompt(aiUndo.prompt)
+                  setEffort(aiUndo.effort); setEffortSource(aiUndo.effortSource); setAiUndo(null)
+                }}>Undo</button>
+            </div>
+          )}
 
           <Textarea
             value={description}
@@ -441,5 +467,60 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+interface AiSuggestion { title?: string; description?: string; prompt?: string; effort?: number }
+interface AiUndo { title: string; description: string; prompt: string; effort: string; effortSource: 'claude' | 'manual' }
+type AiField = 'title' | 'description' | 'prompt' | 'effort'
+
+const FIELD_LABEL: Record<AiField, string> = { title: 'Title', description: 'Description', prompt: 'Technical details', effort: 'Effort' }
+
+/**
+ * Field-by-field review of an AI answer. Fields the person already filled are unchecked by default, so a
+ * suggestion can refine a text without replacing it. Each field shows what is there now and what would be applied.
+ */
+function AiSuggestionPanel({ suggestion, current, onApply, onDiscard }: {
+  suggestion: AiSuggestion
+  current: { title: string; description: string; prompt: string; effort?: number }
+  onApply: (pick: Record<AiField, boolean>) => void
+  onDiscard: () => void
+}) {
+  const now: Record<AiField, string> = { title: current.title, description: current.description, prompt: current.prompt, effort: current.effort ? String(current.effort) : '' }
+  const next: Record<AiField, string> = { title: suggestion.title ?? '', description: suggestion.description ?? '', prompt: suggestion.prompt ?? '', effort: suggestion.effort ? String(suggestion.effort) : '' }
+  const fields = (Object.keys(next) as AiField[]).filter(f => next[f] && next[f] !== now[f])
+  const [pick, setPick] = useState<Record<AiField, boolean>>(() => ({
+    title: !now.title, description: !now.description, prompt: !now.prompt, effort: !now.effort,
+  }))
+  if (!fields.length) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border p-2 text-[11px] text-muted-foreground" role="status" data-testid="ai-suggestion-none">
+        AI found nothing to change. <button type="button" className="underline" onClick={onDiscard}>Dismiss</button>
+      </div>
+    )
+  }
+  const chosen = fields.some(f => pick[f])
+  return (
+    <div className="space-y-2 rounded-md border border-primary/40 bg-accent/30 p-3" data-testid="ai-suggestion-panel">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-medium">AI suggestions — nothing is applied until you choose</p>
+        <button type="button" onClick={onDiscard} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground" data-testid="ai-discard">Discard</button>
+      </div>
+      {fields.map(f => (
+        <label key={f} className="block space-y-1 rounded border bg-background p-2 text-[11px]" data-testid="ai-field" data-field={f}>
+          <span className="flex items-center gap-1.5">
+            <input type="checkbox" checked={pick[f]} onChange={e => setPick(p => ({ ...p, [f]: e.target.checked }))} data-testid={`ai-pick-${f}`} />
+            <span className="font-medium">{FIELD_LABEL[f]}</span>
+            {!now[f] && <span className="text-muted-foreground">(empty now)</span>}
+          </span>
+          {now[f] && <span className="block whitespace-pre-wrap text-muted-foreground line-through decoration-muted-foreground/50">{now[f].slice(0, 240)}</span>}
+          <span className="block whitespace-pre-wrap">{next[f].slice(0, 400)}</span>
+        </label>
+      ))}
+      <div className="flex items-center gap-2">
+        <Button size="sm" disabled={!chosen} onClick={() => onApply(pick)} data-testid="ai-apply">Apply selected</Button>
+        <span className="text-[10px] text-muted-foreground">Fields you already filled are unchecked by default. Undo restores the previous text.</span>
+      </div>
+    </div>
   )
 }
