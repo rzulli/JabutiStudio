@@ -173,14 +173,33 @@ export async function propose(project: Project, input: store.ProposalInput) {
   return res;
 }
 
-/** Local attestation of a native or legacy decision. The route must restrict this to the app's own UI. */
-export async function attest(project: Project, input: { decisionId: string; state: legacy.AttestState; quote: string }) {
+/**
+ * Every native decision of a checkout, unfiltered: the project-wide review queue reads the same records as the
+ * per-file panel (one source, nothing copied). Read-only.
+ */
+export async function listDecisions(project: Project, opts: { worktree?: string } = {}) {
+  const root = await legacy.resolveRoot(project, opts.worktree);
+  if (typeof root !== 'string') return { available: false as const, reason: root.error, decisions: [] as Json[] };
+  const { read, decisions } = await nativeDecisions(project, root);
+  const available = read.state === 'present' || read.state === 'absent';
+  return { available, state: read.state, reason: read.reason, decisions };
+}
+
+/**
+ * Local attestation of a native or legacy decision. The route must restrict this to the app's own UI.
+ * `expectedClaimSha256` is the hash of the claim the person was looking at: if the decision was edited or replaced
+ * since, nothing is written and the caller gets `claim-changed` (never an approval of a different text).
+ */
+export async function attest(project: Project, input: { decisionId: string; state: legacy.AttestState; quote: string; expectedClaimSha256?: string }) {
   const quote = input.quote.trim();
   if (quote.length < 3) return { ok: false as const, error: 'A quote of what was decided is required' };
   const { read, decisions } = await nativeDecisions(project, project.path);
   const found = decisions.find(d => d.id === input.decisionId);
   if (!found) return { ok: false as const, error: `Decision ${input.decisionId} is not in the native decisions file` };
   if (read.state !== 'present') return { ok: false as const, error: 'Native decisions are not readable' };
+  if (input.expectedClaimSha256 !== undefined && input.expectedClaimSha256 !== found.claim_sha256) {
+    return { ok: false as const, code: 'claim-changed' as const, error: `Decision ${input.decisionId} changed since it was shown; reload the review before attesting` };
+  }
   const entry = { decision_id: input.decisionId, state: input.state, claim_sha256: found.claim_sha256, quote,
     channel: 'ui-request', trust: 'attested_local', at: new Date().toISOString(), projectId: project.id };
   await legacy.recordAttestation(project, entry);

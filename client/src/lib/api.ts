@@ -586,7 +586,7 @@ export interface DesignDecision {
   supersedes: string[]; conflicts_with: string[]; matched_by?: string[]
   files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
   evidence: DesignEvidence[]
-  source?: 'native' | 'legacy'; systems?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
+  source?: 'native' | 'legacy'; systems?: string[]; scope?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
 }
 
 // ---- System catalog (Explorer > Systems) ----
@@ -745,8 +745,16 @@ export interface KnowledgePlan {
 const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
 
 export interface ProposeDecisionBody {
-  title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[]; conflictsWith?: string[]
-  evidence: { type: string; path: string; startLine?: number; needle?: string; note?: string }[]
+  title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[]; conflictsWith?: string[]; supersedes?: string[]
+  evidence: { type: string; path: string; startLine?: number; endLine?: number; needle?: string; note?: string }[]
+}
+
+/** Advisory agent output for a decision (never an approval). `claim` only for rephrase; `structure` adds the draft fields. */
+export interface DecisionAssistResult {
+  action: string; claim?: string; notes?: string[]
+  title?: string; systems?: string[]; limitations?: string[]
+  evidence?: { type: string; path: string; startLine: number; needle: string; note: string }[]
+  conflicts?: { id: string; title: string }[]
 }
 
 export interface DesignContext {
@@ -773,7 +781,11 @@ export const api = {
     request<{ legacyRecords: number; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
   proposeDecision: (projectId: string, body: ProposeDecisionBody) =>
     request<DesignDecision & { id: string }>(`/projects/${projectId}/design/proposals`, { method: 'POST', body: JSON.stringify(body) }),
-  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
+  assistDecision: (projectId: string, body: { action: 'rephrase' | 'evidence' | 'conflicts' | 'compare' | 'structure'; decisionId?: string; text?: string; worktree?: string }) =>
+    request<DecisionAssistResult>(`/projects/${projectId}/design/assist`, { method: 'POST', body: JSON.stringify(body), timeout: 90_000 }),
+  listDesignDecisions: (projectId: string, worktree?: string) =>
+    request<{ available: boolean; state?: string; reason?: string; decisions: DesignDecision[] }>(`/projects/${projectId}/design/decisions${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`),
+  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string; claimSha256?: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   getSystems: (projectId: string, worktree?: string) =>
     request<{ systems: SystemSummary[]; loadErrors: { id: string; name: string; error: string }[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
@@ -1176,8 +1188,10 @@ export const api = {
   deleteClaudeConfig: () => request<{ ok: boolean }>('/claude/config', { method: 'DELETE' }),
   testClaudeKey: (apiKey: string) =>
     request<{ ok: boolean; error?: string }>('/claude/config/test', { method: 'POST', body: JSON.stringify({ apiKey }) }),
-  analyzeTask: (projectId: string, title: string, taskId?: string) =>
-    request<{ title: string; description: string; prompt: string; effort?: 1 | 2 | 3 | 5 | 8; effortConfidence?: 'low' | 'medium' | 'high' }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId }), timeout: 60_000 }),
+  analyzeTask: (projectId: string, title: string, taskId?: string, opts?: { action?: 'clarity' | 'acceptance' | 'gaps' | 'simplify' | 'subtasks'; draft?: { title?: string; description?: string; prompt?: string } }) =>
+    request<{ title: string; description: string; prompt: string; effort?: 1 | 2 | 3 | 5 | 8; effortConfidence?: 'low' | 'medium' | 'high' }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId, action: opts?.action, draft: opts?.draft }), timeout: 60_000 }),
+  analyzeTaskAction: (projectId: string, title: string, action: 'clarity' | 'acceptance' | 'gaps' | 'simplify' | 'subtasks', draft: { title?: string; description?: string; prompt?: string }, taskId?: string) =>
+    request<{ action: string; title?: string; description?: string; acceptanceCriteria?: string[]; gaps?: string[]; subtasks?: string[] }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId, action, draft }), timeout: 60_000 }),
   classifyTaskEffort: (projectId: string, taskIds?: string[]) =>
     request<{ suggestions: Array<{ taskId: string; title: string; effort: 1 | 2 | 3 | 5 | 8; confidence: 'low' | 'medium' | 'high'; rationale: string }> }>(
       '/claude/classify-task-effort', { method: 'POST', body: JSON.stringify({ projectId, taskIds }), timeout: 180_000 }

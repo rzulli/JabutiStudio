@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, Pencil, Wand2, BookUp, Database, MoreHorizontal, Merge, Scissors, EyeOff, Plus } from 'lucide-react'
+import { Search, Sparkles, RefreshCw, GitBranch, AlertTriangle, Pencil, Wand2, BookUp, Database, MoreHorizontal, Merge, Scissors, EyeOff, Plus, Scale } from 'lucide-react'
 import { api, type SystemView, type SystemSummary, type AgentRunChoice } from '@/lib/api'
 import { useAgents, agentLabel } from '@/hooks/useAgents'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,7 @@ import { openAgentSession, systemBasisKind, systemTargetRules } from '@/lib/term
 import { MergeDialog, SplitDialog } from './system/StructureDialogs'
 import { AskMenu, ASSIST_RUN_KEY } from './system/AskMenu'
 import { readRunChoice } from '@/components/tasks/RunConfigSelect'
+import { DecisionsView, type DecisionsState } from './DecisionReview'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
 /**
@@ -54,7 +55,8 @@ export function SystemsExplorer({ projectId, onOpenInGraph }: { projectId: strin
    * says so, and the catalog is polled faster.
    */
   const [awaiting, setAwaiting] = useState<{ label: string; since: number; known: string[] } | null>(null)
-  const [view, setView] = useState<'systems' | 'knowledge'>('systems')
+  const [view, setView] = useState<'systems' | 'knowledge' | 'decisions'>('systems')
+  const [decisions, setDecisions] = useState<DecisionsState>({ mode: 'feed', selectedId: null, filter: { scope: 'pending' } })
   const pick = (id: string) => { setView('systems'); setSelected(id); try { localStorage.setItem(key, id) } catch { /* ignore */ } }
 
   const checkoutsQ = useQuery({ queryKey: ['design-checkouts', projectId], queryFn: () => api.getDesignCheckouts(projectId), staleTime: 30_000 })
@@ -227,7 +229,10 @@ ${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: s
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <ContextBar checkout={catalogQ.data?.checkout ?? null} worktree={worktree} view={view} onView={setView} />
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto scrollbar-dark" data-testid="system-detail">
-        {view === 'knowledge' ? (
+        {view === 'decisions' ? (
+          <DecisionsView projectId={projectId} worktree={worktree || undefined} state={decisions}
+            onState={patch => setDecisions(d => ({ ...d, ...patch }))} onOpenFile={openFile} onOpenSystem={pick} />
+        ) : view === 'knowledge' ? (
           <KnowledgePanel projectId={projectId} worktree={worktree} onChanged={refresh} onOpenSystem={pick} />
         ) : !v && !current && !catalogQ.isLoading && catalogQ.isError ? (
           <p className="p-6 text-xs text-muted-foreground">The systems could not be loaded, so nothing is shown here. See the message in the list.</p>
@@ -255,8 +260,9 @@ ${systemTargetRules({ id: sys.id, name: sys.name, origin: sys.origin, planned: s
  * local store, identical for every checkout; the checkout only decides where code evidence is read and which committed
  * file is compared. "Versions" is where anything that touches the repository file lives; the list is for design work.
  */
-function ContextBar({ checkout, worktree, view, onView }: { checkout: import('@/lib/api').SystemCheckout | null; worktree: string; view: 'systems' | 'knowledge'; onView: (v: 'systems' | 'knowledge') => void }) {
-  const tab = (id: 'systems' | 'knowledge', label: string, icon: React.ReactNode, title: string) => (
+type SystemsView = 'systems' | 'knowledge' | 'decisions'
+function ContextBar({ checkout, worktree, view, onView }: { checkout: import('@/lib/api').SystemCheckout | null; worktree: string; view: SystemsView; onView: (v: SystemsView) => void }) {
+  const tab = (id: SystemsView, label: string, icon: React.ReactNode, title: string) => (
     <button onClick={() => onView(id)} title={title} data-testid={`systems-tab-${id}`} aria-pressed={view === id}
       className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] hover:bg-accent hover:text-foreground', view === id ? 'bg-accent text-foreground' : 'text-muted-foreground')}>{icon}{label}</button>
   )
@@ -265,6 +271,7 @@ function ContextBar({ checkout, worktree, view, onView }: { checkout: import('@/
       <div className="flex gap-0.5">
         {tab('systems', 'Systems', <Database className="h-3 w-3" />, 'Explore and author the systems of the game')}
         {tab('knowledge', 'Versions', <BookUp className="h-3 w-3" />, 'Publish to the repository file, compare with what is committed, recover from it')}
+        {tab('decisions', 'Decisions', <Scale className="h-3 w-3" />, 'Every recorded design decision of this checkout: a searchable feed, and a one-at-a-time review with local attestation')}
       </div>
       {checkout ? (
         <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-muted-foreground" data-testid="systems-context-checkout">
