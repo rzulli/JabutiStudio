@@ -45,6 +45,21 @@ export async function designRoutes(app: FastifyInstance) {
     return core.listDecisions(project, { worktree: request.query.worktree });
   });
 
+  // Supersession links preserve the old records; only a later matching UI attestation makes them effective.
+  app.post<{ Params: { id: string }; Body: { decisionId?: string; targets?: string[]; claimSha256?: string } }>(
+    '/api/projects/:id/design/supersessions', async (request, reply) => {
+      if (!fromAppUi(request.headers)) return reply.status(403).send({ error: 'Supersessions can only be recorded from the JabutiStudio UI' });
+      const project = await resolve(request.params.id);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+      const { decisionId, targets, claimSha256 } = request.body ?? {};
+      if (!decisionId || !Array.isArray(targets) || !targets.every(x => typeof x === 'string') || typeof claimSha256 !== 'string')
+        return reply.status(400).send({ error: 'decisionId, targets and claimSha256 are required' });
+      const res = await core.supersede(project, { decisionId, targets, expectedClaimSha256: claimSha256 });
+      if (!res.ok) return reply.status(res.code === 'claim-changed' ? 409 : 400).send({ error: res.error, code: res.code });
+      return res.decision;
+    },
+  );
+
   // A proposal only: it is stored as `proposed` and can never carry an approval. From the UI the origin is
   // "user", from anything else "agent" — a statement of who wrote it, not a verification.
   app.post<{ Params: { id: string }; Body: Record<string, any> }>('/api/projects/:id/design/proposals', async (request, reply) => {
@@ -159,7 +174,7 @@ export async function designRoutes(app: FastifyInstance) {
   // does not know to forge it (MCP has no such tool, curl is refused), and the browser sets them on the
   // renderer's fetch. It is NOT proof of a person: any local process can send the same headers (verified
   // with curl). The result is therefore recorded as `attested_local`, never as a verified human approval.
-  app.post<{ Params: { id: string }; Body: { decisionId?: string; state?: string; quote?: string; claimSha256?: string } }>(
+  app.post<{ Params: { id: string }; Body: { decisionId?: string; state?: string; quote?: string; claimSha256?: string; supersedesSha256?: string } }>(
     '/api/projects/:id/design/approve',
     async (request, reply) => {
       if (!fromAppUi(request.headers)) {
@@ -167,14 +182,17 @@ export async function designRoutes(app: FastifyInstance) {
       }
       const project = await resolve(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
-      const { decisionId, state, quote, claimSha256 } = request.body ?? {};
+      const { decisionId, state, quote, claimSha256, supersedesSha256 } = request.body ?? {};
       if (!decisionId || !['approved', 'rejected', 'revoked'].includes(state ?? '')) {
         return reply.status(400).send({ error: 'decisionId and state (approved|rejected|revoked) are required' });
       }
       if (claimSha256 !== undefined && typeof claimSha256 !== 'string') {
         return reply.status(400).send({ error: 'claimSha256 must be a string when given' });
       }
-      const res = await core.attest(project, { decisionId, state: state as dk.AttestState, quote: quote ?? '', expectedClaimSha256: claimSha256 });
+      if (supersedesSha256 !== undefined && typeof supersedesSha256 !== 'string') {
+        return reply.status(400).send({ error: 'supersedesSha256 must be a string when given' });
+      }
+      const res = await core.attest(project, { decisionId, state: state as dk.AttestState, quote: quote ?? '', expectedClaimSha256: claimSha256, expectedSupersedesSha256: supersedesSha256 });
       if (!res.ok) return reply.status(res.code === 'claim-changed' ? 409 : 400).send({ error: res.error, code: res.code });
       return res.entry;
     },

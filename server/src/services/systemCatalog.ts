@@ -292,7 +292,7 @@ function nodesByFile(g: graphify.Graph) {
 export interface DecisionView {
   id: string; title: string; claim: string;
   decisionState: string; approval: any; evidenceStatus: string; implementation: string;
-  conflictsWith: string[]; relevance: 'declared' | 'term' | 'touches-member'; origin?: string; provenance?: any;
+  conflictsWith: string[]; supersedes: string[]; supersessionApproved: boolean; supersededBy: string[]; superseded: boolean; relevance: 'declared' | 'term' | 'touches-member'; origin?: string; provenance?: any;
   evidence: { type: string; ref: string; freshness?: string; detail?: string; note?: string; excerpt: string[] }[];
   files: string[]; tests: string[];
 }
@@ -613,6 +613,8 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
     decisions.push({
       id: d.id, title: d.title, claim: d.claim, decisionState: d.decision_state, approval: d.approval,
       evidenceStatus: d.evidence_status, implementation: d.implementation, conflictsWith: d.conflicts_with ?? [],
+      supersedes: d.supersedes ?? [], supersessionApproved: !!d.supersession_approved,
+      supersededBy: d.superseded_by ?? [], superseded: !!d.superseded,
       origin: d.source, provenance: d.provenance,
       relevance: sys.anchors.decisions.includes(d.id) || (d.systems ?? []).includes(sys.id) ? 'declared' : direct ? 'term' : 'touches-member',
       evidence: (d.evidence ?? []).filter((e: any) => !e.candidate_only).map((e: any) => ({
@@ -624,7 +626,7 @@ export async function resolveSystem(project: Project, id: string, worktree?: str
   }
   const ids = new Set(decisions.map(d => d.id));
   const conflicts: [string, string][] = [];
-  for (const d of decisions) for (const o of d.conflictsWith) if (ids.has(o) && d.id < o) conflicts.push([d.id, o]);
+  for (const d of decisions) for (const o of d.conflictsWith) if (ids.has(o) && d.id < o && !d.superseded && !decisions.find(x => x.id === o)?.superseded) conflicts.push([d.id, o]);
   // conflicts form groups (A~B, B~C → one comparison of three), each compared side by side
   const comparisons: sem.Comparison[] = [];
   {
@@ -1487,7 +1489,7 @@ export function brief(v: SystemView, goal?: string, areaId?: string): string {
   if (!v.design.available) L.push(`Not indexed${v.design.reason ? `: ${v.design.reason}` : ''}.`);
   else if (!v.design.decisions.length) L.push("None recorded for this system.");
   for (const d of v.design.decisions.filter(x => x.relevance !== 'touches-member').slice(0, 8)) {
-    L.push(`- ${d.id} "${d.title}"${d.origin === 'native' ? ' [proposal in the project file]' : ''} — decision: ${d.decisionState}; approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}); evidence: ${d.evidenceStatus}; implementation: ${d.implementation}`);
+    L.push(`- ${d.id} "${d.title}"${d.origin === 'native' ? ' [proposal in the project file]' : ''} — decision: ${d.decisionState}; approval: ${d.approval?.state ?? 'unknown'} (${d.approval?.source ?? 'none'}); supersedes: ${d.supersedes.join(', ') || 'none'}${d.supersedes.length ? ` (${d.supersessionApproved ? 'attested' : 'pending attestation'})` : ''}; ${d.superseded ? `superseded by ${d.supersededBy.join(', ')}` : 'not superseded'}; evidence: ${d.evidenceStatus}; implementation: ${d.implementation}`);
   }
   for (const k of v.comparisons) {
     L.push(`UNRESOLVED CONFLICT (${k.decisions.join(' vs ')}): do not pick a side; ask the owner.`);

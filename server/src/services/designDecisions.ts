@@ -329,3 +329,24 @@ export async function addProposal(root: string, input: ProposalInput, knownIds: 
     return { ok: true as const, decision: entry };
   });
 }
+
+/** Save the human-selected supersession links without deleting any decision or rewriting its claim. */
+export async function addSupersedes(root: string, decisionId: string, targets: string[], expectedClaimSha256: string) {
+  return withLock(async () => {
+    const cur = await readDecisions(root);
+    if (cur.state !== 'present' || !cur.doc) return { ok: false as const, error: 'Native decisions are not readable' };
+    const decision = cur.doc.decisions.find(d => d.id === decisionId);
+    if (!decision) return { ok: false as const, error: `Decision ${decisionId} is not in the native decisions file` };
+    if (sha256(decision.claim) !== expectedClaimSha256) return { ok: false as const, error: 'Decision text changed; reload the review before recording supersessions', code: 'claim-changed' as const };
+    const ids = [...new Set(targets)];
+    if (ids.includes(decisionId)) return { ok: false as const, error: 'A decision cannot supersede itself' };
+    const unknown = ids.find(id => !cur.doc!.decisions.some(d => d.id === id));
+    if (unknown) return { ok: false as const, error: `Decision ${unknown} is not in the native decisions file` };
+    decision.supersedes = ids;
+    decision.updatedAt = new Date().toISOString();
+    const next = decisionsSchema.safeParse(cur.doc);
+    if (!next.success) return { ok: false as const, error: next.error.issues[0]?.message ?? 'Invalid decision' };
+    await writeJsonAtomic(join(root, DECISIONS_FILE), next.data);
+    return { ok: true as const, decision };
+  });
+}

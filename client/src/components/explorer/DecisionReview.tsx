@@ -16,9 +16,8 @@ import { DecisionCreate } from './DecisionCreate'
 
 /**
  * Decisions, project-wide: a Feed (searchable list) and a Review (one decision at a time). Both read the same query and
- * the same native records as the per-file panel, and both keep the selected decision when switching. The only write is
- * the existing attestation route (POST /design/approve) with the hash of the text the person read; nothing here edits
- * the decisions file, and skipping or moving between items never changes an approval.
+ * the same native records as the per-file panel, and both keep the selected decision when switching. The only writes
+ * are human-selected supersedes links and the existing UI-only attestation route; neither action deletes old decisions.
  */
 
 export type DecisionsMode = 'feed' | 'review'
@@ -161,6 +160,7 @@ function Feed({ queue, selectedId, onSelect }: { queue: DesignDecision[]; select
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono text-[10px] text-muted-foreground">{d.id}</span>
               <TierBadge d={d} />
+              {d.superseded && <span className="rounded border px-1.5 py-px text-[10px] text-muted-foreground" data-testid="superseded-badge">superseded</span>}
               {hasConflict(d) && <span className="flex items-center gap-0.5 text-[10px] text-destructive"><AlertTriangle className="h-3 w-3" />conflict</span>}
             </div>
             <div className="mt-0.5 text-xs font-medium leading-snug">{d.title}</div>
@@ -189,6 +189,9 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
   const [confirm, setConfirm] = useState<'approved' | 'revoked' | null>(null)
   const [quote, setQuote] = useState('')
   const [sending, setSending] = useState(false)
+  const [resolveOpen, setResolveOpen] = useState(false)
+  const [supersedePicks, setSupersedePicks] = useState<Set<string>>(new Set())
+  const [savingSupersession, setSavingSupersession] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Agent suggestions are kept per decision, so moving to another item and back does not lose them.
   const [suggestions, setSuggestions] = useState<Record<string, AssistSuggestion>>({})
@@ -230,7 +233,8 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
     if (!current || !loaded || guard !== 'ok') return
     setSending(true); setError(null)
     try {
-      await api.attestDecision(projectId, { decisionId: current.id, state: verdict, quote, claimSha256: loaded.claimSha256 })
+      await api.attestDecision(projectId, { decisionId: current.id, state: verdict, quote, claimSha256: loaded.claimSha256,
+        ...(verdict === 'approved' && current.supersedes.length ? { supersedesSha256: current.supersession_sha256 } : {}) })
       if (verdict === 'approved') setAttestedNow(s => new Set(s).add(current.id))
       toast.success(verdict === 'approved' ? `${current.id} attested locally` : `${current.id} attestation revoked`)
       setConfirm(null); setQuote('')
@@ -266,8 +270,25 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
 
   const sides = conflictSides(current, all)
   const attested = tierOf(current) === 'attested_local'
+  const needsSupersessionAttestation = current.supersedes.length > 0 && !current.supersession_approved
   const evidence = current.evidence.filter(e => !e.candidate_only)
   const briefing = reviewBriefing(current, projectId)
+
+  const saveSupersessions = async () => {
+    if (!supersedePicks.size || savingSupersession) return
+    setSavingSupersession(true); setError(null)
+    try {
+      await api.supersedeDecisions(projectId, { decisionId: current.id, targets: [...supersedePicks], claimSha256: current.claim_sha256 })
+      setResolveOpen(false)
+      toast.success('Supersession selection saved. It stays pending until this text and selection are attested.')
+    } catch (e: any) {
+      setError(e?.message ?? 'The supersession links were not saved.')
+    } finally {
+      setSavingSupersession(false)
+      qc.invalidateQueries({ queryKey: ['design-decisions', projectId] })
+      qc.invalidateQueries({ queryKey: ['design', projectId] })
+    }
+  }
 
   // Advisory only: asks the agent about this decision and keeps the answer as a suggestion. Nothing is written.
   const runAssist = async (action: string) => {
@@ -358,21 +379,47 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
           </p>
         </section>
 
-        {hasConflict(current) && (
+        {(hasConflict(current) || current.supersedes.length > 0 || !!current.superseded) && (
           <section className="space-y-2 rounded-md border border-destructive/40 p-3" data-testid="review-conflict">
-            <h3 className="flex items-center gap-1.5 text-xs font-medium text-destructive"><AlertTriangle className="h-3.5 w-3.5" /> Conflict: not resolved by any attestation here</h3>
+            <h3 className={cn('flex items-center gap-1.5 text-xs font-medium', hasConflict(current) ? 'text-destructive' : 'text-foreground')}>
+              <AlertTriangle className="h-3.5 w-3.5" />{hasConflict(current) ? 'Active conflict' : 'Conflict resolution history'}
+            </h3>
             <div className="grid gap-2 sm:grid-cols-2">
               {[current, ...sides.found].map(d => (
                 <div key={d.id} className={cn('min-w-0 space-y-1 rounded border p-2 text-[11px]', d.id === current.id && 'border-foreground/30')}>
                   <div className="font-mono text-[10px] text-muted-foreground">{d.id}{d.id === current.id ? ' (this one)' : ''}</div>
                   <div className="font-medium">{d.title}</div>
                   <TierBadge d={d} />
+                  {d.superseded && <span className="ml-1 text-muted-foreground">superseded by {d.superseded_by?.join(', ')}</span>}
                   <div className="text-muted-foreground">code {d.implementation} · evidence {d.evidence_status.toLowerCase()}</div>
                 </div>
               ))}
             </div>
             {sides.missing.length > 0 && <p className="text-[10px] text-muted-foreground">Not in this checkout's file: {sides.missing.join(', ')}</p>}
-            <p className="text-[11px] text-muted-foreground">Attesting one side does not choose a winner. Deciding which value stands is still open: the owner has to decide it.</p>
+            {hasConflict(current) && <p className="text-[11px] text-muted-foreground">A conflict link alone does not choose a winner. Select the prior decisions this text replaces, then attest the exact text and selection below.</p>}
+            {current.supersedes.length > 0 && <p className="text-[11px] text-muted-foreground" data-testid="supersession-state">
+              {current.supersession_approved ? 'This text and its supersession selection are attested locally.' : 'Supersession links are pending; prior decisions remain active until you attest this text and selection.'}
+            </p>}
+            {current.superseded && <p className="text-[11px] text-muted-foreground">This decision is superseded by {current.superseded_by?.join(', ')}. It remains in the history.</p>}
+            {hasConflict(current) && <button type="button" className={btn} data-testid="resolve-conflict"
+              onClick={() => { setSupersedePicks(new Set(current.supersedes)); setResolveOpen(v => !v) }}>
+              Resolver conflito / Substituir decisões anteriores
+            </button>}
+            {resolveOpen && hasConflict(current) && <div className="space-y-2 rounded border bg-background p-2" data-testid="supersession-picker">
+              <p className="text-[11px] font-medium">Select the conflicting records this decision replaces</p>
+              {sides.found.filter(d => current.conflicts_with.includes(d.id)).map(d => (
+                <label key={d.id} className="flex items-start gap-2 text-[11px]">
+                  <input type="checkbox" checked={supersedePicks.has(d.id)} onChange={e => setSupersedePicks(s => {
+                    const next = new Set(s); if (e.target.checked) next.add(d.id); else next.delete(d.id); return next
+                  })} />
+                  <span><span className="font-mono">{d.id}</span> · {d.title}<span className="block text-muted-foreground">{d.claim}</span></span>
+                </label>
+              ))}
+              {error && <p role="alert" className="text-[11px] text-destructive">{error}</p>}
+              <button type="button" onClick={saveSupersessions} disabled={(!supersedePicks.size && !current.supersedes.length) || savingSupersession} className={btn} data-testid="supersession-save">
+                {savingSupersession ? 'Saving…' : 'Save selection'}
+              </button>
+            </div>}
           </section>
         )}
 
@@ -442,9 +489,16 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
             <p className="text-xs font-medium">{confirm === 'approved' ? `Attest ${current.id} locally` : `Revoke the local attestation of ${current.id}`}</p>
             <p className="text-[11px] text-muted-foreground">
               {confirm === 'approved'
-                ? <>This records one entry in this installation's approval ledger for the exact text shown above (sha256 {current.claim_sha256.slice(0, 12)}…). It is stored outside the repository and is not proof of who clicked. Editing the text later lapses it. It does not change the decision file, and it does not resolve any conflict.</>
+                ? <>This records one entry in this installation's approval ledger for the exact text shown above (sha256 {current.claim_sha256.slice(0, 12)}…). It is stored outside the repository and is not proof of who clicked. Editing the text or changing the selected supersession links later lapses that resolution. The prior records remain in history.</>
                 : <>This records a revocation in the local ledger for the exact text shown above. The decision file is not changed.</>}
             </p>
+            {confirm === 'approved' && current.supersedes.length > 0 && <div className="rounded border bg-muted/30 p-2 text-[11px]" data-testid="attest-supersession-selection">
+              <p className="font-medium">This attestation also confirms that this decision supersedes:</p>
+              <ul className="mt-1 list-disc pl-4">{current.supersedes.map(id => {
+                const prior = all.find(d => d.id === id)
+                return <li key={id}><span className="font-mono">{id}</span>{prior ? ` · ${prior.title}: ${prior.claim}` : ' · record not present in this checkout'}</li>
+              })}</ul>
+            </div>}
             <label className="block text-[11px] text-muted-foreground">
               What was decided (required, stored with the attestation)
               <textarea value={quote} onChange={e => setQuote(e.target.value)} rows={2} data-testid="attest-quote"
@@ -467,7 +521,7 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
         <button onClick={() => go(1)} disabled={index >= queue.length - 1} className={cn(btn, 'flex items-center gap-1')} data-testid="review-next">Next<ChevronRight className="h-3 w-3" /></button>
         <span className="mx-1 h-4 w-px bg-border" />
         {!attested && <button onClick={skip} className={cn(btn, 'flex items-center gap-1')} data-testid="review-skip"><SkipForward className="h-3 w-3" />Skip for now</button>}
-        {!attested && <button onClick={() => setConfirm('approved')} disabled={!canWrite} className={cn(btn, 'flex items-center gap-1 border-success/50 text-success')} data-testid="review-attest"><Check className="h-3 w-3" />Attest</button>}
+        {(!attested || needsSupersessionAttestation) && <button onClick={() => setConfirm('approved')} disabled={!canWrite} className={cn(btn, 'flex items-center gap-1 border-success/50 text-success')} data-testid="review-attest"><Check className="h-3 w-3" />{needsSupersessionAttestation ? 'Confirm supersession' : 'Attest'}</button>}
         {attested && <button onClick={() => setConfirm('revoked')} disabled={!canWrite} className={cn(btn, 'flex items-center gap-1')} data-testid="review-revoke"><Undo2 className="h-3 w-3" />Revoke attestation</button>}
         <button onClick={() => copyText(briefing, 'Context')} className={cn(btn, 'flex items-center gap-1')} data-testid="review-request-changes"><Scale className="h-3 w-3" />Ask for changes (copy context)</button>
         <span className="ml-auto text-[10px] text-muted-foreground">Keys: ← → move · S skip · A attest</span>
