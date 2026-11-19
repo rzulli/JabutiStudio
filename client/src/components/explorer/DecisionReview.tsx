@@ -5,7 +5,7 @@ import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, Scale, 
 import { api, type DesignDecision } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
-  approvalGuard, conflictSides, DECISION_ASSIST, decisionAgentPrompt, evidenceForProposal, filterQueue, hasConflict, originOf, ORIGIN_LABEL,
+  approvalGuard, conflictSides, DECISION_ASSIST, decisionAgentPrompt, evidenceFile, evidenceForProposal, filterQueue, hasConflict, originOf, ORIGIN_LABEL,
   queueCounts, resolveIndex, reviewBriefing, SCOPE_LABEL, stepIndex, suggestionStale, tierOf, TIER_HINT, TIER_LABEL,
   type ApprovalTier, type QueueFilter, type QueueScope,
 } from '@/lib/designReview'
@@ -387,7 +387,7 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
             <details key={i} className="rounded border px-2 py-1 text-[11px]" open={i === 0}>
               <summary className="flex cursor-pointer flex-wrap items-center gap-1.5">
                 <span className="rounded bg-muted px-1 uppercase text-muted-foreground">{e.type.replace('_', ' ')}</span>
-                <button onClick={ev => { ev.preventDefault(); if (!e.ref.startsWith('@') && e.path) onOpenFile(e.path, e.lines?.[0]) }} className="truncate font-mono hover:underline">{e.ref}</button>
+                <button onClick={ev => { ev.preventDefault(); const file = evidenceFile(e); if (!e.ref.startsWith('@') && file) onOpenFile(file, e.lines?.[0]) }} className="truncate font-mono hover:underline">{e.ref}</button>
                 <span className={cn('ml-auto text-[10px]', e.freshness === 'CURRENT' ? 'text-muted-foreground' : 'text-warning')} title={e.detail}>{FRESH_LABEL[e.freshness] ?? e.freshness} now</span>
               </summary>
               {e.note && <p className="mt-1 text-muted-foreground">{e.note}</p>}
