@@ -11,7 +11,7 @@ import Fastify from 'fastify'
 import { identityRoutes, SERVER_PROTOCOL as SERVER_SIDE_PROTOCOL } from '../src/routes/identity.ts'
 // Dynamic import: electron/ is CommonJS, and the ESM loader cannot see named exports of its compiled output statically.
 const {
-  classifyIdentity, probeBackend, ensureBackend, BackendConflictError, SERVER_PROTOCOL, isUrlReachable,
+  classifyIdentity, probeBackend, ensureBackend, BackendConflictError, SERVER_PROTOCOL, isUrlReachable, waitUntilReady,
 } = await import('../../electron/serverBootstrap.ts')
 
 const identityBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -37,6 +37,19 @@ async function freePort(): Promise<number> {
 
 test('the identity route and Electron agree on the protocol', () => {
   assert.equal(SERVER_SIDE_PROTOCOL, SERVER_PROTOCOL)
+})
+
+test('waitUntilReady passes once the check passes, and throws when it never does', async () => {
+  let calls = 0
+  await waitUntilReady(async () => ++calls >= 3, { attempts: 5, intervalMs: 1, what: 'backend' })
+  assert.equal(calls, 3)
+
+  calls = 0
+  await assert.rejects(
+    waitUntilReady(async () => { calls++; return false }, { attempts: 4, intervalMs: 1, what: 'backend' }),
+    /backend did not answer after 4 attempts/,
+  )
+  assert.equal(calls, 4)
 })
 
 test('classifyIdentity accepts a JabutiStudio answer and reports whether it serves the client', () => {

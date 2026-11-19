@@ -25,7 +25,10 @@ export default defineConfig({
   // by the lazy() boundaries around the editor, terminal and markdown views,
   // already keeps them off the boot path.
   server: {
-    open: true,
+    // No browser tab on start: Vite listens before the backend does, so an auto-opened tab would fire
+    // /api into ECONNREFUSED. Open http://localhost:5421 once the backend is up; the UI waits for it
+    // (components/BackendGate.tsx), so the tab is safe to open at any time after that.
+    open: false,
     proxy: {
       '/api': {
         target: 'http://localhost:5420',
