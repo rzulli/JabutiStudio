@@ -154,3 +154,55 @@ export function reviewBriefing(d: DesignDecision, projectId: string): string {
     'Report what the code, tests and claim disagree on and what is missing. Do not record an approval, do not edit the decision and do not treat a passing test as approval.',
   ].filter(Boolean).join('\n')
 }
+
+/** Quick Actions on one decision. Each one is advisory: its answer is shown as a suggestion, never applied to the record. */
+export const DECISION_ASSIST: { action: 'rephrase' | 'evidence' | 'conflicts' | 'compare'; label: string; hint: string }[] = [
+  { action: 'rephrase', label: 'Improve wording', hint: 'Suggest a clearer claim. Applying it creates a new proposal; this decision and its approval stay as they are.' },
+  { action: 'evidence', label: 'Investigate evidence', hint: 'Check whether each cited excerpt supports the claim. Reads only the evidence already attached.' },
+  { action: 'conflicts', label: 'Find conflicts', hint: 'Compare with the decisions this one conflicts with. Does not pick a side.' },
+  { action: 'compare', label: 'Compare with code', hint: 'Say what the cited code shows and what is not evidenced. Does not mark anything implemented.' },
+]
+
+/**
+ * Evidence to carry onto a rewritten proposal: the cited, non-candidate items that point at a file. Anything without a
+ * path is left out, and the server re-checks every file and line when the proposal is saved.
+ */
+export function evidenceForProposal(d: DesignDecision): { type: string; path: string; startLine?: number; endLine?: number; note?: string }[] {
+  return d.evidence
+    .filter(e => !e.candidate_only && !!e.path)
+    .map(e => ({
+      type: e.type,
+      path: e.path as string,
+      ...(e.lines ? { startLine: e.lines[0], endLine: e.lines[1] } : {}),
+      ...(e.note ? { note: e.note } : {}),
+    }));
+}
+
+/** A suggestion is only applicable to the text it was computed from. Changed text means it must be asked again. */
+export function suggestionStale(suggestedFromSha: string, d: DesignDecision): boolean {
+  return suggestedFromSha !== d.claim_sha256;
+}
+
+/**
+ * The message for Ask Agent: the decision with its state, evidence, conflicts and the limits on what an agent may do.
+ * It is a briefing for a terminal session, which the person reads and can change before sending.
+ */
+export function decisionAgentPrompt(d: DesignDecision, projectId: string, all: DesignDecision[], worktree?: string): string {
+  const conflicts = conflictSides(d, all)
+  const evidence = d.evidence.filter(e => !e.candidate_only).map(e => {
+    const head = e.excerpt.slice(0, 6).map(x => `    ${x.line}: ${x.text}`).join('\n')
+    return `- [${e.type}] ${e.ref} (${e.freshness.toLowerCase()})${e.note ? ` — ${e.note}` : ''}${head ? `\n${head}` : ''}`
+  })
+  return [
+    `Help me review design decision ${d.id} ("${d.title}") in project ${projectId}${worktree ? `, checkout ${worktree}` : ''}.`,
+    `Recorded claim (text, not approval): ${d.claim}`,
+    `Systems: ${d.systems?.length ? d.systems.join(', ') : 'none'}`,
+    `Approval state: ${TIER_LABEL[tierOf(d)]}.`,
+    `Implementation reads "${d.implementation}", evidence "${d.evidence_status}". Verify in the code; do not repeat these readings as fact.`,
+    `Cited evidence:${evidence.length ? `\n${evidence.join('\n')}` : ' none'}`,
+    conflicts.found.length
+      ? `Conflicting decisions:\n${conflicts.found.map(c => `- ${c.id}: ${c.title} — claim: ${c.claim}`).join('\n')}${conflicts.missing.length ? `\nNot in this checkout's file: ${conflicts.missing.join(', ')}` : ''}\nDo not pick a side; say what would decide between them.`
+      : d.conflicts_with.length ? `Known conflicts (not in this checkout): ${d.conflicts_with.join(', ')}. Do not pick a side.` : 'Conflicts: none recorded.',
+    'Rules: you may read files and report findings. Do not record an approval, do not edit the decisions file, do not mark the decision implemented, and do not treat a passing test as approval. Say what you could not verify.',
+  ].join('\n')
+}

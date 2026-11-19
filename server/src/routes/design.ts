@@ -5,6 +5,8 @@ import * as core from '../services/designCore.js';
 import { EVIDENCE_TYPES } from '../services/designDecisions.js';
 import * as migration from '../services/designMigration.js';
 import * as sources from '../services/designSources.js';
+import * as assist from '../services/designAssist.js';
+import * as aiBackend from '../services/aiBackend.js';
 import { readLegacyRecords } from '../services/legacyRecords.js';
 import { isLoopbackOrigin } from '../services/localAccess.js';
 
@@ -59,6 +61,44 @@ export async function designRoutes(app: FastifyInstance) {
     if (!res.ok) return reply.status(400).send({ error: res.error });
     return res.decision;
   });
+
+  // Agent help for decisions. Advisory only: it returns text and findings, never an approval, a status or a write.
+  // `structure` drafts a new proposal from a description (its evidence is a literal search of the checkout). Input is
+  // checked before the project lookup and before any AI call.
+  app.post<{ Params: { id: string }; Body: { action?: string; decisionId?: string; text?: string; worktree?: string } }>(
+    '/api/projects/:id/design/assist',
+    async (request, reply) => {
+      const b = request.body ?? {};
+      const worktree = typeof b.worktree === 'string' && b.worktree ? b.worktree : undefined;
+      if (b.action === 'structure') {
+        const text = typeof b.text === 'string' ? b.text.trim() : '';
+        if (text.length < 10 || text.length > 4000) return reply.status(400).send({ error: 'Describe the decision in 10 to 4000 characters.' });
+      } else if (!(assist.ASSIST_ACTIONS as readonly string[]).includes(String(b.action))) {
+        return reply.status(400).send({ error: 'action must be structure, rephrase, evidence, conflicts or compare' });
+      } else if (typeof b.decisionId !== 'string' || !b.decisionId) {
+        return reply.status(400).send({ error: 'decisionId is required for this action' });
+      }
+      const project = await resolve(request.params.id);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+      try {
+        const listed = await core.listDecisions(project, { worktree });
+        if (!listed.available) return reply.status(409).send({ error: listed.reason ?? 'Decisions are not available for this checkout' });
+        if (b.action === 'structure') {
+          const root = await assist.checkoutRoot(project, worktree);
+          if (!root) return reply.status(409).send({ error: 'The checkout could not be resolved' });
+          return await assist.structureDecision(root, String(b.text).trim(), listed.decisions);
+        }
+        const d = listed.decisions.find((x: any) => x.id === b.decisionId);
+        if (!d) return reply.status(404).send({ error: `Decision ${b.decisionId} is not in this checkout` });
+        return await assist.assistDecision(d, b.action as assist.AssistAction, listed.decisions);
+      } catch (err: any) {
+        if (err instanceof assist.AssistError) return reply.status(err.status).send({ error: err.message });
+        if (err?.status === 429) return reply.status(429).send({ error: 'Rate limit reached. Nothing was changed; try again in a moment.' });
+        if (err instanceof aiBackend.NoAiAvailableError) return reply.status(503).send({ error: err.message });
+        return reply.status(500).send({ error: err?.message || 'The agent did not answer. Nothing was changed.' });
+      }
+    },
+  );
 
   app.get<{ Params: { id: string }; Querystring: { worktree?: string } }>('/api/projects/:id/design/validate', async (request, reply) => {
     const project = await resolve(request.params.id);

@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Scale, Search, SkipForward, Sparkles, Undo2 } from 'lucide-react'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, Scale, Search, SkipForward, Sparkles, Undo2 } from 'lucide-react'
 import { api, type DesignDecision } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
-  approvalGuard, conflictSides, filterQueue, hasConflict, originOf, ORIGIN_LABEL, queueCounts, resolveIndex, reviewBriefing,
-  SCOPE_LABEL, stepIndex, tierOf, TIER_HINT, TIER_LABEL, type ApprovalTier, type QueueFilter, type QueueScope,
+  approvalGuard, conflictSides, DECISION_ASSIST, decisionAgentPrompt, evidenceForProposal, filterQueue, hasConflict, originOf, ORIGIN_LABEL,
+  queueCounts, resolveIndex, reviewBriefing, SCOPE_LABEL, stepIndex, suggestionStale, tierOf, TIER_HINT, TIER_LABEL,
+  type ApprovalTier, type QueueFilter, type QueueScope,
 } from '@/lib/designReview'
+import { buildChanges } from '@/lib/suggestions'
+import { openAgentSession } from '@/lib/terminalDispatch'
+import { SuggestionPanel } from '@/components/claude/SuggestionPanel'
 
 /**
  * Decisions, project-wide: a Feed (searchable list) and a Review (one decision at a time). Both read the same query and
@@ -37,6 +41,10 @@ const FRESH_LABEL: Record<string, string> = {
 }
 
 const btn = 'rounded-md border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent'
+
+/** An agent answer about one decision. `claimSha256` pins the text it was computed from. */
+interface AssistSuggestion { action: string; claimSha256: string; claim?: string; notes: string[] }
+const ASSIST_HEADING: Record<string, string> = { rephrase: 'Improve wording', evidence: 'Evidence', conflicts: 'Conflicts', compare: 'Compared with code' }
 
 export function TierBadge({ d }: { d: DesignDecision }) {
   const t = tierOf(d)
@@ -170,6 +178,9 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
   const [quote, setQuote] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Agent suggestions are kept per decision, so moving to another item and back does not lose them.
+  const [suggestions, setSuggestions] = useState<Record<string, AssistSuggestion>>({})
+  const [busyAssist, setBusyAssist] = useState<string | null>(null)
 
   const { index, vanished } = resolveIndex(queue, state.selectedId, lastIndex)
   const current = queue[index]
@@ -245,6 +256,49 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
   const attested = tierOf(current) === 'attested_local'
   const evidence = current.evidence.filter(e => !e.candidate_only)
   const briefing = reviewBriefing(current, projectId)
+
+  // Advisory only: asks the agent about this decision and keeps the answer as a suggestion. Nothing is written.
+  const runAssist = async (action: string) => {
+    if (busyAssist) return
+    const item = current
+    setBusyAssist(action)
+    try {
+      const r = await api.assistDecision(projectId, { action: action as 'rephrase', decisionId: item.id, worktree })
+      setSuggestions(s => ({ ...s, [item.id]: { action, claimSha256: item.claim_sha256, claim: r.claim, notes: r.notes ?? [] } }))
+    } catch (e: any) {
+      toast.error(`${e?.message ?? 'The agent did not answer.'} Nothing was changed.`)
+    } finally {
+      setBusyAssist(null)
+    }
+  }
+
+  // Applying a rewording creates a NEW proposal that supersedes this one. The original text, its evidence and its
+  // approval stay exactly as they were.
+  const applyRewrite = async (item: DesignDecision, sugg: AssistSuggestion, picks: Record<string, boolean>) => {
+    if (!picks.claim || !sugg.claim || sending) return
+    setSending(true); setError(null)
+    try {
+      const res = await api.proposeDecision(projectId, {
+        title: item.title, claim: sugg.claim, systems: item.systems ?? [], scope: item.scope ?? [],
+        files: item.files.map(f => f.path), supersedes: [item.id], evidence: evidenceForProposal(item),
+      })
+      toast.success(`${res.id} proposed; it supersedes ${item.id}. Nothing was approved; ${item.id} is unchanged.`)
+      setSuggestions(s => { const n = { ...s }; delete n[item.id]; return n })
+    } catch (e: any) {
+      setError(e?.message ?? 'The new proposal was not saved.')
+    } finally {
+      setSending(false)
+      qc.invalidateQueries({ queryKey: ['design-decisions', projectId] })
+      qc.invalidateQueries({ queryKey: ['design', projectId] })
+    }
+  }
+
+  const askAgent = async () => {
+    const item = current
+    const result = await openAgentSession({ projectId, agent: 'claude', prompt: decisionAgentPrompt(item, projectId, all, worktree) })
+    if (result.ok) toast.success(`Agent session opened for ${item.id}. Nothing is applied from it.`)
+    else toast.error(`${result.error} The context was not sent.`)
+  }
 
   return (
     <div className="space-y-3" data-testid="decision-review">
@@ -328,6 +382,47 @@ function Review({ projectId, worktree, all, queue, state, onState, counts, onOpe
               {e.excerpt.length > 0 && <pre className="mt-1 overflow-x-auto rounded bg-muted/50 p-1.5 font-mono text-[10px]">{e.excerpt.slice(0, 8).map(x => `${x.line}: ${x.text}`).join('\n')}</pre>}
             </details>
           ))}
+        </section>
+
+        <section className="space-y-2" data-testid="decision-assist">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h3 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Agent help · suggestions only</h3>
+            {DECISION_ASSIST.map(a => (
+              <button key={a.action} type="button" title={a.hint} disabled={!!busyAssist || sending}
+                onClick={() => runAssist(a.action)} className={cn(btn, 'flex items-center gap-1')} data-testid={`decision-assist-${a.action}`}>
+                {busyAssist === a.action && <Loader2 className="h-3 w-3 animate-spin" />}{a.label}
+              </button>
+            ))}
+            <button type="button" onClick={askAgent} className={cn(btn, 'flex items-center gap-1')} data-testid="review-ask-agent"
+              title="Open an agent session with this decision, its state, evidence and conflicts">
+              <Sparkles className="h-3 w-3" />Ask agent
+            </button>
+          </div>
+          {(() => {
+            const sugg = suggestions[current.id]
+            if (!sugg) return null
+            if (suggestionStale(sugg.claimSha256, current)) {
+              return (
+                <Notice tone="warning" action={<button className="underline" onClick={() => setSuggestions(s => { const n = { ...s }; delete n[current.id]; return n })}>Discard</button>}>
+                  This decision's text changed after this suggestion was made. Discard it and ask again before applying anything.
+                </Notice>
+              )
+            }
+            const changes = sugg.claim ? buildChanges([{ key: 'claim', label: 'Recorded text', kind: 'replace', current: current.claim, proposed: sugg.claim }]) : []
+            const notes = [
+              ...sugg.notes,
+              ...(sugg.action === 'rephrase' ? [
+                'Applying creates a new proposal that supersedes this decision. This decision and its approval are not changed.',
+                ...(evidenceForProposal(current).length ? [] : ['This decision has no cited file evidence, so a rewritten proposal cannot be saved until evidence is added.']),
+              ] : []),
+            ]
+            return (
+              <SuggestionPanel key={`${current.id}:${sugg.action}:${sugg.claimSha256}`} testId="decision-suggestion"
+                heading={ASSIST_HEADING[sugg.action] ?? 'Suggestion'} changes={changes} notes={notes}
+                onApply={picks => applyRewrite(current, sugg, picks)}
+                onDiscard={() => setSuggestions(s => { const n = { ...s }; delete n[current.id]; return n })} />
+            )
+          })()}
         </section>
 
         {confirm && (

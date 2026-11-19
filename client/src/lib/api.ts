@@ -745,8 +745,16 @@ export interface KnowledgePlan {
 const wt = (w?: string) => (w ? `worktree=${encodeURIComponent(w)}` : '')
 
 export interface ProposeDecisionBody {
-  title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[]; conflictsWith?: string[]
-  evidence: { type: string; path: string; startLine?: number; needle?: string; note?: string }[]
+  title: string; claim: string; scope?: string[]; systems?: string[]; files?: string[]; conflictsWith?: string[]; supersedes?: string[]
+  evidence: { type: string; path: string; startLine?: number; endLine?: number; needle?: string; note?: string }[]
+}
+
+/** Advisory agent output for a decision (never an approval). `claim` only for rephrase; `structure` adds the draft fields. */
+export interface DecisionAssistResult {
+  action: string; claim?: string; notes?: string[]
+  title?: string; systems?: string[]; limitations?: string[]
+  evidence?: { type: string; path: string; startLine: number; needle: string; note: string }[]
+  conflicts?: { id: string; title: string }[]
 }
 
 export interface DesignContext {
@@ -773,6 +781,8 @@ export const api = {
     request<{ legacyRecords: number; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
   proposeDecision: (projectId: string, body: ProposeDecisionBody) =>
     request<DesignDecision & { id: string }>(`/projects/${projectId}/design/proposals`, { method: 'POST', body: JSON.stringify(body) }),
+  assistDecision: (projectId: string, body: { action: 'rephrase' | 'evidence' | 'conflicts' | 'compare' | 'structure'; decisionId?: string; text?: string; worktree?: string }) =>
+    request<DecisionAssistResult>(`/projects/${projectId}/design/assist`, { method: 'POST', body: JSON.stringify(body), timeout: 90_000 }),
   listDesignDecisions: (projectId: string, worktree?: string) =>
     request<{ available: boolean; state?: string; reason?: string; decisions: DesignDecision[] }>(`/projects/${projectId}/design/decisions${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`),
   attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string; claimSha256?: string }) =>
