@@ -156,6 +156,101 @@ test('T5: documents and files never become approval; only a local attestation do
   assert.equal(d.approval.state, 'unknown'); assert.equal(d.approval.lapsed, true)
 })
 
+test('conflict resolution: supersedes is pending until a UI attestation binds the exact claim and selection', async () => {
+  const old1000: any = await core.propose(P.beats, { title: 'DK-HUMUS-001', claim: 'First maturation costs 1000.', evidence, origin: 'user' })
+  const old200: any = await core.propose(P.beats, { title: 'DK-HUMUS-002', claim: 'First maturation costs 200.', conflictsWith: [old1000.decision.id], evidence, origin: 'user' })
+  const current: any = await core.propose(P.beats, { title: 'First maturation costs 300', claim: 'First maturation costs 300.', conflictsWith: [old1000.decision.id, old200.decision.id], evidence, origin: 'user' })
+  const id = current.decision.id
+  const claimSha = (await core.query(P.beats, { id })).decisions[0].claim_sha256
+  const uiHeaders = { origin: 'http://localhost:5421', 'sec-fetch-site': 'same-origin', 'sec-fetch-dest': 'empty' }
+
+  let listed = await core.listDecisions(P.beats)
+  assert.equal(listed.decisions.find((d: any) => d.id === old1000.decision.id).superseded, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === old200.decision.id).superseded, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === id).supersession_approved, false)
+  const valueApproval = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/approve`, headers: uiHeaders, payload: {
+    decisionId: id, state: 'approved', quote: 'I confirm the 300 value.', claimSha256: claimSha,
+  } })
+  assert.equal(valueApproval.statusCode, 200)
+  assert.ok((await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/supersessions`, payload: {
+    decisionId: id, targets: [old1000.decision.id, old200.decision.id], claimSha256: claimSha,
+  } })).statusCode === 403)
+
+  const linked = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/supersessions`, headers: uiHeaders, payload: {
+    decisionId: id, targets: [old1000.decision.id, old200.decision.id], claimSha256: claimSha,
+  } })
+  assert.equal(linked.statusCode, 200)
+  listed = await core.listDecisions(P.beats)
+  assert.equal(listed.decisions.find((d: any) => d.id === id).approval.source, 'attested_local')
+  assert.equal(listed.decisions.find((d: any) => d.id === id).supersession_approved, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === old1000.decision.id).superseded, false)
+  assert.ok(listed.decisions.find((d: any) => d.id === id).conflicts_with.length)
+
+  const mcp = await import('../src/services/mcpServer.js')
+  const ctx = JSON.parse((await mcp.handleToolCall('get_design_context', { projectId: P.beats.id, query: 'first maturation costs' })).content[0].text)
+  const pending = ctx.decisions.find((d: any) => d.id === id)
+  assert.deepEqual(pending.supersedes, [old1000.decision.id, old200.decision.id])
+  assert.equal(pending.superseded, false)
+  assert.match(ctx.rules, /matching approved attestation/)
+
+  const approve = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/approve`, headers: uiHeaders, payload: {
+    decisionId: id, state: 'approved', quote: 'I confirm the 300 cost replaces the selected historical values.',
+    claimSha256: claimSha, supersedesSha256: listed.decisions.find((d: any) => d.id === id).supersession_sha256,
+  } })
+  assert.equal(approve.statusCode, 200)
+  listed = await core.listDecisions(P.beats)
+  const winner = listed.decisions.find((d: any) => d.id === id)
+  assert.equal(winner.approval.source, 'attested_local'); assert.equal(winner.supersession_approved, true)
+  for (const old of [old1000.decision.id, old200.decision.id]) {
+    const record = listed.decisions.find((d: any) => d.id === old)
+    assert.equal(record.superseded, true); assert.deepEqual(record.superseded_by, [id]); assert.deepEqual(record.conflicts_with, [])
+  }
+  assert.deepEqual(winner.conflicts_with, [])
+  const context = await core.query(P.beats, { q: 'first maturation costs' })
+  assert.equal(context.conflicts.length, 0)
+  const resolvedContext = JSON.parse((await mcp.handleToolCall('get_design_context', { projectId: P.beats.id, query: 'first maturation costs' })).content[0].text)
+  assert.equal(resolvedContext.decisions.find((d: any) => d.id === id).supersessionApproved, true)
+  assert.equal(resolvedContext.decisions.find((d: any) => d.id === old1000.decision.id).superseded, true)
+  assert.equal(resolvedContext.decisions.find((d: any) => d.id === old200.decision.id).superseded, true)
+  assert.equal(resolvedContext.conflicts, undefined)
+
+  const changedSelection = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/supersessions`, headers: uiHeaders, payload: {
+    decisionId: id, targets: [old1000.decision.id], claimSha256: claimSha,
+  } })
+  assert.equal(changedSelection.statusCode, 200)
+  listed = await core.listDecisions(P.beats)
+  assert.equal(listed.decisions.find((d: any) => d.id === id).supersession_approved, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === old1000.decision.id).superseded, false)
+  assert.equal((await core.query(P.beats, { q: 'first maturation costs' })).conflicts.length > 0, true)
+
+  const restoredSelection = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/supersessions`, headers: uiHeaders, payload: {
+    decisionId: id, targets: [old1000.decision.id, old200.decision.id], claimSha256: claimSha,
+  } })
+  assert.equal(restoredSelection.statusCode, 200)
+  listed = await core.listDecisions(P.beats)
+  const reconfirm = await app.inject({ method: 'POST', url: `/api/projects/${P.beats.id}/design/approve`, headers: uiHeaders, payload: {
+    decisionId: id, state: 'approved', quote: 'I confirm the 300 cost replaces both selected historical values.',
+    claimSha256: claimSha, supersedesSha256: listed.decisions.find((d: any) => d.id === id).supersession_sha256,
+  } })
+  assert.equal(reconfirm.statusCode, 200)
+  listed = await core.listDecisions(P.beats)
+  assert.equal(listed.decisions.find((d: any) => d.id === old1000.decision.id).superseded, true)
+  assert.equal(listed.decisions.find((d: any) => d.id === old200.decision.id).superseded, true)
+
+  const doc = JSON.parse(readFileSync(join(beats, store.DECISIONS_FILE), 'utf8'))
+  doc.decisions.find((d: any) => d.id === id).claim = 'First maturation costs 500.'
+  writeFileSync(join(beats, store.DECISIONS_FILE), JSON.stringify(doc))
+  listed = await core.listDecisions(P.beats)
+  assert.equal(listed.decisions.find((d: any) => d.id === id).supersession_approved, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === old1000.decision.id).superseded, false)
+  assert.equal(listed.decisions.find((d: any) => d.id === old200.decision.id).superseded, false)
+  assert.equal((await core.query(P.beats, { q: 'first maturation costs' })).conflicts.length > 0, true)
+  const lapsedContext = JSON.parse((await mcp.handleToolCall('get_design_context', { projectId: P.beats.id, query: 'first maturation costs' })).content[0].text)
+  assert.equal(lapsedContext.decisions.find((d: any) => d.id === id).supersessionApproved, false)
+  assert.equal(lapsedContext.decisions.find((d: any) => d.id === old1000.decision.id).superseded, false)
+  assert.ok(lapsedContext.conflicts.length > 0)
+})
+
 test('T7: unmigrated legacy records are reported, never read, never converted by a query', async () => {
   const res = await core.query(P.legacy, { q: 'first maturation' })
   assert.equal(res.available, true); assert.deepEqual(res.decisions, [])

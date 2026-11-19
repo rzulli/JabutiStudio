@@ -332,6 +332,7 @@ export async function getDesignContext(projectId: string, file?: string, query?:
     id: d.id, title: d.title, claim: d.claim, origin: d.source, provenance: d.provenance, systems: d.systems?.length ? d.systems : undefined,
     decision: d.decision_state, approval: d.approval,
     evidence: d.evidence_status, implementation: d.implementation, conflictsWith: d.conflicts_with,
+    supersedes: d.supersedes, supersessionApproved: d.supersession_approved, supersededBy: d.superseded_by, superseded: d.superseded,
     matchedBy: d.matched_by,
     sources: d.evidence.filter((e: any) => !e.candidate_only).map((e: any) => ({
       type: e.type, ref: e.path ? `${e.path} (was ${e.ref})` : e.ref, freshness: e.freshness, detail: e.detail, note: e.note,
@@ -346,7 +347,8 @@ export async function getDesignContext(projectId: string, file?: string, query?:
     graph: res.graph && res.graph.built ? { incoming: res.graph.incoming, outgoing: res.graph.outgoing } : undefined,
     rules: 'approval.state "approved" with source "attested_local" is a local UI attestation (not cryptographic proof of a person); "claimed" is an unverified assertion in a document; "unknown" means nobody confirmed it. '
       + 'A native proposal (origin "native", decision "hypothesis") is a claim with evidence, never an approved rule. CURRENT evidence does not mean approved. '
-      + 'Conflicting decisions are both kept: do not pick one. candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
+      + 'A supersedes link is historical intent only until its replacing decision has a matching approved attestation in the local ledger; only then is the old decision marked superseded and removed from active conflicts. Editing the approved claim lapses that authority. '
+      + 'Conflicting decisions are both kept: do not pick one unless the replacing decision has that current attestation. candidateImpact is hand-listed and incomplete, Graphify EXTRACTED relations are reliable, INFERRED ones need a code check; '
       + 'a passing test does not prove a design decision.',
   }) }] };
 }

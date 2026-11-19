@@ -134,7 +134,7 @@ export function conflictSides(d: DesignDecision, all: DesignDecision[]): { found
   const byId = new Map(all.map(x => [x.id, x]))
   const found: DesignDecision[] = []
   const missing: string[] = []
-  for (const id of d.conflicts_with) {
+  for (const id of new Set([...d.conflicts_with, ...(d.supersedes ?? []), ...(d.superseded_by ?? [])])) {
     const x = byId.get(id)
     if (x) found.push(x); else missing.push(id)
   }

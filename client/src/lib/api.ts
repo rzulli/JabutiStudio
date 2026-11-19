@@ -601,7 +601,7 @@ export interface DesignEvidence {
 export interface DesignDecision {
   id: string; title: string; claim: string; claim_sha256: string; system?: string | null
   decision_state: string; approval: DesignApproval; evidence_status: string; implementation: string; catalogued_implementation: string
-  supersedes: string[]; conflicts_with: string[]; matched_by?: string[]
+  supersedes: string[]; superseded_by?: string[]; superseded?: boolean; supersession_sha256?: string; supersession_approved?: boolean; conflicts_with: string[]; matched_by?: string[]
   files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
   evidence: DesignEvidence[]
   source?: 'native' | 'legacy'; systems?: string[]; scope?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
@@ -805,7 +805,9 @@ export const api = {
     request<DecisionAssistResult>(`/projects/${projectId}/design/assist`, { method: 'POST', body: JSON.stringify(body), timeout: 90_000 }),
   listDesignDecisions: (projectId: string, worktree?: string) =>
     request<{ available: boolean; state?: string; reason?: string; decisions: DesignDecision[] }>(`/projects/${projectId}/design/decisions${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`),
-  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string; claimSha256?: string }) =>
+  supersedeDecisions: (projectId: string, body: { decisionId: string; targets: string[]; claimSha256: string }) =>
+    request<DesignDecision>(`/projects/${projectId}/design/supersessions`, { method: 'POST', body: JSON.stringify(body) }),
+  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string; claimSha256?: string; supersedesSha256?: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   getSystems: (projectId: string, worktree?: string) =>
     request<{ systems: SystemSummary[]; loadErrors: { id: string; name: string; error: string }[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),

@@ -40,6 +40,13 @@ async function nativeDecisions(project: Project, root: string, revision?: string
   const integration = await store.fileIntegration(root, norm_(root) === norm_(project.path), revision);
   const inverse = new Map<string, string[]>();
   for (const d of read.doc.decisions) for (const c of d.conflictsWith) inverse.set(c, [...(inverse.get(c) ?? []), d.id]);
+  const activeSuperseders = new Map<string, string[]>();
+  for (const d of read.doc.decisions) {
+    const att = ledger.approvals.find(a => a.decision_id === d.id);
+    const supersessionSha = store.sha256(JSON.stringify(d.supersedes));
+    if (att?.state === 'approved' && att.claim_sha256 === store.sha256(d.claim) && att.supersedes_sha256 === supersessionSha)
+      for (const id of d.supersedes) activeSuperseders.set(id, [...(activeSuperseders.get(id) ?? []), d.id]);
+  }
   for (const d of read.doc.decisions) {
     const evidence = await Promise.all(d.evidence.map(e => store.resolveEvidence(reader, e)));
     const claimSha = store.sha256(d.claim);
@@ -68,9 +75,15 @@ async function nativeDecisions(project: Project, root: string, revision?: string
     const cited = new Set(d.evidence.filter(e => !e.candidateOnly).map(e => e.path));
     out.push({
       id: d.id, title: d.title, claim: d.claim, claim_sha256: claimSha, source: 'native',
+      supersession_sha256: store.sha256(JSON.stringify(d.supersedes)),
+      supersession_approved: d.supersedes.length > 0 &&
+        ledger.approvals.some(a => a.decision_id === d.id && a.state === 'approved' && a.claim_sha256 === claimSha && a.supersedes_sha256 === store.sha256(JSON.stringify(d.supersedes))),
       system: d.systems[0] ?? null, systems: d.systems, scope: d.scope, decision_state: decisionState, approval,
       evidence_status: store.worstFreshness([...evidence, ...implRows]), evidence_status_legacy: legacyEvidenceStatus([...evidence, ...implRows].map(e => e.freshness)), implementation, catalogued_implementation: lg ? lg.implementationState : implementation,
-      supersedes: d.supersedes, conflicts_with: [...new Set([...d.conflictsWith, ...(inverse.get(d.id) ?? [])])],
+      supersedes: d.supersedes, superseded_by: activeSuperseders.get(d.id) ?? [],
+      superseded: (activeSuperseders.get(d.id) ?? []).length > 0,
+      conflicts_with: [...new Set([...d.conflictsWith, ...(inverse.get(d.id) ?? [])])]
+        .filter(id => !activeSuperseders.has(id) && !(activeSuperseders.get(d.id) ?? []).length),
       record_integration: integration,
       files: lg ? lg.files : d.files.map(path => ({ role: 'declared', path })),
       tests: lg ? lg.tests.map(path => ({ path, direct: cited.has(path) })) : d.evidence.filter(e => e.type === 'test').map(e => ({ path: e.path, direct: true })),
@@ -173,6 +186,21 @@ export async function propose(project: Project, input: store.ProposalInput) {
   return res;
 }
 
+/** Record selected conflict history links. Authority still comes only from a matching UI attestation. */
+export async function supersede(project: Project, input: { decisionId: string; targets: string[]; expectedClaimSha256: string }) {
+  const read = await store.readDecisions(project.path);
+  if (read.state !== 'present' || !read.doc) return { ok: false as const, error: 'Native decisions are not readable' };
+  const decision = read.doc.decisions.find(d => d.id === input.decisionId);
+  if (!decision) return { ok: false as const, error: `Decision ${input.decisionId} is not in the native decisions file` };
+  const conflicts = new Set([...decision.conflictsWith,
+    ...read.doc.decisions.filter(d => d.conflictsWith.includes(decision.id)).map(d => d.id)]);
+  const invalid = input.targets.find(id => !conflicts.has(id));
+  if (invalid) return { ok: false as const, error: `Decision ${invalid} is not a recorded conflict of ${decision.id}` };
+  const result = await store.addSupersedes(project.path, input.decisionId, input.targets, input.expectedClaimSha256);
+  if (result.ok) listeners.forEach(fn => fn());
+  return result;
+}
+
 /**
  * Every native decision of a checkout, unfiltered: the project-wide review queue reads the same records as the
  * per-file panel (one source, nothing copied). Read-only.
@@ -190,7 +218,7 @@ export async function listDecisions(project: Project, opts: { worktree?: string 
  * `expectedClaimSha256` is the hash of the claim the person was looking at: if the decision was edited or replaced
  * since, nothing is written and the caller gets `claim-changed` (never an approval of a different text).
  */
-export async function attest(project: Project, input: { decisionId: string; state: legacy.AttestState; quote: string; expectedClaimSha256?: string }) {
+export async function attest(project: Project, input: { decisionId: string; state: legacy.AttestState; quote: string; expectedClaimSha256?: string; expectedSupersedesSha256?: string }) {
   const quote = input.quote.trim();
   if (quote.length < 3) return { ok: false as const, error: 'A quote of what was decided is required' };
   const { read, decisions } = await nativeDecisions(project, project.path);
@@ -200,7 +228,11 @@ export async function attest(project: Project, input: { decisionId: string; stat
   if (input.expectedClaimSha256 !== undefined && input.expectedClaimSha256 !== found.claim_sha256) {
     return { ok: false as const, code: 'claim-changed' as const, error: `Decision ${input.decisionId} changed since it was shown; reload the review before attesting` };
   }
+  if (input.expectedSupersedesSha256 !== undefined && input.expectedSupersedesSha256 !== found.supersession_sha256) {
+    return { ok: false as const, code: 'claim-changed' as const, error: `Superseded decisions for ${input.decisionId} changed since they were shown; reload the review before attesting` };
+  }
   const entry = { decision_id: input.decisionId, state: input.state, claim_sha256: found.claim_sha256, quote,
+    ...(input.expectedSupersedesSha256 !== undefined ? { supersedes_sha256: input.expectedSupersedesSha256 } : {}),
     channel: 'ui-request', trust: 'attested_local', at: new Date().toISOString(), projectId: project.id };
   await legacy.recordAttestation(project, entry);
   listeners.forEach(fn => fn());
