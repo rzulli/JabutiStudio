@@ -167,12 +167,22 @@ export const DECISION_ASSIST: { action: 'rephrase' | 'evidence' | 'conflicts' | 
  * Evidence to carry onto a rewritten proposal: the cited, non-candidate items that point at a file. Anything without a
  * path is left out, and the server re-checks every file and line when the proposal is saved.
  */
+/**
+ * The file of a cited piece of evidence. The server sets `path` only when it resolved a moved reference; a current
+ * code reference carries its file in `ref` as `file#L<line>`. Document references (`@...`) have no file.
+ */
+export function evidenceFile(e: { path?: string | null; ref: string }): string | null {
+  if (e.path) return e.path
+  const m = /^([^@\s].*?)(?:#L\d+(?:-L?\d+)?)?$/.exec(e.ref)
+  return m ? m[1] : null
+}
+
 export function evidenceForProposal(d: DesignDecision): { type: string; path: string; startLine?: number; endLine?: number; note?: string }[] {
   return d.evidence
-    .filter(e => !e.candidate_only && !!e.path)
+    .filter(e => !e.candidate_only && !!evidenceFile(e))
     .map(e => ({
       type: e.type,
-      path: e.path as string,
+      path: evidenceFile(e) as string,
       ...(e.lines ? { startLine: e.lines[0], endLine: e.lines[1] } : {}),
       ...(e.note ? { note: e.note } : {}),
     }));

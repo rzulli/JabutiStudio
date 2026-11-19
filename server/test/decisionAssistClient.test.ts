@@ -60,3 +60,23 @@ test('the briefing says when a conflicting decision is not in this checkout', ()
   const text = decisionAgentPrompt(decision({ conflicts_with: ['dec-missing-1'] }), 'jabutistudio', [decision()])
   assert.match(text, /Known conflicts \(not in this checkout\): dec-missing-1/)
 })
+
+test('a current code reference carries its file from the ref when the server sends no path', () => {
+  const d = decision({
+    evidence: [
+      { type: 'code', ref: 'scripts/rhythm.gd#L2', note: 'constant', candidate_only: false, freshness: 'CURRENT', detail: '', lines: [2, 2], path: null, excerpt: [] },
+      { type: 'document_claim', ref: '@design:window', note: '', candidate_only: false, freshness: 'CURRENT', detail: '', lines: null, path: null, excerpt: [] },
+    ],
+  })
+  assert.deepEqual(evidenceForProposal(d), [{ type: 'code', path: 'scripts/rhythm.gd', startLine: 2, endLine: 2, note: 'constant' }])
+})
+
+test('a document file without a line range keeps its path; a symbolic document reference does not', () => {
+  const d = decision({
+    evidence: [
+      { type: 'document', ref: 'artifacts/sporulation.md', note: '', candidate_only: false, freshness: 'CURRENT', detail: '', lines: null, path: null, excerpt: [] },
+      { type: 'document_claim', ref: '@design:window', note: '', candidate_only: false, freshness: 'CURRENT', detail: '', lines: null, path: null, excerpt: [] },
+    ],
+  })
+  assert.deepEqual(evidenceForProposal(d), [{ type: 'document', path: 'artifacts/sporulation.md' }])
+})
