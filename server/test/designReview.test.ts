@@ -94,12 +94,28 @@ test('R4: a fresh attestation of the exact text is recorded in the ledger and su
   assert.equal(readFileSync(join(beats, 'jabutistudio.decisions.json'), 'utf8').includes('attested'), false)
 })
 
-test('R5: editing the text after attestation lapses it (claimed or lapsed, never attested_local)', async () => {
-  // Rebuild the record's text through the read model: a different claim hash means the old attestation no longer matches.
-  const d = (await listOnce()).decisions.find(x => x.id === DEC_A)!
-  const lapsed = { ...d, claim_sha256: 'e'.repeat(64), approval: { state: 'unknown', source: 'none', lapsed: true } }
-  assert.equal(tierOf(lapsed), 'lapsed')
-  assert.notEqual(tierOf(lapsed), 'attested_local')
+test('R5: editing the claim text after attestation lapses it in the backend (never attested_local), and the ledger is not rewritten', async () => {
+  const ledgerFile = join(dataDir, 'design-approvals', `${projectId}.json`)
+  const ledgerBefore = readFileSync(ledgerFile, 'utf8')
+  // Edit the decision's text on disk, the way a person or an agent would. The old attestation is bound to the old hash.
+  const file = join(beats, 'jabutistudio.decisions.json')
+  const original = readFileSync(file, 'utf8')
+  assert.ok(original.includes('A perfect hit is within 45 ms.'))
+  writeFileSync(file, original.replace('A perfect hit is within 45 ms.', 'A perfect hit is within 50 ms.'))
+  try {
+    const d = (await listOnce()).decisions.find(x => x.id === DEC_A)!
+    assert.notEqual(d.claim_sha256, (await listOnce()).decisions.find(x => x.id === DEC_B)!.claim_sha256)
+    assert.equal(d.approval.state, 'unknown')
+    assert.equal(d.approval.lapsed, true, 'the backend reports the lapse, not just a missing approval')
+    assert.equal(tierOf(d), 'lapsed')
+    assert.notEqual(tierOf(d), 'attested_local')
+    assert.equal(readFileSync(ledgerFile, 'utf8'), ledgerBefore, 'the ledger is not rewritten by a read')
+    // And approval for the NEW text is refused unless the person confirms the new hash, which the guard checks.
+    const stale = await app.inject({ method: 'POST', url: url('approve'), headers: UI, payload: { decisionId: DEC_A, state: 'approved', quote: 'same words', claimSha256: 'a'.repeat(64) } })
+    assert.equal(stale.statusCode, 409)
+  } finally {
+    writeFileSync(file, original)
+  }
   assert.match(TIER_LABEL.lapsed, /changed|lapsed/)
 })
 
