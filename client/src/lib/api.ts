@@ -1178,8 +1178,10 @@ export const api = {
   deleteClaudeConfig: () => request<{ ok: boolean }>('/claude/config', { method: 'DELETE' }),
   testClaudeKey: (apiKey: string) =>
     request<{ ok: boolean; error?: string }>('/claude/config/test', { method: 'POST', body: JSON.stringify({ apiKey }) }),
-  analyzeTask: (projectId: string, title: string, taskId?: string) =>
-    request<{ title: string; description: string; prompt: string; effort?: 1 | 2 | 3 | 5 | 8; effortConfidence?: 'low' | 'medium' | 'high' }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId }), timeout: 60_000 }),
+  analyzeTask: (projectId: string, title: string, taskId?: string, opts?: { action?: 'clarity' | 'acceptance' | 'gaps' | 'simplify' | 'subtasks'; draft?: { title?: string; description?: string; prompt?: string } }) =>
+    request<{ title: string; description: string; prompt: string; effort?: 1 | 2 | 3 | 5 | 8; effortConfidence?: 'low' | 'medium' | 'high' }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId, action: opts?.action, draft: opts?.draft }), timeout: 60_000 }),
+  analyzeTaskAction: (projectId: string, title: string, action: 'clarity' | 'acceptance' | 'gaps' | 'simplify' | 'subtasks', draft: { title?: string; description?: string; prompt?: string }, taskId?: string) =>
+    request<{ action: string; title?: string; description?: string; acceptanceCriteria?: string[]; gaps?: string[]; subtasks?: string[] }>('/claude/analyze-task', { method: 'POST', body: JSON.stringify({ projectId, title, taskId, action, draft }), timeout: 60_000 }),
   classifyTaskEffort: (projectId: string, taskIds?: string[]) =>
     request<{ suggestions: Array<{ taskId: string; title: string; effort: 1 | 2 | 3 | 5 | 8; confidence: 'low' | 'medium' | 'high'; rationale: string }> }>(
       '/claude/classify-task-effort', { method: 'POST', body: JSON.stringify({ projectId, taskIds }), timeout: 180_000 }

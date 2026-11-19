@@ -8,6 +8,10 @@ import { getProjects } from '../services/projectDiscovery.js';
 import * as log from '../services/logService.js';
 import { parseJsonResponse } from '../services/aiJson.js';
 import { CHAT_MODELS } from '../services/aiConfigStore.js';
+import {
+  TASK_ACTIONS, buildQuickActionMessage, buildQuickActionPrompt, normalizeQuickAction,
+  type TaskAction, type TaskDraft,
+} from '../services/taskQuickActions.js';
 
 const EFFORTS = new Set([1, 2, 3, 5, 8]);
 function parseEffort(value: unknown): 1 | 2 | 3 | 5 | 8 | undefined {
@@ -131,9 +135,9 @@ export async function claudeRoutes(app: FastifyInstance) {
 
   // Analyze task — CLI-first (uses Max subscription), configured API key fallback
   app.post<{
-    Body: { projectId: string; taskId?: string; title: string }
+    Body: { projectId: string; taskId?: string; title: string; action?: string; draft?: TaskDraft }
   }>('/api/claude/analyze-task', async (request, reply) => {
-    const { projectId, taskId, title } = request.body;
+    const { projectId, taskId, title, action, draft } = request.body;
 
     let context: string;
     let existingDescription: string | undefined;
@@ -144,6 +148,31 @@ export async function claudeRoutes(app: FastifyInstance) {
       existingDescription = task?.description;
     } else {
       context = await buildProjectContext(projectId);
+    }
+    // The form's current text wins over the saved one: a quick action works on what the person is looking at.
+    if (draft) existingDescription = draft.description ?? '';
+
+    if (action !== undefined) {
+      if (!(TASK_ACTIONS as readonly string[]).includes(action)) return reply.status(400).send({ error: `unknown action: ${action}` });
+      const qa = action as TaskAction;
+      try {
+        const result = await aiBackend.generateText(
+          buildQuickActionPrompt(qa, context),
+          buildQuickActionMessage(qa, title, draft ?? { description: existingDescription }),
+          { maxTokens: 1024, timeout: 60_000 },
+        );
+        let parsed: any;
+        try { parsed = parseJsonResponse(result.text); } catch {
+          // Nothing is returned as a suggestion: the client keeps the person's text untouched.
+          return reply.status(502).send({ error: 'The agent answered, but not in the expected format. Your text was not changed.' });
+        }
+        return { action: qa, ...normalizeQuickAction(qa, parsed, { title, description: existingDescription, prompt: draft?.prompt }) };
+      } catch (err: any) {
+        if (err.status === 429) return reply.status(429).send({ error: 'Rate limit reached. Your text was not changed; try again in a moment.' });
+        const status = err instanceof aiBackend.NoAiAvailableError ? 503 : 500;
+        log.error('claude', `Quick action ${qa} failed`, err.message, projectId);
+        return reply.status(status).send({ error: err.message || 'The agent did not answer. Your text was not changed.' });
+      }
     }
 
     const userMessage = existingDescription

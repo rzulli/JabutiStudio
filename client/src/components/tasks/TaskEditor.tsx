@@ -7,6 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useCreateTask, useUpdateTask, type Task, type EffortPoints } from '@/hooks/useTasks'
 import { useMilestones } from '@/hooks/useMilestones'
 import { TaskAnalysisButton } from '@/components/claude/TaskAnalysisButton'
+import { SuggestionPanel } from '@/components/claude/SuggestionPanel'
+import { api } from '@/lib/api'
+import { applyPicks, appendedText, buildChanges, snapshot, type Change } from '@/lib/suggestions'
 import { PRIORITY_CONFIG, STATUS_CONFIG } from '@/lib/taskVisuals'
 import { X, ChevronRight, Plus, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -36,6 +39,104 @@ const EFFORT_OPTIONS = [
 
 const newSubtaskId = () => Math.random().toString(36).slice(2, 12)
 
+type QuickAction = 'clarity' | 'acceptance' | 'gaps' | 'simplify' | 'subtasks'
+
+const QUICK_ACTIONS: Array<{ action: QuickAction; label: string; hint: string }> = [
+  { action: 'clarity', label: 'Clarify', hint: 'Rewrite the title and description more precisely' },
+  { action: 'acceptance', label: 'Acceptance', hint: 'Propose acceptance criteria, added under the description' },
+  { action: 'gaps', label: 'Find gaps', hint: 'List what is missing or ambiguous (information only)' },
+  { action: 'simplify', label: 'Simplify', hint: 'Shorten the description without dropping a requirement' },
+  { action: 'subtasks', label: 'Subtasks', hint: 'Propose subtasks to add to the list' },
+]
+
+/** Text fields the form holds. Applying a suggestion only ever writes the ticked ones. */
+type TaskForm = { title: string; description: string; prompt: string; effort: string; effortSource: 'claude' | 'manual' }
+
+/** Everything Undo needs to restore exactly what the form held before the last apply. */
+type TaskUndo = { form: TaskForm; subtasks: Subtask[] }
+
+type ProposedItem = Omit<Change, 'current'>
+
+interface Suggestion {
+  id: number
+  heading: string
+  items: ProposedItem[]
+  notes: string[]
+}
+
+interface QuickResult {
+  title?: string
+  description?: string
+  acceptanceCriteria?: string[]
+  gaps?: string[]
+  subtasks?: string[]
+}
+
+/** The items AI Analyze returns: a full new value for each field. */
+function analyzeItems(r: { title?: string; description?: string; prompt?: string; effort?: number }): ProposedItem[] {
+  return [
+    { key: 'title', label: 'Title', kind: 'replace', proposed: r.title ?? '' },
+    { key: 'description', label: 'Description', kind: 'replace', proposed: r.description ?? '' },
+    { key: 'prompt', label: 'Technical details', kind: 'replace', proposed: r.prompt ?? '' },
+    { key: 'effort', label: 'Effort', kind: 'replace', proposed: r.effort ? String(r.effort) : '' },
+  ]
+}
+
+/** Maps one quick action's answer onto the shared change kinds. Nothing here touches the form. */
+function quickItems(action: QuickAction, r: QuickResult): ProposedItem[] {
+  switch (action) {
+    case 'clarity':
+      return [
+        { key: 'title', label: 'Title', kind: 'replace', proposed: r.title ?? '' },
+        { key: 'description', label: 'Description', kind: 'replace', proposed: r.description ?? '' },
+      ]
+    case 'simplify':
+      return [{ key: 'description', label: 'Description', kind: 'replace', proposed: r.description ?? '' }]
+    case 'acceptance': {
+      const criteria = r.acceptanceCriteria ?? []
+      return criteria.length
+        ? [{ key: 'description', label: 'Acceptance criteria', kind: 'append', proposed: ['Acceptance criteria:', ...criteria.map(c => `- ${c}`)].join('\n') }]
+        : []
+    }
+    case 'gaps': {
+      const gaps = r.gaps ?? []
+      return gaps.length ? [{ key: 'gaps', label: 'Missing or ambiguous', kind: 'info', proposed: gaps.map(g => `• ${g}`).join('\n') }] : []
+    }
+    case 'subtasks': {
+      const subtasks = r.subtasks ?? []
+      return subtasks.length ? [{ key: 'subtasks', label: 'Subtasks to add', kind: 'subtasks', proposed: subtasks.join('\n') }] : []
+    }
+  }
+}
+
+const EMPTY_NOTE: Record<QuickAction, string> = {
+  clarity: 'The text already reads clearly. Nothing to change.',
+  acceptance: 'No acceptance criteria were proposed.',
+  gaps: 'No gaps found.',
+  simplify: 'The description is already concise. Nothing to change.',
+  subtasks: 'No subtasks were proposed.',
+}
+
+/** Recomputes what applying would change from the form as it is now, so the preview never shows stale text. */
+function liveChanges(s: Suggestion, f: TaskForm): Change[] {
+  const current = (key: string) =>
+    key === 'title' ? f.title
+      : key === 'description' ? f.description
+        : key === 'prompt' ? f.prompt
+          : key === 'effort' ? (f.effort === 'none' ? '' : f.effort)
+            : ''
+  return buildChanges(s.items.map(i => ({ ...i, current: current(i.key) })))
+}
+
+/** Maps a ticked change onto the form. Subtasks are handled by applyPicks, not here. */
+function resolveChange(c: Change, f: TaskForm): Partial<TaskForm> {
+  if (c.key === 'title') return { title: c.proposed }
+  if (c.key === 'description') return { description: c.kind === 'append' ? appendedText(f.description, c.proposed) : c.proposed }
+  if (c.key === 'prompt') return { prompt: c.proposed }
+  if (c.key === 'effort') return { effort: c.proposed, effortSource: 'claude' }
+  return {}
+}
+
 export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }: TaskEditorProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -49,9 +150,12 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
   const [subtasks, setSubtasks] = useState<Subtask[]>([])
   const [newSubtask, setNewSubtask] = useState('')
   const [showDetails, setShowDetails] = useState(false)
-  // AI Analyze never writes into the form by itself: its answer waits here, field by field, until the person applies it.
-  const [aiSuggestion, setAiSuggestion] = useState<AiSuggestion | null>(null)
-  const [aiUndo, setAiUndo] = useState<AiUndo | null>(null)
+  // Agent output never writes into the form by itself: it waits here until the person ticks what to apply.
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
+  const [aiUndo, setAiUndo] = useState<TaskUndo | null>(null)
+  const [busyAction, setBusyAction] = useState<QuickAction | null>(null)
+  // Bumped whenever a result should be ignored (new request, new result, dialog reopened), so a late answer never lands on the wrong form.
+  const requestSeq = useRef(0)
   const [quickCreate, setQuickCreate] = useState(() =>
     localStorage.getItem('shipyard:quick-create') === 'true'
   )
@@ -69,6 +173,10 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
   }, [milestones, targetMilestoneId])
 
   useEffect(() => {
+    requestSeq.current++
+    setBusyAction(null)
+    setSuggestion(null)
+    setAiUndo(null)
     if (task) {
       setTitle(task.title)
       setDescription(task.description)
@@ -108,8 +216,12 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
     setSubtasks([])
     setNewSubtask('')
     setShowDetails(false)
+    setSuggestion(null)
+    setAiUndo(null)
     setTimeout(() => titleInputRef.current?.focus(), 50)
   }
+
+  const currentForm = (): TaskForm => ({ title, description, prompt, effort, effortSource })
 
   const commitSubtask = () => {
     const value = newSubtask.trim()
@@ -118,6 +230,57 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
     setSubtasks(prev => [...prev, entry])
     setNewSubtask('')
     return entry
+  }
+
+  /** Ticked changes only. Snapshot first, so Undo restores exactly what the form held. */
+  const applySuggestion = (picks: Record<string, boolean>) => {
+    if (!suggestion) return
+    const form = currentForm()
+    const { patch, addSubtasks } = applyPicks(liveChanges(suggestion, form), picks, form, resolveChange)
+    if (!Object.keys(patch).length && !addSubtasks.length) return
+    setAiUndo({ form: snapshot(form), subtasks })
+    if (patch.title !== undefined) setTitle(patch.title)
+    if (patch.description !== undefined) setDescription(patch.description)
+    if (patch.prompt !== undefined) { setPrompt(patch.prompt); setShowDetails(true) }
+    if (patch.effort !== undefined) { setEffort(patch.effort); setEffortSource('claude') }
+    if (addSubtasks.length) {
+      setSubtasks(prev => [...prev, ...addSubtasks.map(t => ({ id: newSubtaskId(), title: t, done: false }))])
+      setShowDetails(true)
+    }
+    setSuggestion(null)
+    toast.success('Applied the selected suggestions. Undo restores the previous text.')
+  }
+
+  const undoApply = () => {
+    if (!aiUndo) return
+    setTitle(aiUndo.form.title)
+    setDescription(aiUndo.form.description)
+    setPrompt(aiUndo.form.prompt)
+    setEffort(aiUndo.form.effort)
+    setEffortSource(aiUndo.form.effortSource)
+    setSubtasks(aiUndo.subtasks)
+    setAiUndo(null)
+  }
+
+  /** Sends the current text, shows the answer as a suggestion. A failure leaves the form untouched. */
+  const runQuickAction = async (action: QuickAction) => {
+    if (busyAction) return
+    if (!title.trim()) { toast.error('Give the task a title first.'); return }
+    const seq = ++requestSeq.current
+    setBusyAction(action)
+    try {
+      const res = await api.analyzeTaskAction(projectId, title, action, { title, description, prompt }, task?.id)
+      if (seq !== requestSeq.current) return
+      const items = quickItems(action, res)
+      const label = QUICK_ACTIONS.find(q => q.action === action)?.label ?? action
+      setSuggestion({ id: seq, heading: `${label} — suggestion`, items, notes: items.length ? [] : [EMPTY_NOTE[action]] })
+    } catch (err) {
+      if (seq !== requestSeq.current) return
+      const reason = err instanceof Error ? err.message : 'The request failed.'
+      toast.error(`${reason} Your text was not changed.`)
+    } finally {
+      if (seq === requestSeq.current) setBusyAction(null)
+    }
   }
 
   const handleSave = () => {
@@ -238,35 +401,50 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
               taskId={task?.id}
               title={title}
               className="h-11 shrink-0"
-              onResult={r => setAiSuggestion({ title: r.title, description: r.description, prompt: r.prompt, effort: r.effort })}
+              onResult={r => {
+                // A full AI Analyze answer supersedes any quick action still in flight.
+                const seq = ++requestSeq.current
+                setBusyAction(null)
+                setSuggestion({ id: seq, heading: 'AI Analyze — suggestions', items: analyzeItems(r), notes: [] })
+              }}
             />
           </div>
 
-          {aiSuggestion && (
-            <AiSuggestionPanel
-              suggestion={aiSuggestion}
-              current={{ title, description, prompt, effort: effort === 'none' ? undefined : Number(effort) }}
-              onApply={pick => {
-                // Snapshot first, so Undo restores exactly what the form held before this apply.
-                setAiUndo({ title, description, prompt, effort, effortSource })
-                if (pick.title && aiSuggestion.title) setTitle(aiSuggestion.title)
-                if (pick.description && aiSuggestion.description) setDescription(aiSuggestion.description)
-                if (pick.prompt && aiSuggestion.prompt) { setPrompt(aiSuggestion.prompt); setShowDetails(true) }
-                if (pick.effort && aiSuggestion.effort) { setEffort(String(aiSuggestion.effort)); setEffortSource('claude') }
-                setAiSuggestion(null)
-                toast.success('Applied the selected AI suggestions. Undo restores the previous text.')
-              }}
-              onDiscard={() => setAiSuggestion(null)}
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="quick-actions">
+            <span className="mr-1 text-[11px] text-muted-foreground">Quick actions</span>
+            {QUICK_ACTIONS.map(q => (
+              <Button
+                key={q.action}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px]"
+                title={q.hint}
+                disabled={!!busyAction || saving}
+                onClick={() => runQuickAction(q.action)}
+                data-testid={`quick-action-${q.action}`}
+              >
+                {busyAction === q.action && <Loader2 className="h-3 w-3 animate-spin" />}
+                {q.label}
+              </Button>
+            ))}
+          </div>
+
+          {suggestion && (
+            <SuggestionPanel
+              key={suggestion.id}
+              testId="ai-suggestion-panel"
+              heading={suggestion.heading}
+              changes={liveChanges(suggestion, currentForm())}
+              notes={suggestion.notes}
+              onApply={applySuggestion}
+              onDiscard={() => setSuggestion(null)}
             />
           )}
-          {aiUndo && !aiSuggestion && (
+          {aiUndo && !suggestion && (
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground" data-testid="ai-undo-row">
-              <span>AI suggestions were applied.</span>
-              <button type="button" className="underline hover:text-foreground" data-testid="ai-undo"
-                onClick={() => {
-                  setTitle(aiUndo.title); setDescription(aiUndo.description); setPrompt(aiUndo.prompt)
-                  setEffort(aiUndo.effort); setEffortSource(aiUndo.effortSource); setAiUndo(null)
-                }}>Undo</button>
+              <span>Suggestions were applied.</span>
+              <button type="button" className="underline hover:text-foreground" data-testid="ai-undo" onClick={undoApply}>Undo</button>
             </div>
           )}
 
@@ -467,60 +645,5 @@ export function TaskEditor({ projectId, task, milestoneId, open, onOpenChange }:
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-interface AiSuggestion { title?: string; description?: string; prompt?: string; effort?: number }
-interface AiUndo { title: string; description: string; prompt: string; effort: string; effortSource: 'claude' | 'manual' }
-type AiField = 'title' | 'description' | 'prompt' | 'effort'
-
-const FIELD_LABEL: Record<AiField, string> = { title: 'Title', description: 'Description', prompt: 'Technical details', effort: 'Effort' }
-
-/**
- * Field-by-field review of an AI answer. Fields the person already filled are unchecked by default, so a
- * suggestion can refine a text without replacing it. Each field shows what is there now and what would be applied.
- */
-function AiSuggestionPanel({ suggestion, current, onApply, onDiscard }: {
-  suggestion: AiSuggestion
-  current: { title: string; description: string; prompt: string; effort?: number }
-  onApply: (pick: Record<AiField, boolean>) => void
-  onDiscard: () => void
-}) {
-  const now: Record<AiField, string> = { title: current.title, description: current.description, prompt: current.prompt, effort: current.effort ? String(current.effort) : '' }
-  const next: Record<AiField, string> = { title: suggestion.title ?? '', description: suggestion.description ?? '', prompt: suggestion.prompt ?? '', effort: suggestion.effort ? String(suggestion.effort) : '' }
-  const fields = (Object.keys(next) as AiField[]).filter(f => next[f] && next[f] !== now[f])
-  const [pick, setPick] = useState<Record<AiField, boolean>>(() => ({
-    title: !now.title, description: !now.description, prompt: !now.prompt, effort: !now.effort,
-  }))
-  if (!fields.length) {
-    return (
-      <div className="flex items-center gap-2 rounded-md border p-2 text-[11px] text-muted-foreground" role="status" data-testid="ai-suggestion-none">
-        AI found nothing to change. <button type="button" className="underline" onClick={onDiscard}>Dismiss</button>
-      </div>
-    )
-  }
-  const chosen = fields.some(f => pick[f])
-  return (
-    <div className="space-y-2 rounded-md border border-primary/40 bg-accent/30 p-3" data-testid="ai-suggestion-panel">
-      <div className="flex items-center gap-2">
-        <p className="text-xs font-medium">AI suggestions — nothing is applied until you choose</p>
-        <button type="button" onClick={onDiscard} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground" data-testid="ai-discard">Discard</button>
-      </div>
-      {fields.map(f => (
-        <label key={f} className="block space-y-1 rounded border bg-background p-2 text-[11px]" data-testid="ai-field" data-field={f}>
-          <span className="flex items-center gap-1.5">
-            <input type="checkbox" checked={pick[f]} onChange={e => setPick(p => ({ ...p, [f]: e.target.checked }))} data-testid={`ai-pick-${f}`} />
-            <span className="font-medium">{FIELD_LABEL[f]}</span>
-            {!now[f] && <span className="text-muted-foreground">(empty now)</span>}
-          </span>
-          {now[f] && <span className="block whitespace-pre-wrap text-muted-foreground line-through decoration-muted-foreground/50">{now[f].slice(0, 240)}</span>}
-          <span className="block whitespace-pre-wrap">{next[f].slice(0, 400)}</span>
-        </label>
-      ))}
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={!chosen} onClick={() => onApply(pick)} data-testid="ai-apply">Apply selected</Button>
-        <span className="text-[10px] text-muted-foreground">Fields you already filled are unchecked by default. Undo restores the previous text.</span>
-      </div>
-    </div>
   )
 }
