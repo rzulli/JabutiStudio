@@ -586,7 +586,7 @@ export interface DesignDecision {
   supersedes: string[]; conflicts_with: string[]; matched_by?: string[]
   files: { role: string; path: string }[]; tests: { path: string; direct: boolean }[]; qps: { path: string; direct: boolean }[]
   evidence: DesignEvidence[]
-  source?: 'native' | 'legacy'; systems?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
+  source?: 'native' | 'legacy'; systems?: string[]; scope?: string[]; provenance?: { origin?: string; createdAt?: string; status?: string }
 }
 
 // ---- System catalog (Explorer > Systems) ----
@@ -773,7 +773,9 @@ export const api = {
     request<{ legacyRecords: number; checkouts: { path: string; branch?: string }[] }>(`/projects/${projectId}/design/checkouts`),
   proposeDecision: (projectId: string, body: ProposeDecisionBody) =>
     request<DesignDecision & { id: string }>(`/projects/${projectId}/design/proposals`, { method: 'POST', body: JSON.stringify(body) }),
-  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string }) =>
+  listDesignDecisions: (projectId: string, worktree?: string) =>
+    request<{ available: boolean; state?: string; reason?: string; decisions: DesignDecision[] }>(`/projects/${projectId}/design/decisions${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`),
+  attestDecision: (projectId: string, body: { decisionId: string; state: 'approved' | 'rejected' | 'revoked'; quote: string; claimSha256?: string }) =>
     request<{ decision_id: string; state: string }>(`/projects/${projectId}/design/approve`, { method: 'POST', body: JSON.stringify(body) }),
   getSystems: (projectId: string, worktree?: string) =>
     request<{ systems: SystemSummary[]; loadErrors: { id: string; name: string; error: string }[]; checkout: SystemCheckout | null; dismissed: number }>(`/projects/${projectId}/systems?${wt(worktree)}`),
