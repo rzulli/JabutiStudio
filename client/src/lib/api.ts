@@ -487,6 +487,17 @@ export type ExplorerResponse =
 export interface ExplorerSearchResult { total: number; nodes: ExplorerNode[]; counts: Record<ExplorerKind, number> }
 export interface ExplorerBuildResult { files: number; nodes: number; edges: number; tookMs: number }
 
+/**
+ * The backend could not be reached: no connection at all, or the dev proxy answered for a backend that is
+ * down or restarting. Distinct from an API error, so queries can retry it while the backend starts.
+ */
+export class BackendUnavailableError extends Error {
+  constructor(message = 'The JabutiStudio backend is not answering. It may be starting or restarting.') {
+    super(message);
+    this.name = 'BackendUnavailableError';
+  }
+}
+
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { timeout, ...fetchOptions } = options || {};
   const headers: Record<string, string> = {};
@@ -508,10 +519,17 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
     signal,
   }).catch((err) => {
     if (err.name === 'AbortError') throw new Error('Request timed out');
+    // fetch rejects with a TypeError only when no connection was made (the server is down or not listening yet).
+    if (err instanceof TypeError) throw new BackendUnavailableError();
     throw err;
   });
 
   if (!res.ok) {
+    // The API always answers errors as JSON. A plain-text 500 comes from the Vite dev proxy when the backend
+    // refuses the connection, so it means "not reachable", not an API failure.
+    if (!(res.headers.get('content-type') || '').includes('application/json')) {
+      throw new BackendUnavailableError(`The backend did not answer (HTTP ${res.status}). It may be starting or restarting.`);
+    }
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || error.message || 'Request failed');
   }
@@ -768,6 +786,8 @@ export interface DesignContext {
 }
 
 export const api = {
+  /** Readiness probe: answers only when this is a JabutiStudio backend that is up (GET /api/identity). */
+  identity: () => request<{ app: string; protocol: number; status: string }>('/identity'),
   getExplorer: (projectId: string) => request<ExplorerResponse>(`/projects/${projectId}/explorer`),
   buildExplorer: (projectId: string) =>
     request<ExplorerBuildResult>(`/projects/${projectId}/explorer/build`, { method: 'POST', timeout: 11 * 60_000 }),

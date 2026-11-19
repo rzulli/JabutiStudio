@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import App from './App'
+import { BackendUnavailableError } from './lib/api'
+import { BackendGate } from './components/BackendGate'
 import '@fontsource-variable/inter'
 import './index.css'
 
@@ -16,7 +18,10 @@ const queryClient = new QueryClient({
       // feel stale.
       staleTime: 3000,
       refetchOnWindowFocus: true,
-      retry: 1,
+      // A backend that is still starting, or restarting mid-session, is retried with react-query's own
+      // backoff (1s, 2s, 4s, 8s, 16s), so queries recover by themselves once it answers. Other errors
+      // are real answers and keep the single retry.
+      retry: (failureCount, error) => (error instanceof BackendUnavailableError ? failureCount < 5 : failureCount < 1),
     },
   },
 })
@@ -45,7 +50,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <App />
+          <BackendGate>
+            <App />
+          </BackendGate>
           <Toaster theme="dark" position="bottom-right" />
         </BrowserRouter>
       </QueryClientProvider>

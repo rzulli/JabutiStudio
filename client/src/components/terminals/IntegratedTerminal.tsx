@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { getWebSocketUrl } from '@/hooks/useTerminal'
 import { api } from '@/lib/api'
+import { BACKEND_RECOVERED_EVENT } from '@/components/BackendGate'
 import { toast } from 'sonner'
 import { useEditorTabsContext } from '@/hooks/useEditorTabsContext'
 import { filePathLinkProvider } from '@/lib/terminalLinks'
@@ -85,6 +86,8 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const disposedRef = useRef(false)
   const reconnectCountRef = useRef(0)
+  // Set when the backend answers that this session no longer exists: reconnecting cannot bring it back.
+  const sessionGoneRef = useRef(false)
   // Use ref for onExit to avoid re-creating WS on every render
   const onExitRef = useRef(onExit)
   onExitRef.current = onExit
@@ -121,7 +124,6 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
     wsRef.current = ws
 
     ws.onopen = () => {
-      reconnectCountRef.current = 0
       // Send initial resize
       if (fitAddonRef.current && termRef.current) {
         const dims = fitAddonRef.current.proposeDimensions()
@@ -136,6 +138,8 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
         const msg = JSON.parse(event.data)
         switch (msg.type) {
           case 'output':
+            // Data from the session is the proof the connection works; only then is the reconnect budget renewed.
+            reconnectCountRef.current = 0
             termRef.current?.write(msg.data)
             break
           case 'exit':
@@ -144,6 +148,8 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
             break
           case 'error':
             termRef.current?.write(`\r\n\x1b[31m[Error: ${msg.data}]\x1b[0m\r\n`)
+            // The backend has no such session (it restarted, and terminal sessions live only in its memory).
+            if (msg.data === 'Session not found') sessionGoneRef.current = true
             break
         }
       } catch {}
@@ -151,6 +157,10 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
 
     ws.onclose = () => {
       if (disposedRef.current) return
+      if (sessionGoneRef.current) {
+        termRef.current?.write('\r\n\x1b[33m[This terminal\'s session no longer exists on the backend. Open a new terminal.]\x1b[0m\r\n')
+        return
+      }
       // Reconnect with limit
       if (reconnectCountRef.current < MAX_RECONNECT_ATTEMPTS) {
         reconnectCountRef.current++
@@ -168,12 +178,27 @@ export function IntegratedTerminal({ sessionId, isActive, onExit }: IntegratedTe
     }
   }, [sessionId]) // no onExit dep — uses ref
 
+  // The backend came back after an outage: the socket gets a fresh set of reconnect attempts, because the
+  // ones used up while it was away would otherwise leave this terminal dead until a remount.
+  useEffect(() => {
+    const onRecovered = () => {
+      if (disposedRef.current || !termRef.current || sessionGoneRef.current) return
+      clearTimeout(reconnectTimerRef.current)
+      reconnectCountRef.current = 0
+      const ws = wsRef.current
+      if (!ws || ws.readyState === WebSocket.CLOSED) connectWs()
+    }
+    window.addEventListener(BACKEND_RECOVERED_EVENT, onRecovered)
+    return () => window.removeEventListener(BACKEND_RECOVERED_EVENT, onRecovered)
+  }, [connectWs])
+
   // Initialize terminal (only when sessionId changes)
   useEffect(() => {
     if (!containerRef.current) return
 
     disposedRef.current = false
     reconnectCountRef.current = 0
+    sessionGoneRef.current = false
 
     const isWindows = navigator.platform?.startsWith('Win') || navigator.userAgent.includes('Windows')
 

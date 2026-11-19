@@ -99,6 +99,21 @@ export async function isUrlReachable(host: string, port: number, timeoutMs = 150
   return result.ok && result.status < 500;
 }
 
+/**
+ * Polls `check` until it passes. Throws when it never does: a backend that is not confirmed ready must not
+ * be treated as ready, or the window loads into a server that is still refusing connections.
+ */
+export async function waitUntilReady(
+  check: () => Promise<boolean>,
+  opts: { attempts: number; intervalMs: number; what: string },
+): Promise<void> {
+  for (let i = 0; i < opts.attempts; i++) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, opts.intervalMs));
+  }
+  throw new Error(`${opts.what} did not answer after ${opts.attempts} attempts`);
+}
+
 export class BackendConflictError extends Error {
   constructor(port: number, reason: string) {
     super(`Port ${port} is in use by a process JabutiStudio will not reuse or stop: ${reason}. `
