@@ -6,7 +6,7 @@ import { request } from 'http';
 import { homedir, platform as osPlatform } from 'os';
 import { autoUpdater } from 'electron-updater';
 import {
-  ensureBackend, isUrlReachable, probeBackend, SERVER_PROTOCOL,
+  ensureBackend, isUrlReachable, probeBackend, SERVER_PROTOCOL, waitUntilReady,
   type BackendHandle, type OwnedProcess,
 } from './serverBootstrap';
 
@@ -123,16 +123,9 @@ function checkServerReady(): Promise<boolean> {
   });
 }
 
-/** Poll the server with HTTP requests until it responds or we give up */
-async function waitForServer(maxAttempts = 30, intervalMs = 500): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    if (await checkServerReady()) {
-      console.log(`[Electron] Server confirmed ready (attempt ${i + 1})`);
-      return;
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  console.log('[Electron] Server health check timed out, proceeding anyway');
+/** Polls the backend until it answers. Rejects on timeout, so a failed start reaches the error dialog. */
+function waitForServer(attempts = 30, intervalMs = 500): Promise<void> {
+  return waitUntilReady(checkServerReady, { attempts, intervalMs, what: `Backend on port ${PORT}` });
 }
 
 /**
@@ -213,11 +206,11 @@ function spawnServer(): Promise<OwnedProcess> {
     proc.stdout?.on('data', (data: Buffer) => {
       const msg = data.toString();
       console.log('[Server]', msg.trim());
-      // Match our console.log: "JabutiStudio server running on http://..."
-      if (!started && (msg.includes('running on') || msg.includes(`${PORT}`))) {
+      // Printed by server/src/index.ts only after app.listen(): "JabutiStudio server running on http://..."
+      if (!started && msg.includes('running on')) {
         started = true;
         // Server reported ready via stdout — confirm with HTTP health check
-        waitForServer(10, 300).then(() => res(owned));
+        waitForServer(10, 300).then(() => res(owned), reject);
       }
     });
 
@@ -247,7 +240,7 @@ function spawnServer(): Promise<OwnedProcess> {
       if (!started) {
         started = true;
         console.log('[Electron] Stdout detection timed out, falling back to HTTP polling');
-        waitForServer().then(() => res(owned));
+        waitForServer().then(() => res(owned), reject);
       }
     }, 5000);
   });
