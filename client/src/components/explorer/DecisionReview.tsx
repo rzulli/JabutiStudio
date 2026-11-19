@@ -12,6 +12,7 @@ import {
 import { buildChanges } from '@/lib/suggestions'
 import { openAgentSession } from '@/lib/terminalDispatch'
 import { SuggestionPanel } from '@/components/claude/SuggestionPanel'
+import { DecisionCreate } from './DecisionCreate'
 
 /**
  * Decisions, project-wide: a Feed (searchable list) and a Review (one decision at a time). Both read the same query and
@@ -73,6 +74,7 @@ export function DecisionsView({ projectId, worktree, state, onState, onOpenFile,
   const all = q.data?.decisions ?? []
   const queue = useMemo(() => filterQueue(all, state.filter), [all, state.filter])
   const counts = queueCounts(all)
+  const [creating, setCreating] = useState(false)
   const setFilter = (patch: Partial<QueueFilter>) => onState({ filter: { ...state.filter, ...patch } })
 
   if (q.isError && !all.length) {
@@ -86,6 +88,14 @@ export function DecisionsView({ projectId, worktree, state, onState, onOpenFile,
   }
   if (q.data && !q.data.available) {
     return <p className="p-6 text-xs text-muted-foreground" data-testid="decisions-unavailable">Design decisions are not available for this checkout{q.data.reason ? `: ${q.data.reason}` : '.'}</p>
+  }
+
+  if (creating) {
+    return (
+      <DecisionCreate projectId={projectId} worktree={worktree} decisions={all}
+        onCancel={() => setCreating(false)}
+        onSaved={id => { setCreating(false); onState({ mode: 'review', selectedId: id }) }} />
+    )
   }
 
   const systems = [...new Set(all.flatMap(d => d.systems ?? (d.system ? [d.system] : [])))].sort()
@@ -102,6 +112,8 @@ export function DecisionsView({ projectId, worktree, state, onState, onOpenFile,
             </button>
           ))}
         </div>
+        <button type="button" onClick={() => setCreating(true)} data-testid="decisions-new"
+          className="rounded-md border px-2 py-1 text-[11px] hover:bg-accent">New decision</button>
         <span className="ml-auto text-[10px] text-muted-foreground tabular-nums" data-testid="decisions-counts">
           {counts.total} decisions · {counts.pending} pending · {counts.attested} attested locally · {counts.conflicts} in conflict
         </span>
